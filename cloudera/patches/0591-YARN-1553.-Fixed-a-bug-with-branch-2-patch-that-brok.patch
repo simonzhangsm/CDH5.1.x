@@ -1,0 +1,36 @@
+From 91fc5c5aeafeeb6684cf5b5197e9556f1d493d6e Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Fri, 14 Feb 2014 23:05:37 +0000
+Subject: [PATCH 591/795] YARN-1553. Fixed a bug with branch-2 patch that broke compilation. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568540 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 6a1313b650fe5ff8bca6e4a3416a98a5fe3cf66d)
+---
+ .../java/org/apache/hadoop/http/HttpServer.java    |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer.java
+index b21bd5a..3ad26c6 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer.java
+@@ -51,6 +51,7 @@
+ import org.apache.hadoop.conf.ConfServlet;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
++import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.jmx.JMXJsonServlet;
+ import org.apache.hadoop.log.LogLevel;
+ import org.apache.hadoop.metrics.MetricsServlet;
+@@ -220,7 +221,8 @@ public HttpServer(String name, String bindAddress, int port,
+     
+     if(connector == null) {
+       listenerStartedExternally = false;
+-      if (HttpConfig.isSecure()) {
++      if (conf.getBoolean(CommonConfigurationKeysPublic.HADOOP_SSL_ENABLED_KEY,
++          CommonConfigurationKeysPublic.HADOOP_SSL_ENABLED_DEFAULT)) {
+         sslFactory = new SSLFactory(SSLFactory.Mode.SERVER, conf);
+         try {
+           sslFactory.init();
+-- 
+1.7.0.4
+

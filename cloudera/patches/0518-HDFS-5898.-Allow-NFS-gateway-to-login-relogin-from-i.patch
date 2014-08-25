@@ -1,0 +1,253 @@
+From 917c5816cf3a34105d4c28fd8e1daa56b6b86a75 Mon Sep 17 00:00:00 2001
+From: Aaron Twining Myers <atm@apache.org>
+Date: Wed, 5 Mar 2014 22:30:45 +0000
+Subject: [PATCH 518/795] HDFS-5898. Allow NFS gateway to login/relogin from its kerberos keytab. Contributed by Abin Shahab.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1574696 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0edfdf93e9471bc00e4b08e68e5623eaa62f4e3c)
+---
+ .../hadoop/hdfs/nfs/mount/RpcProgramMountd.java    |    7 ++++
+ .../hadoop/hdfs/nfs/nfs3/DFSClientCache.java       |    5 ++-
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |    9 +++++
+ .../hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java   |   26 ++++++++++++++-
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    2 +
+ .../src/main/resources/hdfs-default.xml            |   20 +++++++++++
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |   34 ++++++++++++++++++-
+ 7 files changed, 98 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
+index b7e669a..e74a089 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
+@@ -16,6 +16,8 @@
+  * limitations under the License.
+  */
+ package org.apache.hadoop.hdfs.nfs.mount;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_KEYTAB_FILE_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_USER_NAME_KEY;
+ 
+ import java.io.IOException;
+ import java.net.InetAddress;
+@@ -46,6 +48,8 @@
+ import org.apache.hadoop.oncrpc.RpcUtil;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.VerifierNone;
++import org.apache.hadoop.security.SecurityUtil;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.jboss.netty.buffer.ChannelBuffer;
+ import org.jboss.netty.buffer.ChannelBuffers;
+ import org.jboss.netty.channel.ChannelHandlerContext;
+@@ -83,6 +87,9 @@ public RpcProgramMountd(Configuration config) throws IOException {
+         Nfs3Constant.EXPORT_POINT_DEFAULT));
+     this.hostsMatcher = NfsExports.getInstance(config);
+     this.mounts = Collections.synchronizedList(new ArrayList<MountEntry>());
++    UserGroupInformation.setConfiguration(config);
++    SecurityUtil.login(config, DFS_NFS_KEYTAB_FILE_KEY,
++            DFS_NFS_USER_NAME_KEY);
+     this.dfsClient = new DFSClient(NameNode.getAddress(config), config);
+   }
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/DFSClientCache.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/DFSClientCache.java
+index b6822c4..47af3e1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/DFSClientCache.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/DFSClientCache.java
+@@ -17,6 +17,8 @@
+  */
+ package org.apache.hadoop.hdfs.nfs.nfs3;
+ 
++import org.apache.commons.logging.LogFactory;
++
+ import java.io.IOException;
+ import java.security.PrivilegedExceptionAction;
+ import java.util.ArrayList;
+@@ -28,7 +30,6 @@
+ 
+ import com.google.common.base.Preconditions;
+ import org.apache.commons.logging.Log;
+-import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FSDataInputStream;
+ import org.apache.hadoop.hdfs.DFSClient;
+@@ -192,6 +193,8 @@ UserGroupInformation getUserGroupInformation(
+           throws IOException {
+     Preconditions.checkNotNull(effectiveUser);
+     Preconditions.checkNotNull(realUser);
++    realUser.checkTGTAndReloginFromKeytab();
++
+     UserGroupInformation ugi =
+             UserGroupInformation.createProxyUser(effectiveUser, realUser);
+     if (LOG.isDebugEnabled()){
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 488cd0d..e809b72 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -121,6 +121,8 @@
+ import org.apache.hadoop.oncrpc.security.Verifier;
+ import org.apache.hadoop.oncrpc.security.VerifierNone;
+ import org.apache.hadoop.security.AccessControlException;
++import org.apache.hadoop.security.SecurityUtil;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.jboss.netty.buffer.ChannelBuffer;
+ import org.jboss.netty.buffer.ChannelBuffers;
+ import org.jboss.netty.channel.Channel;
+@@ -128,6 +130,9 @@
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ 
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_KEYTAB_FILE_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_USER_NAME_KEY;
++
+ /**
+  * RPC program corresponding to nfs daemon. See {@link Nfs3}.
+  */
+@@ -187,6 +192,10 @@ public RpcProgramNfs3(Configuration config) throws IOException {
+         Nfs3Constant.FILE_DUMP_DIR_DEFAULT);
+     boolean enableDump = config.getBoolean(Nfs3Constant.ENABLE_FILE_DUMP_KEY,
+         Nfs3Constant.ENABLE_FILE_DUMP_DEFAULT);
++    UserGroupInformation.setConfiguration(config);
++    SecurityUtil.login(config, DFS_NFS_KEYTAB_FILE_KEY,
++            DFS_NFS_USER_NAME_KEY);
++
+     if (!enableDump) {
+       writeDumpDir = null;
+     } else {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java
+index face4fe..62629ac 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java
+@@ -17,6 +17,7 @@
+  */
+ package org.apache.hadoop.hdfs.nfs.nfs3;
+ 
++import static org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod.KERBEROS;
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertTrue;
+@@ -53,14 +54,35 @@ public void testEviction() throws IOException {
+   }
+ 
+   @Test
++  public void testGetUserGroupInformationSecure() throws IOException {
++    String userName = "user1";
++    String currentUser = "test-user";
++
++
++    Configuration conf = new Configuration();
++    UserGroupInformation currentUserUgi
++            = UserGroupInformation.createRemoteUser(currentUser);
++    currentUserUgi.setAuthenticationMethod(KERBEROS);
++    UserGroupInformation.setLoginUser(currentUserUgi);
++
++    DFSClientCache cache = new DFSClientCache(conf);
++    UserGroupInformation ugiResult
++            = cache.getUserGroupInformation(userName, currentUserUgi);
++
++    assertThat(ugiResult.getUserName(), is(userName));
++    assertThat(ugiResult.getRealUser(), is(currentUserUgi));
++    assertThat(
++            ugiResult.getAuthenticationMethod(),
++            is(UserGroupInformation.AuthenticationMethod.PROXY));
++  }
++
++  @Test
+   public void testGetUserGroupInformation() throws IOException {
+     String userName = "user1";
+     String currentUser = "currentUser";
+ 
+     UserGroupInformation currentUserUgi = UserGroupInformation
+             .createUserForTesting(currentUser, new String[0]);
+-    currentUserUgi.setAuthenticationMethod(
+-            UserGroupInformation.AuthenticationMethod.KERBEROS);
+     Configuration conf = new Configuration();
+     conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost");
+     DFSClientCache cache = new DFSClientCache(conf);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index e0447f7..60b1c9a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -607,4 +607,6 @@
+   public static final int     DFS_HTTP_CLIENT_FAILOVER_SLEEPTIME_BASE_DEFAULT = 500;
+   public static final String  DFS_HTTP_CLIENT_FAILOVER_SLEEPTIME_MAX_KEY = "dfs.http.client.failover.sleep.max.millis";
+   public static final int     DFS_HTTP_CLIENT_FAILOVER_SLEEPTIME_MAX_DEFAULT = 15000;
++  public static final String DFS_NFS_KEYTAB_FILE_KEY = "dfs.nfs.keytab.file";
++  public static final String DFS_NFS_USER_NAME_KEY = "dfs.nfs.kerberos.principal";
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index 9f8c6b4..90e7235 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -1264,6 +1264,26 @@
+     non-zero integer.
+   </description>
+ </property>
++<property>
++  <name>dfs.nfs.keytab.file</name>
++  <value></value>
++  <description>
++    *Note*: Advanced property. Change with caution.
++    This is the path to the keytab file for the hdfs-nfs gateway.
++    This is required when the cluster is kerberized.
++  </description>
++</property>
++
++<property>
++  <name>dfs.nfs.kerberos.principal</name>
++  <value></value>
++  <description>
++    *Note*: Advanced property. Change with caution.
++    This is the name of the kerberos principal. This is required when
++    the cluster is kerberized.It must be of this format:
++    nfs-gateway-user/nfs-gateway-host@kerberos-realm
++  </description>
++</property>
+ 
+ <property>
+   <name>dfs.webhdfs.enabled</name>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index e976ebd..d99692d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -46,8 +46,38 @@ HDFS NFS Gateway
+ 
+ * {Configuration}
+ 
+-   NFS gateway can work with its default settings in most cases. However, it's
+-   strongly recommended for the users to update a few configuration properties based on their use
++   The user running the NFS-gateway must be able to proxy all the users using the NFS mounts. 
++   For instance, if user 'nfsserver' is running the gateway, and users belonging to the groups 'nfs-users1'
++   and 'nfs-users2' use the NFS mounts, then in core-site.xml of the namenode, the following must be set:
++----
++<property>
++  <name>hadoop.proxyuser.nfsserver.groups</name>
++  <value>nfs-users1,nfs-users2</value>
++  <description>
++         The 'nfsserver' user is allowed to proxy all members of the 'nfs-users1' and 'nfs-users2' groups. Set this to '*' to allow nfsserver user to proxy any group.
++  </description>
++</property>
++<property>
++  <name>hadoop.proxyuser.nfsserver.hosts</name>
++  <value>nfs-client-host1.com</value>
++  <description>
++         This is the host where the nfs gateway is running. Set this to '*' to allow requests from any hosts to be proxied.
++  </description>
++</property>
++----
++   The above are the only required configuration for the NFS gateway in non-secure mode. For Kerberized
++   hadoop clusters, the following configurations need to be added to hdfs-site.xml:
++----
++<property>
++  <name>dfs.nfsgateway.keytab.file</name>
++  <value>/etc/hadoop/conf/nfsserver.keytab</value> <!-- path to the nfs gateway keytab -->
++</property>
++<property>
++  <name>dfs.nfsgateway.kerberos.principal</name>
++  <value>nfsserver/_HOST@YOUR-REALM.COM</value>
++</property>
++----
++   It's strongly recommended for the users to update a few configuration properties based on their use
+    cases. All the related configuration properties can be added or updated in hdfs-site.xml.
+   
+    * If the client mounts the export with access time update allowed, make sure the following 
+-- 
+1.7.0.4
+

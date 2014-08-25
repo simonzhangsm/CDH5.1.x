@@ -1,0 +1,224 @@
+From fa30cfe8b21fe1146390d34f16fbe86265024d9e Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Mon, 3 Mar 2014 22:31:17 +0000
+Subject: [PATCH 515/795] HDFS-6042. Fix rolling upgrade documentation and error messages. (Contributed by szetszwo)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1573785 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 090fa483cbc7090323709f50d75143271c6018ae)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    3 ++
+ .../hdfs/server/common/HdfsServerConstants.java    |   30 +++++++------------
+ .../hadoop/hdfs/server/namenode/FSImage.java       |   19 ++++++++----
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    3 +-
+ .../src/site/xdoc/HdfsRollingUpgrade.xml           |   17 ++++++-----
+ 5 files changed, 37 insertions(+), 35 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index 976d30e..1bc6d03 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -134,3 +134,6 @@ HDFS-5535 subtasks:
+     HDFS-6013. add rollingUpgrade information to latest UI.
+     (Vinayakumar B via wheat9)
+ 
++    HDFS-6042. Fix rolling upgrade documentation and error messages. (szetszwo
++    via Arpit Agarwal)
++
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+index 950b83b..6aab9a5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+@@ -50,7 +50,17 @@ private HdfsServerConstants() { }
+   /** Startup options for rolling upgrade. */
+   public static enum RollingUpgradeStartupOption{
+     ROLLBACK, DOWNGRADE, STARTED;
+-    
++
++    public String getOptionString() {
++      return StartupOption.ROLLINGUPGRADE.getName() + " "
++          + name().toLowerCase();
++    }
++
++    public boolean matches(StartupOption option) {
++      return option == StartupOption.ROLLINGUPGRADE
++          && option.getRollingUpgradeStartupOption() == this;
++    }
++
+     private static final RollingUpgradeStartupOption[] VALUES = values();
+ 
+     static RollingUpgradeStartupOption fromString(String s) {
+@@ -87,24 +97,6 @@ static RollingUpgradeStartupOption fromString(String s) {
+     private static final Pattern ENUM_WITH_ROLLING_UPGRADE_OPTION = Pattern.compile(
+         "(\\w+)\\((\\w+)\\)");
+ 
+-    public static boolean isRollingUpgradeRollback(StartupOption option) {
+-      return option == ROLLINGUPGRADE
+-          && option.getRollingUpgradeStartupOption() 
+-               == RollingUpgradeStartupOption.ROLLBACK;
+-    }
+-
+-    public static boolean isRollingUpgradeDowngrade(StartupOption option) {
+-      return option == ROLLINGUPGRADE
+-          && option.getRollingUpgradeStartupOption()
+-               == RollingUpgradeStartupOption.DOWNGRADE;
+-    }
+-
+-    public static boolean isRollingUpgradeStarted(StartupOption option) {
+-      return option == ROLLINGUPGRADE
+-          && option.getRollingUpgradeStartupOption() 
+-               == RollingUpgradeStartupOption.STARTED;
+-    }
+-
+     private final String name;
+     
+     // Used only with format and upgrade options
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index 33464a7..6fc11d5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -46,6 +46,7 @@
+ import org.apache.hadoop.hdfs.protocol.LayoutVersion.Feature;
+ import org.apache.hadoop.hdfs.server.common.Storage.FormatConfirmable;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.RollingUpgradeStartupOption;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
+ import org.apache.hadoop.hdfs.server.common.Storage;
+@@ -221,14 +222,18 @@ boolean recoverTransitionRead(StartupOption startOpt, FSNamesystem target,
+       NNStorage.checkVersionUpgradable(storage.getLayoutVersion());
+     }
+     if (startOpt != StartupOption.UPGRADE
+-        && !StartupOption.isRollingUpgradeStarted(startOpt)
++        && !RollingUpgradeStartupOption.STARTED.matches(startOpt)
+         && layoutVersion < Storage.LAST_PRE_UPGRADE_LAYOUT_VERSION
+         && layoutVersion != HdfsConstants.NAMENODE_LAYOUT_VERSION) {
+       throw new IOException(
+           "\nFile system image contains an old layout version " 
+           + storage.getLayoutVersion() + ".\nAn upgrade to version "
+           + HdfsConstants.NAMENODE_LAYOUT_VERSION + " is required.\n"
+-          + "Please restart NameNode with -upgrade option.");
++          + "Please restart NameNode with the \""
++          + RollingUpgradeStartupOption.STARTED.getOptionString()
++          + "\" option if a rolling upgraded is already started;"
++          + " or restart NameNode with the \""
++          + StartupOption.UPGRADE + "\" to start a new upgrade.");
+     }
+     
+     storage.processStartupOptionsForUpgrade(startOpt, layoutVersion);
+@@ -572,8 +577,8 @@ void reloadFromImageFile(File file, FSNamesystem target) throws IOException {
+   private boolean loadFSImage(FSNamesystem target, StartupOption startOpt,
+       MetaRecoveryContext recovery)
+       throws IOException {
+-    final boolean rollingRollback = StartupOption
+-        .isRollingUpgradeRollback(startOpt);
++    final boolean rollingRollback
++        = RollingUpgradeStartupOption.ROLLBACK.matches(startOpt);
+     final EnumSet<NameNodeFile> nnfs;
+     if (rollingRollback) {
+       // if it is rollback of rolling upgrade, only load from the rollback image
+@@ -657,7 +662,7 @@ private boolean loadFSImage(FSNamesystem target, StartupOption startOpt,
+       long txnsAdvanced = loadEdits(editStreams, target, startOpt, recovery);
+       needToSave |= needsResaveBasedOnStaleCheckpoint(imageFile.getFile(),
+           txnsAdvanced);
+-      if (StartupOption.isRollingUpgradeDowngrade(startOpt)) {
++      if (RollingUpgradeStartupOption.DOWNGRADE.matches(startOpt)) {
+         // purge rollback image if it is downgrade
+         archivalManager.purgeCheckpoints(NameNodeFile.IMAGE_ROLLBACK);
+       }
+@@ -728,8 +733,8 @@ public void initEditLog(StartupOption startOpt) throws IOException {
+       editLog.initJournalsForWrite();
+       editLog.recoverUnclosedStreams();
+     } else if (HAUtil.isHAEnabled(conf, nameserviceId)
+-        && (startOpt == StartupOption.UPGRADE || StartupOption
+-            .isRollingUpgradeRollback(startOpt))) {
++        && (startOpt == StartupOption.UPGRADE
++            || RollingUpgradeStartupOption.ROLLBACK.matches(startOpt))) {
+       // This NN is HA, but we're doing an upgrade or a rollback of rolling
+       // upgrade so init the edit log for write.
+       editLog.initJournalsForWrite();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 76ce640..d3ffea0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -197,6 +197,7 @@
+ import org.apache.hadoop.hdfs.server.common.GenerationStamp;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.RollingUpgradeStartupOption;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.Storage;
+ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirType;
+@@ -877,7 +878,7 @@ private void loadFSImage(StartupOption startOpt) throws IOException {
+       MetaRecoveryContext recovery = startOpt.createRecoveryContext();
+       final boolean staleImage
+           = fsImage.recoverTransitionRead(startOpt, this, recovery);
+-      if (StartupOption.isRollingUpgradeRollback(startOpt)) {
++      if (RollingUpgradeStartupOption.ROLLBACK.matches(startOpt)) {
+         rollingUpgradeInfo = null;
+       }
+       final boolean needToSave = staleImage && !haEnabled && !isRollingUpgrade(); 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml b/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
+index e90b710..e5612d8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
+@@ -65,15 +65,16 @@
+     The following are the steps for upgrading a HA cluster:
+   </p>
+   <ol>
+-    <li>Prepare Rolling Upgrade<ul>
++    <li>Prepare Rolling Upgrade<ol>
+       <li>Run "<code><a href="#dfsadmin_-rollingUpgrade">hdfs dfsadmin -rollingUpgrade prepare</a></code>"
+         to create a fsimage for rollback.
+       </li>
+       <li>Run "<code><a href="#dfsadmin_-rollingUpgrade">hdfs dfsadmin -rollingUpgrade query</a></code>"
+         to check the status of the rollback image.
+-        Wait and re-run the command until the "Proceed with rolling upgrade" message is shown.
++        Wait and re-run the command until
++        the "<tt>Proceed with rolling upgrade</tt>" message is shown.
+       </li>
+-    </ul></li>
++    </ol></li>
+     <li>Upgrade Active and Standby <em>NNs</em><ol>
+       <li>Shutdown and upgrade <em>NN2</em>.</li>
+       <li>Start <em>NN2</em> as standby with the
+@@ -92,7 +93,7 @@
+         <li>Run "<code><a href="#dfsadmin_-getDatanodeInfo">hdfs dfsadmin -getDatanodeInfo &lt;DATANODE_HOST:IPC_PORT&gt;</a></code>"
+           to check and wait for the datanode to shutdown.</li>
+         <li>Upgrade and restart the datanode.</li>
+-        <li>Repeat the above steps for all the chosen datanodes in the subset.</li>
++        <li>Perform the above steps for all the chosen datanodes in the subset in parallel.</li>
+       </ol>
+       <li>Repeat the above steps until all datanodes in the cluster are upgraded.</li>
+     </ol></li>
+@@ -137,7 +138,7 @@
+     <li>Upgrade <em>NN</em> and <em>SNN</em><ol>
+       <li>Shutdown <em>SNN</em></li>
+       <li>Shutdown and upgrade <em>NN</em>.</li>
+-      <li>Start <em>NN</em> as standby with the
++      <li>Start <em>NN</em> with the
+         "<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade started</code></a>" option.</li>
+       <li>Upgrade and restart <em>SNN</em></li>
+     </ol></li>
+@@ -149,7 +150,7 @@
+   <p>
+     When the upgraded release is undesirable
+     or, in some unlikely case, the upgrade fails (due to bugs in the newer release),
+-    administrators may choose to downgrade HDFS back to the pre-upgrade release
++    administrators may choose to downgrade HDFS back to the pre-upgrade release,
+     or rollback HDFS to the pre-upgrade release and the pre-upgrade state.
+     Both downgrade and rollback require cluster downtime and are not done in a rolling fashion.
+   </p>
+@@ -157,8 +158,8 @@
+     Note that downgrade and rollback are possible only after a rolling upgrade is started and
+     before the upgrade is terminated.
+     An upgrade can be terminated by either finalize, downgrade or rollback.
+-    Therefore, it is impossible to run rollback after finalize or downgrade,
+-    or to run downgrade after finalize.
++    Therefore, it may not be possible to perform rollback after finalize or downgrade,
++    or to perform downgrade after finalize.
+   </p>
+ 
+   <subsection name="Downgrade" id="Downgrade">
+-- 
+1.7.0.4
+

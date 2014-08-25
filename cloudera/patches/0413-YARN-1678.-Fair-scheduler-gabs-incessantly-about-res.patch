@@ -1,0 +1,115 @@
+From a0fe4b846ac67a01040b346e2c3494193ef3ec15 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Mon, 24 Feb 2014 22:35:27 +0000
+Subject: [PATCH 413/795] YARN-1678. Fair scheduler gabs incessantly about reservations (Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1571468 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit ea6bd776e92ee7c018dfcb3cf7a02323804d9dc9)
+---
+ .../scheduler/fair/AppSchedulable.java             |   53 +++++++++++++++----
+ .../scheduler/fair/FairScheduler.java              |   10 ++--
+ 2 files changed, 48 insertions(+), 15 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+index 98451ea..e99e98e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+@@ -205,6 +205,22 @@ public void unreserve(Priority priority, FSSchedulerNode node) {
+    * Assign a container to this node to facilitate {@code request}. If node does
+    * not have enough memory, create a reservation. This is called once we are
+    * sure the particular request should be facilitated by this node.
++   * 
++   * @param node
++   *     The node to try placing the container on.
++   * @param priority
++   *     The requested priority for the container.
++   * @param request
++   *     The ResourceRequest we're trying to satisfy.
++   * @param type
++   *     The locality of the assignment.
++   * @param reserved
++   *     Whether there's already a container reserved for this app on the node.
++   * @return
++   *     If an assignment was made, returns the resources allocated to the
++   *     container.  If a reservation was made, returns
++   *     FairScheduler.CONTAINER_RESERVED.  If no assignment or reservation was
++   *     made, returns an empty resource.
+    */
+   private Resource assignContainer(FSSchedulerNode node,
+       ResourceRequest request, NodeType type,
+@@ -259,17 +275,6 @@ private Resource assignContainer(FSSchedulerNode node, boolean reserved) {
+       LOG.debug("Node offered to app: " + getName() + " reserved: " + reserved);
+     }
+ 
+-    if (reserved) {
+-      RMContainer rmContainer = node.getReservedContainer();
+-      Priority priority = rmContainer.getReservedPriority();
+-
+-      // Make sure the application still needs requests at this priority
+-      if (app.getTotalRequiredResources(priority) == 0) {
+-        unreserve(priority, node);
+-        return Resources.none();
+-      }
+-    }
+-
+     Collection<Priority> prioritiesToTry = (reserved) ? 
+         Arrays.asList(node.getReservedContainer().getReservedPriority()) : 
+         app.getPriorities();
+@@ -342,7 +347,33 @@ private Resource assignContainer(FSSchedulerNode node, boolean reserved) {
+     return Resources.none();
+   }
+ 
++  /**
++   * Called when this application already has an existing reservation on the
++   * given node.  Sees whether we can turn the reservation into an allocation.
++   * Also checks whether the application needs the reservation anymore, and
++   * releases it if not.
++   * 
++   * @param node
++   *     Node that the application has an existing reservation on
++   */
+   public Resource assignReservedContainer(FSSchedulerNode node) {
++    RMContainer rmContainer = node.getReservedContainer();
++    Priority priority = rmContainer.getReservedPriority();
++
++    // Make sure the application still needs requests at this priority
++    if (app.getTotalRequiredResources(priority) == 0) {
++      unreserve(priority, node);
++      return Resources.none();
++    }
++    
++    // Fail early if the reserved container won't fit.
++    // Note that we have an assumption here that there's only one container size
++    // per priority.
++    if (!Resources.fitsIn(node.getReservedContainer().getReservedResource(),
++        node.getAvailableResource())) {
++      return Resources.none();
++    }
++    
+     return assignContainer(node, true);
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index e057e74..fc9387e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -1043,10 +1043,12 @@ private synchronized void attemptScheduling(FSSchedulerNode node) {
+         reservedAppSchedulable = null;
+       } else {
+         // Reservation exists; try to fulfill the reservation
+-        LOG.info("Trying to fulfill reservation for application "
+-            + reservedAppSchedulable.getApp().getApplicationAttemptId()
+-            + " on node: " + node);
+-
++        if (LOG.isDebugEnabled()) {
++          LOG.debug("Trying to fulfill reservation for application "
++              + reservedAppSchedulable.getApp().getApplicationAttemptId()
++              + " on node: " + node);
++        }
++        
+         node.getReservedAppSchedulable().assignReservedContainer(node);
+       }
+     }
+-- 
+1.7.0.4
+

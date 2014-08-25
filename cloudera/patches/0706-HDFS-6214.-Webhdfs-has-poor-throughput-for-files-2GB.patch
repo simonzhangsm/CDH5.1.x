@@ -1,0 +1,80 @@
+From 95ee8ba9dbbf0b4159619ebd54be4c81c79ea4df Mon Sep 17 00:00:00 2001
+From: Daryn Sharp <daryn@apache.org>
+Date: Wed, 16 Apr 2014 16:05:22 +0000
+Subject: [PATCH 706/795] HDFS-6214.  Webhdfs has poor throughput for files >2GB (daryn)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1587954 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../web/resources/DatanodeWebHdfsMethods.java      |   10 +++++++++-
+ .../server/datanode/web/resources/OpenEntity.java  |   16 ++++++++++++++--
+ 2 files changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/DatanodeWebHdfsMethods.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/DatanodeWebHdfsMethods.java
+index 5472731..87d766a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/DatanodeWebHdfsMethods.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/DatanodeWebHdfsMethods.java
+@@ -430,10 +430,18 @@ private Response get(
+         Math.min(length.getValue(), in.getVisibleLength() - offset.getValue()) :
+         in.getVisibleLength() - offset.getValue();
+ 
++      // jetty 6 reserves 12 bytes in the out buffer for chunked responses
++      // (file length > 2GB) which causes extremely poor performance when
++      // 12 bytes of the output spill into another buffer which results
++      // in a big and little write
++      int outBufferSize = response.getBufferSize();
++      if (n > Integer.MAX_VALUE) {
++        outBufferSize -= 12;
++      }
+       /**
+        * Allow the Web UI to perform an AJAX request to get the data.
+        */
+-      return Response.ok(new OpenEntity(in, n, dfsclient))
++      return Response.ok(new OpenEntity(in, n, outBufferSize, dfsclient))
+           .type(MediaType.APPLICATION_OCTET_STREAM)
+           .header("Access-Control-Allow-Methods", "GET")
+           .header("Access-Control-Allow-Origin", "*")
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/OpenEntity.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/OpenEntity.java
+index 98a53f8..9598c38 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/OpenEntity.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/OpenEntity.java
+@@ -37,12 +37,14 @@
+ public class OpenEntity {
+   private final HdfsDataInputStream in;
+   private final long length;
++  private final int outBufferSize;
+   private final DFSClient dfsclient;
+   
+   OpenEntity(final HdfsDataInputStream in, final long length,
+-      final DFSClient dfsclient) {
++      final int outBufferSize, final DFSClient dfsclient) {
+     this.in = in;
+     this.length = length;
++    this.outBufferSize = outBufferSize;
+     this.dfsclient = dfsclient;
+   }
+   
+@@ -71,7 +73,17 @@ public void writeTo(OpenEntity e, Class<?> type, Type genericType,
+         MultivaluedMap<String, Object> httpHeaders, OutputStream out
+         ) throws IOException {
+       try {
+-        IOUtils.copyBytes(e.in, out, e.length, false);
++        byte[] buf = new byte[e.outBufferSize];
++        long remaining = e.length;
++        while (remaining > 0) {
++          int read = e.in.read(buf, 0, (int)Math.min(buf.length, remaining));
++          if (read == -1) { // EOF
++            break;
++          }
++          out.write(buf, 0, read);
++          out.flush();
++          remaining -= read;
++        }
+       } finally {
+         IOUtils.cleanup(DatanodeWebHdfsMethods.LOG, e.in);
+         IOUtils.cleanup(DatanodeWebHdfsMethods.LOG, e.dfsclient);
+-- 
+1.7.0.4
+

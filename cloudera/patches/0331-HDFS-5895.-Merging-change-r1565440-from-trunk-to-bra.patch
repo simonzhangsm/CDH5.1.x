@@ -1,0 +1,31 @@
+From 627ab3a4de994cf7b415867f6e61e9b98efb76bb Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Thu, 6 Feb 2014 21:20:59 +0000
+Subject: [PATCH 331/795] HDFS-5895. Merging change r1565440 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1565442 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 73ef57caa8c1c6200b94e7d90a2c98e8c56964a0)
+(cherry picked from commit ef70a5a1beeeccaa087872d57c5de1686b0bb9d0)
+---
+ .../org/apache/hadoop/hdfs/tools/CacheAdmin.java   |    5 ++---
+ 1 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
+index b3538da..290e600 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
+@@ -962,9 +962,8 @@ public int run(Configuration conf, List<String> args) throws IOException {
+       if (numResults > 0) { 
+         System.out.print(listing);
+       }
+-      // If there are no results, we return 1 (failure exit code);
+-      // otherwise we return 0 (success exit code).
+-      return (numResults == 0) ? 1 : 0;
++      // If list pools succeed, we return 0 (success exit code)
++      return 0;
+     }
+   }
+ 
+-- 
+1.7.0.4
+

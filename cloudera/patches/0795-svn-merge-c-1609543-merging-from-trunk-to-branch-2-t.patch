@@ -1,0 +1,175 @@
+From 96ac69c30990d13edd1c3584ffef94b172a8c0a3 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Thu, 10 Jul 2014 18:19:40 +0000
+Subject: [PATCH 795/795] svn merge -c 1609543 merging from trunk to branch-2 to fix:HDFS-6647. Edit log corruption when pipeline recovery occurs for deleted file present in snapshot. Contributed by Kihwal Lee.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1609544 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 99c33e1b67bafb743fb56958b28a49851d0d6706)
+(cherry picked from commit 9885e972307c1c62b207f1db6cce3ee503dd9170)
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   17 +++-
+ .../snapshot/TestUpdatePipelineWithSnapshots.java  |  109 ++++++++++++++++++++
+ 2 files changed, 122 insertions(+), 4 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestUpdatePipelineWithSnapshots.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 15615f4..edb25f3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -3009,10 +3009,9 @@ private INodeFile checkLease(String src, String holder, INode inode,
+               : "Holder " + holder + " does not have any open files."));
+     }
+     // No further modification is allowed on a deleted file.
+-    // A file is considered deleted, if it has no parent or is marked
++    // A file is considered deleted, if it is not in the inodeMap or is marked
+     // as deleted in the snapshot feature.
+-    if (file.getParent() == null || (file.isWithSnapshot() &&
+-        file.getFileWithSnapshotFeature().isCurrentFileDeleted())) {
++    if (isFileDeleted(file)) {
+       throw new FileNotFoundException(src);
+     }
+     String clientName = file.getFileUnderConstructionFeature().getClientName();
+@@ -5934,6 +5933,16 @@ private long nextBlockId() throws IOException {
+     return blockId;
+   }
+ 
++  private boolean isFileDeleted(INodeFile file) {
++    // Not in the inodeMap or in the snapshot but marked deleted.
++    if (dir.getInode(file.getId()) == null || 
++        file.getParent() == null || (file.isWithSnapshot() &&
++        file.getFileWithSnapshotFeature().isCurrentFileDeleted())) {
++      return true;
++    }
++    return false;
++  }
++
+   private INodeFile checkUCBlock(ExtendedBlock block,
+       String clientName) throws IOException {
+     assert hasWriteLock();
+@@ -5950,7 +5959,7 @@ private INodeFile checkUCBlock(ExtendedBlock block,
+     
+     // check file inode
+     final INodeFile file = ((INode)storedBlock.getBlockCollection()).asFile();
+-    if (file == null || !file.isUnderConstruction()) {
++    if (file == null || !file.isUnderConstruction() || isFileDeleted(file)) {
+       throw new IOException("The file " + storedBlock + 
+           " belonged to does not exist or it is not under construction.");
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestUpdatePipelineWithSnapshots.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestUpdatePipelineWithSnapshots.java
+new file mode 100644
+index 0000000..c8955fa
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestUpdatePipelineWithSnapshots.java
+@@ -0,0 +1,109 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.namenode.snapshot;
++
++import java.io.IOException;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FSDataInputStream;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hdfs.DFSOutputStream;
++import org.apache.hadoop.hdfs.DFSTestUtil;
++import org.apache.hadoop.hdfs.DistributedFileSystem;
++import org.apache.hadoop.hdfs.HdfsConfiguration;
++import org.apache.hadoop.hdfs.MiniDFSCluster;
++import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
++import org.apache.hadoop.hdfs.protocol.LocatedBlock;
++import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
++import org.apache.hadoop.io.IOUtils;
++import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
++import org.junit.Test;
++
++public class TestUpdatePipelineWithSnapshots {
++  
++  // Regression test for HDFS-6647.
++  @Test
++  public void testUpdatePipelineAfterDelete() throws Exception {
++    Configuration conf = new HdfsConfiguration();
++    Path file = new Path("/test-file");    
++    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
++    
++    try {
++      FileSystem fs = cluster.getFileSystem();
++      NamenodeProtocols namenode = cluster.getNameNodeRpc();
++      DFSOutputStream out = null;
++      try {
++        // Create a file and make sure a block is allocated for it.
++        out = (DFSOutputStream)(fs.create(file).
++            getWrappedStream()); 
++        out.write(1);
++        out.hflush();
++        
++        // Create a snapshot that includes the file.
++        SnapshotTestHelper.createSnapshot((DistributedFileSystem) fs,
++            new Path("/"), "s1");
++        
++        // Grab the block info of this file for later use.
++        FSDataInputStream in = null;
++        ExtendedBlock oldBlock = null;
++        try {
++          in = fs.open(file);
++          oldBlock = DFSTestUtil.getAllBlocks(in).get(0).getBlock();
++        } finally {
++          IOUtils.closeStream(in);
++        }
++        
++        // Allocate a new block ID/gen stamp so we can simulate pipeline
++        // recovery.
++        String clientName = ((DistributedFileSystem)fs).getClient()
++            .getClientName();
++        LocatedBlock newLocatedBlock = namenode.updateBlockForPipeline(
++            oldBlock, clientName);
++        ExtendedBlock newBlock = new ExtendedBlock(oldBlock.getBlockPoolId(),
++            oldBlock.getBlockId(), oldBlock.getNumBytes(), 
++            newLocatedBlock.getBlock().getGenerationStamp());
++
++        // Delete the file from the present FS. It will still exist the
++        // previously-created snapshot. This will log an OP_DELETE for the
++        // file in question.
++        fs.delete(file, true);
++        
++        // Simulate a pipeline recovery, wherein a new block is allocated
++        // for the existing block, resulting in an OP_UPDATE_BLOCKS being
++        // logged for the file in question.
++        try {
++          namenode.updatePipeline(clientName, oldBlock, newBlock,
++              newLocatedBlock.getLocations(), newLocatedBlock.getStorageIDs());
++        } catch (IOException ioe) {
++          // normal
++          assertExceptionContains(
++              "does not exist or it is not under construction", ioe);
++        }
++        
++        // Make sure the NN can restart with the edit logs as we have them now.
++        cluster.restartNameNode(true);
++      } finally {
++        IOUtils.closeStream(out);
++      }
++    } finally {
++      cluster.shutdown();
++    }
++  }
++
++}
+-- 
+1.7.0.4
+

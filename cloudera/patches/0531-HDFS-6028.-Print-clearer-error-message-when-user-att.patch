@@ -1,0 +1,27 @@
+From d23919c0a9fa2f19724f3aa4d05fe49173c49ed1 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Thu, 27 Feb 2014 22:12:34 +0000
+Subject: [PATCH 531/795] HDFS-6028. Print clearer error message when user attempts to delete required mask entry from ACL. Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1572753 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0c929c20989a79e2397abf75bf71257b6ff31557)
+---
+ .../hdfs/server/namenode/AclTransformation.java    |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/AclTransformation.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/AclTransformation.java
+index 44a2f3d..3a3f920 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/AclTransformation.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/AclTransformation.java
+@@ -365,7 +365,7 @@ private static void calculateMasks(List<AclEntry> aclBuilder,
+           maskDirty.contains(scope)) {
+         // Caller explicitly removed mask entry, but it's required.
+         throw new AclException(
+-          "Invalid ACL: mask is required, but it was deleted.");
++          "Invalid ACL: mask is required and cannot be deleted.");
+       } else if (providedMask.containsKey(scope) &&
+           (!scopeDirty.contains(scope) || maskDirty.contains(scope))) {
+         // Caller explicitly provided new mask, or we are preserving the existing
+-- 
+1.7.0.4
+

@@ -1,0 +1,48 @@
+From 3ce6695c02c47f9594efe39a1abfec07e8613e56 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Fri, 7 Feb 2014 23:31:57 +0000
+Subject: [PATCH 354/795] HDFS-5882. TestAuditLogs is flaky (jxiang via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1565848 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7f7d30e6995c066e1225240249c6797e9efb54ad)
+(cherry picked from commit b05a05d11598e925b6b6d38f8163ca1bc98bee29)
+---
+ .../hadoop/hdfs/server/namenode/TestAuditLogs.java |   12 ++++++++++--
+ 1 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAuditLogs.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAuditLogs.java
+index 0757355..2591aee 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAuditLogs.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAuditLogs.java
+@@ -28,6 +28,7 @@
+ import java.util.ArrayList;
+ import java.util.Collection;
+ import java.util.Collections;
++import java.util.Enumeration;
+ import java.util.List;
+ import java.util.regex.Pattern;
+ 
+@@ -301,11 +302,18 @@ private void verifyAuditLogsRepeat(boolean expectSuccess, int ndupe)
+     // Turn off the logs
+     Logger logger = ((Log4JLogger) FSNamesystem.auditLog).getLogger();
+     logger.setLevel(Level.OFF);
+-    
++
++    // Close the appenders and force all logs to be flushed
++    Enumeration<?> appenders = logger.getAllAppenders();
++    while (appenders.hasMoreElements()) {
++      Appender appender = (Appender)appenders.nextElement();
++      appender.close();
++    }
++
+     BufferedReader reader = new BufferedReader(new FileReader(auditLogFile));
+     String line = null;
+     boolean ret = true;
+-   
++
+     try {
+       for (int i = 0; i < ndupe; i++) {
+         line = reader.readLine();
+-- 
+1.7.0.4
+

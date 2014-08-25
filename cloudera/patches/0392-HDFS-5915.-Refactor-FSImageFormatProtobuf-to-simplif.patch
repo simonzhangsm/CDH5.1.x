@@ -1,0 +1,430 @@
+From e9155eaeb39eb766e5a6b9213c7897fa60cb4df9 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Sat, 15 Feb 2014 00:16:27 +0000
+Subject: [PATCH 392/795] HDFS-5915. Refactor FSImageFormatProtobuf to simplify cross section reads. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568552 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 991d99a5b8d0c4789d2ae33aa569184cac2b8ca7)
+---
+ .../hdfs/server/namenode/FSImageFormatPBINode.java |   29 +++---
+ .../server/namenode/FSImageFormatProtobuf.java     |  102 ++++++++++++--------
+ .../namenode/snapshot/FSImageFormatPBSnapshot.java |   16 ++--
+ .../hdfs/server/namenode/TestDeduplicationMap.java |   36 +++++++
+ .../namenode/TestFSImageStorageInspector.java      |    5 -
+ 5 files changed, 121 insertions(+), 67 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeduplicationMap.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
+index 5ade5ce..43bbfdb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
+@@ -38,7 +38,7 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstruction;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+-import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.StringMap;
++import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.SaverContext;
+ import org.apache.hadoop.hdfs.server.namenode.FsImageProto.FileSummary;
+ import org.apache.hadoop.hdfs.server.namenode.FsImageProto.FilesUnderConstructionSection.FileUnderConstructionEntry;
+ import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeDirectorySection;
+@@ -208,7 +208,7 @@ private INode loadINode(INodeSection.INode n) {
+       case FILE:
+         return loadINodeFile(n);
+       case DIRECTORY:
+-        return loadINodeDirectory(n, parent.getStringTable());
++        return loadINodeDirectory(n, parent.getLoaderContext().getStringTable());
+       case SYMLINK:
+         return loadINodeSymlink(n);
+       default:
+@@ -228,7 +228,7 @@ private INodeFile loadINodeFile(INodeSection.INode n) {
+         blocks[i] = new BlockInfo(PBHelper.convert(bp.get(i)), replication);
+       }
+       final PermissionStatus permissions = loadPermission(f.getPermission(),
+-          parent.getStringTable());
++          parent.getLoaderContext().getStringTable());
+ 
+       final INodeFile file = new INodeFile(n.getId(),
+           n.getName().toByteArray(), permissions, f.getModificationTime(),
+@@ -253,13 +253,14 @@ private INodeSymlink loadINodeSymlink(INodeSection.INode n) {
+       assert n.getType() == INodeSection.INode.Type.SYMLINK;
+       INodeSection.INodeSymlink s = n.getSymlink();
+       final PermissionStatus permissions = loadPermission(s.getPermission(),
+-          parent.getStringTable());
++          parent.getLoaderContext().getStringTable());
+       return new INodeSymlink(n.getId(), n.getName().toByteArray(), permissions,
+           0, 0, s.getTarget().toStringUtf8());
+     }
+ 
+     private void loadRootINode(INodeSection.INode p) {
+-      INodeDirectory root = loadINodeDirectory(p, parent.getStringTable());
++      INodeDirectory root = loadINodeDirectory(p, parent.getLoaderContext()
++          .getStringTable());
+       final Quota.Counts q = root.getQuotaCounts();
+       final long nsQuota = q.get(Quota.NAMESPACE);
+       final long dsQuota = q.get(Quota.DISKSPACE);
+@@ -273,16 +274,17 @@ private void loadRootINode(INodeSection.INode p) {
+ 
+   public final static class Saver {
+     private static long buildPermissionStatus(INodeAttributes n,
+-        final StringMap stringMap) {
+-      long userId = stringMap.getStringId(n.getUserName());
+-      long groupId = stringMap.getStringId(n.getGroupName());
++        final SaverContext.DeduplicationMap<String> stringMap) {
++      long userId = stringMap.getId(n.getUserName());
++      long groupId = stringMap.getId(n.getGroupName());
+       return ((userId & USER_GROUP_STRID_MASK) << USER_STRID_OFFSET)
+           | ((groupId & USER_GROUP_STRID_MASK) << GROUP_STRID_OFFSET)
+           | n.getFsPermissionShort();
+     }
+ 
+     public static INodeSection.INodeFile.Builder buildINodeFile(
+-        INodeFileAttributes file, final StringMap stringMap) {
++        INodeFileAttributes file,
++        final SaverContext.DeduplicationMap<String> stringMap) {
+       INodeSection.INodeFile.Builder b = INodeSection.INodeFile.newBuilder()
+           .setAccessTime(file.getAccessTime())
+           .setModificationTime(file.getModificationTime())
+@@ -293,7 +295,8 @@ private static long buildPermissionStatus(INodeAttributes n,
+     }
+ 
+     public static INodeSection.INodeDirectory.Builder buildINodeDirectory(
+-        INodeDirectoryAttributes dir, final StringMap stringMap) {
++        INodeDirectoryAttributes dir,
++        final SaverContext.DeduplicationMap<String> stringMap) {
+       Quota.Counts quota = dir.getQuotaCounts();
+       INodeSection.INodeDirectory.Builder b = INodeSection.INodeDirectory
+           .newBuilder().setModificationTime(dir.getModificationTime())
+@@ -416,7 +419,7 @@ private void save(OutputStream out, INode n) throws IOException {
+ 
+     private void save(OutputStream out, INodeDirectory n) throws IOException {
+       INodeSection.INodeDirectory.Builder b = buildINodeDirectory(n,
+-          parent.getStringMap());
++          parent.getSaverContext().getStringMap());
+       INodeSection.INode r = buildINodeCommon(n)
+           .setType(INodeSection.INode.Type.DIRECTORY).setDirectory(b).build();
+       r.writeDelimitedTo(out);
+@@ -424,7 +427,7 @@ private void save(OutputStream out, INodeDirectory n) throws IOException {
+ 
+     private void save(OutputStream out, INodeFile n) throws IOException {
+       INodeSection.INodeFile.Builder b = buildINodeFile(n,
+-          parent.getStringMap());
++          parent.getSaverContext().getStringMap());
+ 
+       for (Block block : n.getBlocks()) {
+         b.addBlocks(PBHelper.convert(block));
+@@ -447,7 +450,7 @@ private void save(OutputStream out, INodeFile n) throws IOException {
+     private void save(OutputStream out, INodeSymlink n) throws IOException {
+       INodeSection.INodeSymlink.Builder b = INodeSection.INodeSymlink
+           .newBuilder()
+-          .setPermission(buildPermissionStatus(n, parent.getStringMap()))
++          .setPermission(buildPermissionStatus(n, parent.getSaverContext().getStringMap()))
+           .setTarget(ByteString.copyFrom(n.getSymlink()));
+       INodeSection.INode r = buildINodeCommon(n)
+           .setType(INodeSection.INode.Type.SYMLINK).setSymlink(b).build();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatProtobuf.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatProtobuf.java
+index 2edc57b..c03ba60 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatProtobuf.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatProtobuf.java
+@@ -73,12 +73,56 @@
+ public final class FSImageFormatProtobuf {
+   private static final Log LOG = LogFactory.getLog(FSImageFormatProtobuf.class);
+ 
++  public static final class LoaderContext {
++    private String[] stringTable;
++
++    public String[] getStringTable() {
++      return stringTable;
++    }
++  }
++
++  public static final class SaverContext {
++    public static class DeduplicationMap<E> {
++      private final Map<E, Integer> map = Maps.newHashMap();
++      private DeduplicationMap() {}
++
++      static <T> DeduplicationMap<T> newMap() {
++        return new DeduplicationMap<T>();
++      }
++
++      int getId(E value) {
++        if (value == null) {
++          return 0;
++        }
++        Integer v = map.get(value);
++        if (v == null) {
++          int nv = map.size() + 1;
++          map.put(value, nv);
++          return nv;
++        }
++        return v;
++      }
++
++      int size() {
++        return map.size();
++      }
++
++      Set<Entry<E, Integer>> entrySet() {
++        return map.entrySet();
++      }
++    }
++    private final DeduplicationMap<String> stringMap = DeduplicationMap.newMap();
++
++    public DeduplicationMap<String> getStringMap() {
++      return stringMap;
++    }
++  }
++
+   public static final class Loader implements FSImageFormat.AbstractLoader {
+     static final int MINIMUM_FILE_LENGTH = 8;
+     private final Configuration conf;
+     private final FSNamesystem fsn;
+-
+-    private String[] stringTable;
++    private final LoaderContext ctx;
+ 
+     /** The MD5 sum of the loaded file */
+     private MD5Hash imgDigest;
+@@ -88,6 +132,7 @@
+     Loader(Configuration conf, FSNamesystem fsn) {
+       this.conf = conf;
+       this.fsn = fsn;
++      this.ctx = new LoaderContext();
+     }
+ 
+     @Override
+@@ -100,8 +145,8 @@ public long getLoadedImageTxId() {
+       return imgTxId;
+     }
+ 
+-    public String[] getStringTable() {
+-      return stringTable;
++    public LoaderContext getLoaderContext() {
++      return ctx;
+     }
+ 
+     void load(File file) throws IOException {
+@@ -226,11 +271,11 @@ private void loadNameSystemSection(InputStream in) throws IOException {
+ 
+     private void loadStringTableSection(InputStream in) throws IOException {
+       StringTableSection s = StringTableSection.parseDelimitedFrom(in);
+-      stringTable = new String[s.getNumEntry() + 1];
++      ctx.stringTable = new String[s.getNumEntry() + 1];
+       for (int i = 0; i < s.getNumEntry(); ++i) {
+         StringTableSection.Entry e = StringTableSection.Entry
+             .parseDelimitedFrom(in);
+-        stringTable[e.getId()] = e.getStr();
++        ctx.stringTable[e.getId()] = e.getStr();
+       }
+     }
+ 
+@@ -269,9 +314,10 @@ private void loadCacheManagerSection(InputStream in) throws IOException {
+ 
+   public static final class Saver {
+     private final SaveNamespaceContext context;
++    private final SaverContext saverContext;
++
+     private long currentOffset = FSImageUtil.MAGIC_HEADER.length;
+     private MD5Hash savedDigest;
+-    private StringMap stringMap = new StringMap();
+ 
+     private FileChannel fileChannel;
+     // OutputStream for the section data
+@@ -282,6 +328,7 @@ private void loadCacheManagerSection(InputStream in) throws IOException {
+ 
+     Saver(SaveNamespaceContext context) {
+       this.context = context;
++      this.saverContext = new SaverContext();
+     }
+ 
+     public MD5Hash getSavedDigest() {
+@@ -292,6 +339,10 @@ public SaveNamespaceContext getContext() {
+       return context;
+     }
+ 
++    public SaverContext getSaverContext() {
++      return saverContext;
++    }
++
+     public void commitSection(FileSummary.Builder summary, SectionName name)
+         throws IOException {
+       long oldOffset = currentOffset;
+@@ -465,48 +516,15 @@ private void saveStringTableSection(FileSummary.Builder summary)
+         throws IOException {
+       OutputStream out = sectionOutputStream;
+       StringTableSection.Builder b = StringTableSection.newBuilder()
+-          .setNumEntry(stringMap.size());
++          .setNumEntry(saverContext.stringMap.size());
+       b.build().writeDelimitedTo(out);
+-      for (Entry<String, Integer> e : stringMap.entrySet()) {
++      for (Entry<String, Integer> e : saverContext.stringMap.entrySet()) {
+         StringTableSection.Entry.Builder eb = StringTableSection.Entry
+             .newBuilder().setId(e.getValue()).setStr(e.getKey());
+         eb.build().writeDelimitedTo(out);
+       }
+       commitSection(summary, SectionName.STRING_TABLE);
+     }
+-
+-    public StringMap getStringMap() {
+-      return stringMap;
+-    }
+-  }
+-
+-  public static class StringMap {
+-    private final Map<String, Integer> stringMap;
+-
+-    public StringMap() {
+-      stringMap = Maps.newHashMap();
+-    }
+-
+-    int getStringId(String str) {
+-      if (str == null) {
+-        return 0;
+-      }
+-      Integer v = stringMap.get(str);
+-      if (v == null) {
+-        int nv = stringMap.size() + 1;
+-        stringMap.put(str, nv);
+-        return nv;
+-      }
+-      return v;
+-    }
+-
+-    int size() {
+-      return stringMap.size();
+-    }
+-
+-    Set<Entry<String, Integer>> entrySet() {
+-      return stringMap.entrySet();
+-    }
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
+index 06cc1d0..b64a3db 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
+@@ -115,7 +115,7 @@ private void loadSnapshots(InputStream in, int size) throws IOException {
+         SnapshotSection.Snapshot pbs = SnapshotSection.Snapshot
+             .parseDelimitedFrom(in);
+         INodeDirectory root = loadINodeDirectory(pbs.getRoot(),
+-            parent.getStringTable());
++            parent.getLoaderContext().getStringTable());
+         int sid = pbs.getSnapshotId();
+         INodeDirectorySnapshottable parent = (INodeDirectorySnapshottable) fsDir
+             .getInode(root.getId()).asDirectory();
+@@ -162,7 +162,8 @@ private void loadFileDiffList(InputStream in, INodeFile file, int size)
+         if (pbf.hasSnapshotCopy()) {
+           INodeSection.INodeFile fileInPb = pbf.getSnapshotCopy();
+           PermissionStatus permission = loadPermission(
+-              fileInPb.getPermission(), parent.getStringTable());
++              fileInPb.getPermission(), parent.getLoaderContext()
++                  .getStringTable());
+           copy = new INodeFileAttributes.SnapshotCopy(pbf.getName()
+               .toByteArray(), permission, fileInPb.getModificationTime(),
+               fileInPb.getAccessTime(), (short) fileInPb.getReplication(),
+@@ -249,8 +250,9 @@ private void loadDirectoryDiffList(InputStream in, INodeDirectory dir,
+         }else if (diffInPb.hasSnapshotCopy()) {
+           INodeSection.INodeDirectory dirCopyInPb = diffInPb.getSnapshotCopy();
+           final byte[] name = diffInPb.getName().toByteArray();
+-          PermissionStatus permission = loadPermission(dirCopyInPb
+-              .getPermission(), parent.getStringTable());
++          PermissionStatus permission = loadPermission(
++              dirCopyInPb.getPermission(), parent.getLoaderContext()
++                  .getStringTable());
+           long modTime = dirCopyInPb.getModificationTime();
+           boolean noQuota = dirCopyInPb.getNsQuota() == -1
+               && dirCopyInPb.getDsQuota() == -1;
+@@ -311,7 +313,7 @@ public void serializeSnapshotSection(OutputStream out) throws IOException {
+           SnapshotSection.Snapshot.Builder sb = SnapshotSection.Snapshot
+               .newBuilder().setSnapshotId(s.getId());
+           INodeSection.INodeDirectory.Builder db = buildINodeDirectory(sroot,
+-              parent.getStringMap());
++              parent.getSaverContext().getStringMap());
+           INodeSection.INode r = INodeSection.INode.newBuilder()
+               .setId(sroot.getId())
+               .setType(INodeSection.INode.Type.DIRECTORY)
+@@ -369,7 +371,7 @@ private void serializeFileDiffList(INodeFile file, OutputStream out)
+           INodeFileAttributes copy = diff.snapshotINode;
+           if (copy != null) {
+             fb.setName(ByteString.copyFrom(copy.getLocalNameBytes()))
+-                .setSnapshotCopy(buildINodeFile(copy, parent.getStringMap()));
++                .setSnapshotCopy(buildINodeFile(copy, parent.getSaverContext().getStringMap()));
+           }
+           fb.build().writeDelimitedTo(out);
+         }
+@@ -410,7 +412,7 @@ private void serializeDirDiffList(INodeDirectory dir, OutputStream out)
+           if (!diff.isSnapshotRoot() && copy != null) {
+             db.setName(ByteString.copyFrom(copy.getLocalNameBytes()))
+                 .setSnapshotCopy(
+-                    buildINodeDirectory(copy, parent.getStringMap()));
++                    buildINodeDirectory(copy, parent.getSaverContext().getStringMap()));
+           }
+           // process created list and deleted list
+           List<INode> created = diff.getChildrenDiff()
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeduplicationMap.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeduplicationMap.java
+new file mode 100644
+index 0000000..447c7eb
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeduplicationMap.java
+@@ -0,0 +1,36 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.hdfs.server.namenode;
++
++import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.SaverContext.DeduplicationMap;
++import org.junit.Assert;
++import org.junit.Test;
++
++public class TestDeduplicationMap {
++  @Test
++  public void testDeduplicationMap() {
++    DeduplicationMap<String> m = DeduplicationMap.newMap();
++    Assert.assertEquals(1, m.getId("1"));
++    Assert.assertEquals(2, m.getId("2"));
++    Assert.assertEquals(3, m.getId("3"));
++    Assert.assertEquals(1, m.getId("1"));
++    Assert.assertEquals(2, m.getId("2"));
++    Assert.assertEquals(3, m.getId("3"));
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageStorageInspector.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageStorageInspector.java
+index 5e3ac4b..bb03b30 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageStorageInspector.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageStorageInspector.java
+@@ -27,17 +27,12 @@
+ import java.io.File;
+ import java.io.IOException;
+ 
+-import org.apache.commons.logging.Log;
+-import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.FSImageStorageInspector.FSImageFile;
+ import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
+ import org.junit.Test;
+ 
+ public class TestFSImageStorageInspector {
+-  private static final Log LOG = LogFactory.getLog(
+-      TestFSImageStorageInspector.class);
+-
+   /**
+    * Simple test with image, edits, and inprogress edits
+    */
+-- 
+1.7.0.4
+

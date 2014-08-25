@@ -1,0 +1,30 @@
+From 4164ca54aa7b9d5222192bb1ddb5c90cce0973d4 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Tue, 6 May 2014 15:47:01 +0000
+Subject: [PATCH 783/795] YARN-2018: Merging r1592783 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1592784 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 083ac00688c11f52f3921e15a015c06bbf233320)
+---
+ .../resourcemanager/TestClientRMService.java       |    5 ++---
+ 1 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java
+index 44c33de..443e9be 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java
+@@ -355,9 +355,8 @@ public Void run() throws Exception {
+             checkTokenRenewal(owner, other);
+             return null;
+           } catch (YarnException ex) {
+-            Assert.assertTrue(ex.getMessage().contains(
+-                "Client " + owner.getUserName() +
+-                " tries to renew a token with renewer specified as " +
++            Assert.assertTrue(ex.getMessage().contains(owner.getUserName() +
++                " tries to renew a token with renewer " +
+                 other.getUserName()));
+             throw ex;
+           }
+-- 
+1.7.0.4
+

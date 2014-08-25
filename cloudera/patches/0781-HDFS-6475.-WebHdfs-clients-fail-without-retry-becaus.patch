@@ -1,0 +1,213 @@
+From cb39aece6794061d0254a5f39724d43fafc54411 Mon Sep 17 00:00:00 2001
+From: Aaron Myers <atm@apache.org>
+Date: Tue, 24 Jun 2014 23:07:49 +0000
+Subject: [PATCH 781/795] HDFS-6475. WebHdfs clients fail without retry because incorrect handling of StandbyException. Contributed by Yongjun Zhang.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1605217 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hdfs/web/resources/ExceptionHandler.java       |   31 ++++++-
+ .../namenode/ha/TestDelegationTokensWithHA.java    |   93 ++++++++++++++++++++
+ 2 files changed, 121 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/resources/ExceptionHandler.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/resources/ExceptionHandler.java
+index adb944a..6137c6e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/resources/ExceptionHandler.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/resources/ExceptionHandler.java
+@@ -31,8 +31,11 @@
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.hdfs.web.JsonUtil;
+ import org.apache.hadoop.ipc.RemoteException;
++import org.apache.hadoop.ipc.StandbyException;
+ import org.apache.hadoop.security.authorize.AuthorizationException;
++import org.apache.hadoop.security.token.SecretManager.InvalidToken;
+ 
++import com.google.common.annotations.VisibleForTesting;
+ import com.sun.jersey.api.ParamException;
+ import com.sun.jersey.api.container.ContainerException;
+ 
+@@ -42,9 +45,22 @@
+   public static final Log LOG = LogFactory.getLog(ExceptionHandler.class);
+ 
+   private static Exception toCause(Exception e) {
+-    final Throwable t = e.getCause();
+-    if (t != null && t instanceof Exception) {
+-      e = (Exception)e.getCause();
++    final Throwable t = e.getCause();    
++    if (e instanceof SecurityException) {
++      // For the issue reported in HDFS-6475, if SecurityException's cause
++      // is InvalidToken, and the InvalidToken's cause is StandbyException,
++      // return StandbyException; Otherwise, leave the exception as is,
++      // since they are handled elsewhere. See HDFS-6588.
++      if (t != null && t instanceof InvalidToken) {
++        final Throwable t1 = t.getCause();
++        if (t1 != null && t1 instanceof StandbyException) {
++          e = (StandbyException)t1;
++        }
++      }
++    } else {
++      if (t != null && t instanceof Exception) {
++        e = (Exception)t;
++      }
+     }
+     return e;
+   }
+@@ -74,6 +90,10 @@ public Response toResponse(Exception e) {
+       e = ((RemoteException)e).unwrapRemoteException();
+     }
+ 
++    if (e instanceof SecurityException) {
++      e = toCause(e);
++    }
++    
+     //Map response status
+     final Response.Status s;
+     if (e instanceof SecurityException) {
+@@ -96,4 +116,9 @@ public Response toResponse(Exception e) {
+     final String js = JsonUtil.toJsonString(e);
+     return Response.status(s).type(MediaType.APPLICATION_JSON).entity(js).build();
+   }
++  
++  @VisibleForTesting
++  public void initResponse(HttpServletResponse response) {
++    this.response = response;
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestDelegationTokensWithHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestDelegationTokensWithHA.java
+index c909882..c8f0321 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestDelegationTokensWithHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestDelegationTokensWithHA.java
+@@ -23,6 +23,7 @@
+ import static org.junit.Assert.assertNull;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
++import static org.mockito.Mockito.mock;
+ 
+ import java.io.ByteArrayInputStream;
+ import java.io.DataInputStream;
+@@ -32,6 +33,10 @@
+ import java.security.PrivilegedExceptionAction;
+ import java.util.Collection;
+ import java.util.HashSet;
++import java.util.Map;
++
++import javax.servlet.http.HttpServletResponse;
++import javax.ws.rs.core.Response;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -51,7 +56,10 @@
+ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+ import org.apache.hadoop.hdfs.server.namenode.NameNode;
+ import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
++import org.apache.hadoop.hdfs.web.JsonUtil;
++import org.apache.hadoop.hdfs.web.resources.ExceptionHandler;
+ import org.apache.hadoop.io.Text;
++import org.apache.hadoop.ipc.RemoteException;
+ import org.apache.hadoop.ipc.RetriableException;
+ import org.apache.hadoop.ipc.StandbyException;
+ import org.apache.hadoop.security.SecurityUtil;
+@@ -64,6 +72,7 @@
+ import org.junit.Before;
+ import org.junit.Test;
+ import org.mockito.internal.util.reflection.Whitebox;
++import org.mortbay.util.ajax.JSON;
+ 
+ import com.google.common.base.Joiner;
+ 
+@@ -377,6 +386,90 @@ public void testHdfsGetCanonicalServiceName() throws Exception {
+     token.cancel(conf);
+   }
+   
++  /**
++   * Test if StandbyException can be thrown from StandbyNN, when it's requested for 
++   * password. (HDFS-6475). With StandbyException, the client can failover to try
++   * activeNN.
++   */
++  @Test
++  public void testDelegationTokenStandbyNNAppearFirst() throws Exception {
++    // make nn0 the standby NN, and nn1 the active NN
++    cluster.transitionToStandby(0);
++    cluster.transitionToActive(1);
++
++    final DelegationTokenSecretManager stSecretManager = 
++        NameNodeAdapter.getDtSecretManager(
++            nn1.getNamesystem());
++
++    // create token
++    final Token<DelegationTokenIdentifier> token =
++        getDelegationToken(fs, "JobTracker");
++    final DelegationTokenIdentifier identifier = new DelegationTokenIdentifier();
++    byte[] tokenId = token.getIdentifier();
++    identifier.readFields(new DataInputStream(
++             new ByteArrayInputStream(tokenId)));
++
++    assertTrue(null != stSecretManager.retrievePassword(identifier));
++
++    final UserGroupInformation ugi = UserGroupInformation
++        .createRemoteUser("JobTracker");
++    ugi.addToken(token);
++    
++    ugi.doAs(new PrivilegedExceptionAction<Object>() {
++      @Override
++      public Object run() {
++        try {
++          try {
++            byte[] tmppw = dtSecretManager.retrievePassword(identifier);
++            fail("InvalidToken with cause StandbyException is expected"
++                + " since nn0 is standby");
++            return tmppw;
++          } catch (IOException e) {
++            // Mimic the UserProvider class logic (server side) by throwing
++            // SecurityException here
++            throw new SecurityException(
++                "Failed to obtain user group information: " + e, e);
++          }
++        } catch (Exception oe) {
++          //
++          // The exception oe caught here is
++          //     java.lang.SecurityException: Failed to obtain user group
++          //     information: org.apache.hadoop.security.token.
++          //     SecretManager$InvalidToken: StandbyException
++          //
++          HttpServletResponse response = mock(HttpServletResponse.class);
++          ExceptionHandler eh = new ExceptionHandler();
++          eh.initResponse(response);
++          
++          // The Response (resp) below is what the server will send to client          
++          //
++          // BEFORE HDFS-6475 fix, the resp.entity is
++          //     {"RemoteException":{"exception":"SecurityException",
++          //      "javaClassName":"java.lang.SecurityException",
++          //      "message":"Failed to obtain user group information: 
++          //      org.apache.hadoop.security.token.SecretManager$InvalidToken:
++          //        StandbyException"}}
++          // AFTER the fix, the resp.entity is
++          //     {"RemoteException":{"exception":"StandbyException",
++          //      "javaClassName":"org.apache.hadoop.ipc.StandbyException",
++          //      "message":"Operation category READ is not supported in
++          //       state standby"}}
++          //
++          Response resp = eh.toResponse(oe);
++          
++          // Mimic the client side logic by parsing the response from server
++          //
++          Map<?, ?> m = (Map<?, ?>)JSON.parse(resp.getEntity().toString());
++          RemoteException re = JsonUtil.toRemoteException(m);
++          Exception unwrapped = ((RemoteException)re).unwrapRemoteException(
++              StandbyException.class);
++          assertTrue (unwrapped instanceof StandbyException);
++          return null;
++        }
++      }
++    });
++  }
++
+   @SuppressWarnings("unchecked")
+   private Token<DelegationTokenIdentifier> getDelegationToken(FileSystem fs,
+       String renewer) throws IOException {
+-- 
+1.7.0.4
+

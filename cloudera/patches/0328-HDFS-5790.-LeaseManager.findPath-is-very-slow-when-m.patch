@@ -1,0 +1,108 @@
+From 8069936856e607a40a2e22e7ce6b2a30f32bfa29 Mon Sep 17 00:00:00 2001
+From: Todd Lipcon <todd@apache.org>
+Date: Thu, 30 Jan 2014 21:21:02 +0000
+Subject: [PATCH 328/795] HDFS-5790. LeaseManager.findPath is very slow when many leases need recovery. Contributed by Todd Lipcon.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1562969 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8313c6b396dfd8e409a054b8b712c1c2acbe5c4a)
+(cherry picked from commit fc21c9769f421715fd026a1dabb5a3c0589121e8)
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    8 ++--
+ .../hadoop/hdfs/server/namenode/LeaseManager.java  |   34 --------------------
+ 2 files changed, 4 insertions(+), 38 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 34ece2d..1fa7057 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -3786,7 +3786,7 @@ private void commitOrCompleteLastBlock(final INodeFileUnderConstruction fileINod
+     final long diff = fileINode.getPreferredBlockSize() - commitBlock.getNumBytes();    
+     if (diff > 0) {
+       try {
+-        String path = leaseManager.findPath(fileINode);
++        String path = fileINode.getFullPathName();
+         dir.updateSpaceConsumed(path, 0, -diff*fileINode.getFileReplication());
+       } catch (IOException e) {
+         LOG.warn("Unexpected exception while updating disk space.", e);
+@@ -3991,7 +3991,7 @@ String closeFileCommitBlocks(INodeFileUnderConstruction pendingFile,
+                                        BlockInfo storedBlock)
+       throws IOException {
+ 
+-    String src = leaseManager.findPath(pendingFile);
++    String src = pendingFile.getFullPathName();
+ 
+     // commit the last block and complete it if it has minimum replicas
+     commitOrCompleteLastBlock(pendingFile, storedBlock);
+@@ -4013,7 +4013,7 @@ String closeFileCommitBlocks(INodeFileUnderConstruction pendingFile,
+   @VisibleForTesting
+   String persistBlocks(INodeFileUnderConstruction pendingFile,
+       boolean logRetryCache) throws IOException {
+-    String src = leaseManager.findPath(pendingFile);
++    String src = pendingFile.getFullPathName();
+     dir.persistBlocks(src, pendingFile, logRetryCache);
+     return src;
+   }
+@@ -5942,7 +5942,7 @@ private void updatePipelineInternal(String clientName, ExtendedBlock oldBlock,
+         .getDatanodeStorageInfos(newNodes, newStorageIDs);
+     blockinfo.setExpectedLocations(storages);
+ 
+-    String src = leaseManager.findPath(pendingFile);
++    String src = pendingFile.getFullPathName();
+     dir.persistBlocks(src, pendingFile, logRetryCache);
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
+index aff510d..cb7b951 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
+@@ -180,22 +180,6 @@ synchronized Lease reassignLease(Lease lease, String src, String newHolder) {
+   }
+ 
+   /**
+-   * Finds the pathname for the specified pendingFile
+-   */
+-  public synchronized String findPath(INodeFileUnderConstruction pendingFile)
+-      throws IOException {
+-    Lease lease = getLease(pendingFile.getClientName());
+-    if (lease != null) {
+-      String src = lease.findPath(pendingFile);
+-      if (src != null) {
+-        return src;
+-      }
+-    }
+-    throw new IOException("pendingFile (=" + pendingFile + ") not found."
+-        + "(lease=" + lease + ")");
+-  }
+-
+-  /**
+    * Renew the lease(s) held by the given client
+    */
+   synchronized void renewLease(String holder) {
+@@ -250,24 +234,6 @@ public boolean expiredSoftLimit() {
+       return now() - lastUpdate > softLimit;
+     }
+ 
+-    /**
+-     * @return the path associated with the pendingFile and null if not found.
+-     */
+-    private String findPath(INodeFileUnderConstruction pendingFile) {
+-      try {
+-        for (String src : paths) {
+-          INode node = fsnamesystem.dir.getINode(src);
+-          if (node == pendingFile
+-              || (node.isFile() && node.asFile() == pendingFile)) {
+-            return src;
+-          }
+-        }
+-      } catch (UnresolvedLinkException e) {
+-        throw new AssertionError("Lease files should reside on this FS");
+-      }
+-      return null;
+-    }
+-
+     /** Does this lease contain any path? */
+     boolean hasPath() {return !paths.isEmpty();}
+ 
+-- 
+1.7.0.4
+

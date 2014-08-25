@@ -1,0 +1,59 @@
+From c41b379e89178ae68c15899f302ecd18b4c08a0e Mon Sep 17 00:00:00 2001
+From: Jonathan Turner Eagles <jeagles@apache.org>
+Date: Fri, 28 Mar 2014 19:45:05 +0000
+Subject: [PATCH 623/795] YARN-1883. TestRMAdminService fails due to inconsistent entries in UserGroups (Mit Desai via jeagles)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1582865 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c70a7c7735f34a9e688ae227ff1ead2d9a2210b5)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../server/resourcemanager/TestRMAdminService.java |   17 +++++++++++------
+ 1 files changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index 79e7603..256e9f9 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -90,6 +90,9 @@ public void setup() throws IOException {
+     fs.delete(tmpDir, true);
+     fs.mkdirs(workingPath);
+     fs.mkdirs(tmpDir);
++
++    // reset the groups to what it default test settings
++    MockUnixGroupsMapping.resetGroups();
+   }
+ 
+   @After
+@@ -780,12 +783,7 @@ private void uploadDefaultConfiguration() throws IOException {
+   private static class MockUnixGroupsMapping implements
+       GroupMappingServiceProvider {
+ 
+-    @SuppressWarnings("serial")
+-    private static List<String> group = new ArrayList<String>() {{
+-      add("test_group_A");
+-      add("test_group_B");
+-      add("test_group_C");
+-    }};
++    private static List<String> group = new ArrayList<String>();
+ 
+     @Override
+     public List<String> getGroups(String user) throws IOException {
+@@ -808,6 +806,13 @@ public static void updateGroups() {
+       group.add("test_group_E");
+       group.add("test_group_F");
+     }
++    
++    public static void resetGroups() {
++      group.clear();
++      group.add("test_group_A");
++      group.add("test_group_B");
++      group.add("test_group_C");
++    }
+   }
+ 
+ }
+-- 
+1.7.0.4
+

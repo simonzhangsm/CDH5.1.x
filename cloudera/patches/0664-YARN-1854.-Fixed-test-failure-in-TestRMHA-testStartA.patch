@@ -1,0 +1,107 @@
+From e2d430853b671cd6c692acbc5408a08256cb5ae8 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Sat, 22 Mar 2014 00:29:43 +0000
+Subject: [PATCH 664/795] YARN-1854. Fixed test failure in TestRMHA#testStartAndTransitions. Contributed by Rohith Sharma KS.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1580097 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 23e69b28351b8ee334937733f6531fc0b0e730ff)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+---
+ .../yarn/server/resourcemanager/TestRMHA.java      |   48 ++++++++++++++-----
+ 1 files changed, 35 insertions(+), 13 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index 62ce51e..a01d488 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -32,6 +32,9 @@
+ import org.apache.hadoop.yarn.event.Dispatcher;
+ import org.apache.hadoop.yarn.event.EventHandler;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
++import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
++import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
++import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -49,6 +52,8 @@
+   private Log LOG = LogFactory.getLog(TestRMHA.class);
+   private final Configuration configuration = new YarnConfiguration();
+   private MockRM rm = null;
++  private RMApp app = null;
++  private RMAppAttempt attempt = null;
+   private static final String STATE_ERR =
+       "ResourceManager is in wrong HA state";
+ 
+@@ -103,7 +108,9 @@ private void checkActiveRMFunctionality() throws IOException {
+     try {
+       rm.getNewAppId();
+       rm.registerNode("127.0.0.1:0", 2048);
+-      rm.submitApp(1024);
++      app = rm.submitApp(1024);
++      attempt = app.getCurrentAppAttempt();
++      rm.waitForState(attempt.getAppAttemptId(), RMAppAttemptState.SCHEDULED);
+     } catch (Exception e) {
+       fail("Unable to perform Active RM functions");
+       LOG.error("ActiveRM check failed", e);
+@@ -122,7 +129,7 @@ private void checkActiveRMFunctionality() throws IOException {
+    * become Active
+    */
+   @Test (timeout = 30000)
+-  public void testStartAndTransitions() throws IOException {
++  public void testStartAndTransitions() throws Exception {
+     configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     Configuration conf = new YarnConfiguration(configuration);
+     rm = new MockRM(conf);
+@@ -377,19 +384,34 @@ public void testHAWithRMHostName() {
+   
+   private void verifyClusterMetrics(int activeNodes, int appsSubmitted,
+       int appsPending, int containersPending, int availableMB,
+-      int activeApplications) {
++      int activeApplications) throws Exception {
++    int timeoutSecs = 0;
+     QueueMetrics metrics = rm.getResourceScheduler().getRootQueueMetrics();
+-    // verify queue metrics
+-    assertMetric("appsSubmitted", appsSubmitted, metrics.getAppsSubmitted());
+-    assertMetric("appsPending", appsPending, metrics.getAppsPending());
+-    assertMetric("containersPending", containersPending,
+-        metrics.getPendingContainers());
+-    assertMetric("availableMB", availableMB, metrics.getAvailableMB());
+-    assertMetric("activeApplications", activeApplications,
+-        metrics.getActiveApps());
+-    // verify node metric
+     ClusterMetrics clusterMetrics = ClusterMetrics.getMetrics();
+-    assertMetric("activeNodes", activeNodes, clusterMetrics.getNumActiveNMs());
++    boolean isAllMetricAssertionDone = false;
++    String message = null;
++    while (timeoutSecs++ < 5) {
++      try {
++        // verify queue metrics
++        assertMetric("appsSubmitted", appsSubmitted, metrics.getAppsSubmitted());
++        assertMetric("appsPending", appsPending, metrics.getAppsPending());
++        assertMetric("containersPending", containersPending,
++            metrics.getPendingContainers());
++        assertMetric("availableMB", availableMB, metrics.getAvailableMB());
++        assertMetric("activeApplications", activeApplications,
++            metrics.getActiveApps());
++        // verify node metric
++        assertMetric("activeNodes", activeNodes,
++            clusterMetrics.getNumActiveNMs());
++        isAllMetricAssertionDone = true;
++        break;
++      } catch (AssertionError e) {
++        message = e.getMessage();
++        System.out.println("Waiting for metrics assertion to complete");
++        Thread.sleep(1000);
++      }
++    }
++    assertTrue(message, isAllMetricAssertionDone);
+   }
+ 
+   private void assertMetric(String metricName, int expected, int actual) {
+-- 
+1.7.0.4
+

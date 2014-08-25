@@ -1,0 +1,27 @@
+From f87e7a83f4ca0d6733ed0e6761ad0511f830b4fc Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Wed, 12 Feb 2014 22:02:23 +0000
+Subject: [PATCH 371/795] HDFS-5938. Make BlockReaderFactory#BlockReaderPeer a static class to avoid a findbugs warning (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1567768 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 67a1d2047942d85e7eda189e04a797513a40aaee)
+---
+ .../org/apache/hadoop/hdfs/BlockReaderFactory.java |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderFactory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderFactory.java
+index c6af5e8..f7eb3c7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderFactory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderFactory.java
+@@ -663,7 +663,7 @@ private BlockReader getRemoteBlockReaderFromTcp() throws IOException {
+     return null;
+   }
+ 
+-  private class BlockReaderPeer {
++  private static class BlockReaderPeer {
+     final Peer peer;
+     final boolean fromCache;
+     
+-- 
+1.7.0.4
+

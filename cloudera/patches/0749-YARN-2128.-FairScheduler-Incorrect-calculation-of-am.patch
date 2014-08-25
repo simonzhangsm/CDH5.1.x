@@ -1,0 +1,258 @@
+From fbb426f07cc850968edb8a0b38373697d8770ef9 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Sat, 7 Jun 2014 01:23:23 +0000
+Subject: [PATCH 749/795] YARN-2128. FairScheduler: Incorrect calculation of amResource usage. (Wei Yan via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1601051 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit bf93be2fdd64fb88f818c7fac8b06cbfcd992d9a)
+---
+ .../scheduler/SchedulerApplicationAttempt.java     |   15 ++++-
+ .../scheduler/fair/AppSchedulable.java             |    1 +
+ .../scheduler/fair/FSLeafQueue.java                |    6 ++-
+ .../scheduler/fair/FairScheduler.java              |    6 ++
+ .../scheduler/fair/TestFairScheduler.java          |   75 ++++++++++++++++++--
+ 5 files changed, 95 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+index 96f8b34..e434180 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+@@ -79,6 +79,7 @@
+   protected Resource currentConsumption = Resource.newInstance(0, 0);
+   private Resource amResource;
+   private boolean unmanagedAM = true;
++  private boolean amRunning = false;
+ 
+   protected List<RMContainer> newlyAllocatedContainers = 
+       new ArrayList<RMContainer>();
+@@ -110,7 +111,6 @@ public SchedulerApplicationAttempt(ApplicationAttemptId applicationAttemptId,
+             activeUsersManager);
+     this.queue = queue;
+ 
+-
+     if (rmContext != null && rmContext.getRMApps() != null &&
+         rmContext.getRMApps()
+             .containsKey(applicationAttemptId.getApplicationId())) {
+@@ -118,7 +118,6 @@ public SchedulerApplicationAttempt(ApplicationAttemptId applicationAttemptId,
+           rmContext.getRMApps().get(applicationAttemptId.getApplicationId())
+               .getApplicationSubmissionContext();
+       if (appSubmissionContext != null) {
+-        amResource = appSubmissionContext.getResource();
+         unmanagedAM = appSubmissionContext.getUnmanagedAM();
+       }
+     }
+@@ -188,6 +187,18 @@ public Resource getAMResource() {
+     return amResource;
+   }
+ 
++  public void setAMResource(Resource amResource) {
++    this.amResource = amResource;
++  }
++
++  public boolean isAmRunning() {
++    return amRunning;
++  }
++
++  public void setAmRunning(boolean bool) {
++    amRunning = bool;
++  }
++
+   public boolean getUnmanagedAM() {
+     return unmanagedAM;
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+index 974ead4..100d68c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+@@ -261,6 +261,7 @@ private Resource assignContainer(FSSchedulerNode node,
+       if (app.getLiveContainers().size() == 1 &&
+           !app.getUnmanagedAM()) {
+         queue.addAMResourceUsage(container.getResource());
++        app.setAmRunning(true);
+       }
+ 
+       return container.getResource();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
+index 0b36e43..22d523a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
+@@ -91,7 +91,7 @@ void addAppSchedulable(AppSchedulable appSched) {
+   public boolean removeApp(FSSchedulerApp app) {
+     if (runnableAppScheds.remove(app.getAppSchedulable())) {
+       // Update AM resource usage
+-      if (app.getAMResource() != null) {
++      if (app.isAmRunning() && app.getAMResource() != null) {
+         Resources.subtractFrom(amResourceUsage, app.getAMResource());
+       }
+       return true;
+@@ -153,6 +153,10 @@ public Resource getResourceUsage() {
+     return usage;
+   }
+ 
++  public Resource getAmResourceUsage() {
++    return amResourceUsage;
++  }
++
+   @Override
+   public void updateDemand() {
+     // Compute demand by iterating through apps in the queue
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index f5720a5..8c9c3f8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -884,6 +884,12 @@ public Allocation allocate(ApplicationAttemptId appAttemptId,
+     SchedulerUtils.normalizeRequests(ask, new DominantResourceCalculator(),
+         clusterCapacity, minimumAllocation, maximumAllocation, incrAllocation);
+ 
++    // Set amResource for this app
++    if (!application.getUnmanagedAM() && ask.size() == 1
++        && application.getLiveContainers().isEmpty()) {
++      application.setAMResource(ask.get(0).getCapability());
++    }
++
+     // Release containers
+     for (ContainerId releasedContainerId : release) {
+       RMContainer rmContainer = getRMContainer(releasedContainerId);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+index 3505145..7887fe8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+@@ -2230,12 +2230,13 @@ public void testQueueMaxAMShare() throws Exception {
+     scheduler.handle(nodeEvent);
+     scheduler.update();
+ 
++    FSLeafQueue queue1 = scheduler.getQueueManager().getLeafQueue("queue1", true);
+     assertEquals("Queue queue1's fair share should be 10240",
+-        10240, scheduler.getQueueManager().getLeafQueue("queue1", true)
+-            .getFairShare().getMemory());
++        10240, queue1.getFairShare().getMemory());
+ 
+     Resource amResource1 = Resource.newInstance(1024, 1);
+     Resource amResource2 = Resource.newInstance(2048, 2);
++    Resource amResource3 = Resource.newInstance(1860, 2);
+     int amPriority = RMAppAttemptImpl.AM_CONTAINER_PRIORITY.getPriority();
+     // Exceeds no limits
+     ApplicationAttemptId attId1 = createAppAttemptId(1, 1);
+@@ -2248,6 +2249,8 @@ public void testQueueMaxAMShare() throws Exception {
+         1024, app1.getAMResource().getMemory());
+     assertEquals("Application1's AM should be running",
+         1, app1.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 1024 MB memory",
++        1024, queue1.getAmResourceUsage().getMemory());
+ 
+     // Exceeds no limits
+     ApplicationAttemptId attId2 = createAppAttemptId(2, 1);
+@@ -2260,6 +2263,8 @@ public void testQueueMaxAMShare() throws Exception {
+         1024, app2.getAMResource().getMemory());
+     assertEquals("Application2's AM should be running",
+         1, app2.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
+ 
+     // Exceeds queue limit
+     ApplicationAttemptId attId3 = createAppAttemptId(3, 1);
+@@ -2272,6 +2277,8 @@ public void testQueueMaxAMShare() throws Exception {
+         1024, app3.getAMResource().getMemory());
+     assertEquals("Application3's AM should not be running",
+         0, app3.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
+ 
+     // Still can run non-AM container
+     createSchedulingRequestExistingApplication(1024, 1, attId1);
+@@ -2279,6 +2286,8 @@ public void testQueueMaxAMShare() throws Exception {
+     scheduler.handle(updateEvent);
+     assertEquals("Application1 should have two running containers",
+         2, app1.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
+ 
+     // Remove app1, app3's AM should become running
+     AppAttemptRemovedSchedulerEvent appRemovedEvent1 =
+@@ -2290,6 +2299,8 @@ public void testQueueMaxAMShare() throws Exception {
+         0, app1.getLiveContainers().size());
+     assertEquals("Application3's AM should be running",
+         1, app3.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
+ 
+     // Exceeds queue limit
+     ApplicationAttemptId attId4 = createAppAttemptId(4, 1);
+@@ -2302,8 +2313,35 @@ public void testQueueMaxAMShare() throws Exception {
+         2048, app4.getAMResource().getMemory());
+     assertEquals("Application4's AM should not be running",
+         0, app4.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
++
++    // Exceeds queue limit
++    ApplicationAttemptId attId5 = createAppAttemptId(5, 1);
++    createApplicationWithAMResource(attId5, "queue1", "user1", amResource2);
++    createSchedulingRequestExistingApplication(2048, 2, amPriority, attId5);
++    FSSchedulerApp app5 = scheduler.getSchedulerApp(attId5);
++    scheduler.update();
++    scheduler.handle(updateEvent);
++    assertEquals("Application5's AM requests 2048 MB memory",
++        2048, app5.getAMResource().getMemory());
++    assertEquals("Application5's AM should not be running",
++        0, app5.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
++
++    // Remove un-running app doesn't affect others
++    AppAttemptRemovedSchedulerEvent appRemovedEvent4 =
++        new AppAttemptRemovedSchedulerEvent(attId4, RMAppAttemptState.KILLED, false);
++    scheduler.handle(appRemovedEvent4);
++    scheduler.update();
++    scheduler.handle(updateEvent);
++    assertEquals("Application5's AM should not be running",
++        0, app5.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
+ 
+-    // Remove app2 and app3, app4's AM should become running
++    // Remove app2 and app3, app5's AM should become running
+     AppAttemptRemovedSchedulerEvent appRemovedEvent2 =
+         new AppAttemptRemovedSchedulerEvent(attId2, RMAppAttemptState.FINISHED, false);
+     AppAttemptRemovedSchedulerEvent appRemovedEvent3 =
+@@ -2316,8 +2354,35 @@ public void testQueueMaxAMShare() throws Exception {
+         0, app2.getLiveContainers().size());
+     assertEquals("Application3's AM should be finished",
+         0, app3.getLiveContainers().size());
+-    assertEquals("Application4's AM should be running",
+-        1, app4.getLiveContainers().size());
++    assertEquals("Application5's AM should be running",
++        1, app5.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
++
++    // Check amResource normalization
++    ApplicationAttemptId attId6 = createAppAttemptId(6, 1);
++    createApplicationWithAMResource(attId6, "queue1", "user1", amResource3);
++    createSchedulingRequestExistingApplication(1860, 2, amPriority, attId6);
++    FSSchedulerApp app6 = scheduler.getSchedulerApp(attId6);
++    scheduler.update();
++    scheduler.handle(updateEvent);
++    assertEquals("Application6's AM should not be running",
++        0, app6.getLiveContainers().size());
++    assertEquals("Application6's AM requests 2048 MB memory",
++        2048, app6.getAMResource().getMemory());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
++
++    // Remove all apps
++    AppAttemptRemovedSchedulerEvent appRemovedEvent5 =
++        new AppAttemptRemovedSchedulerEvent(attId5, RMAppAttemptState.FINISHED, false);
++    AppAttemptRemovedSchedulerEvent appRemovedEvent6 =
++        new AppAttemptRemovedSchedulerEvent(attId6, RMAppAttemptState.FINISHED, false);
++    scheduler.handle(appRemovedEvent5);
++    scheduler.handle(appRemovedEvent6);
++    scheduler.update();
++    assertEquals("Queue1's AM resource usage should be 0",
++        0, queue1.getAmResourceUsage().getMemory());
+   }
+ 
+   @Test
+-- 
+1.7.0.4
+

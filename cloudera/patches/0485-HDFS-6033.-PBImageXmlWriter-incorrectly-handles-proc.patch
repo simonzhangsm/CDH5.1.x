@@ -1,0 +1,27 @@
+From 9d5714f7809371dbb2ea86e4e5a7763a010921a1 Mon Sep 17 00:00:00 2001
+From: Aaron Twining Myers <atm@apache.org>
+Date: Fri, 28 Feb 2014 19:48:57 +0000
+Subject: [PATCH 485/795] HDFS-6033. PBImageXmlWriter incorrectly handles processing cache directives. Contributed by Aaron T. Myers.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1573054 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 62e24c5f93ae3ac04fdabcbd1b61c5c15fe6d6f7)
+---
+ .../tools/offlineImageViewer/PBImageXmlWriter.java |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+index 041f616..99617b8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+@@ -157,7 +157,7 @@ private void dumpCacheManagerSection(InputStream is) throws IOException {
+           .o("maxRelativeExpiry", p.getMaxRelativeExpiry());
+       out.print("</pool>\n");
+     }
+-    for (int i = 0; i < s.getNumPools(); ++i) {
++    for (int i = 0; i < s.getNumDirectives(); ++i) {
+       CacheDirectiveInfoProto p = CacheDirectiveInfoProto
+           .parseDelimitedFrom(is);
+       out.print("<directive>");
+-- 
+1.7.0.4
+

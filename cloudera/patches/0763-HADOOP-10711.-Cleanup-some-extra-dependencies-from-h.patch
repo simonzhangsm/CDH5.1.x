@@ -1,0 +1,66 @@
+From ca9780e7b3e46a43d32a3cd3a8ad8cafc8b79f14 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Wed, 18 Jun 2014 21:50:49 +0000
+Subject: [PATCH 763/795] HADOOP-10711. Cleanup some extra dependencies from hadoop-auth. (rkanter via tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1603645 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 2d19252dd576a21dbe44803d449807298c96fbaf)
+
+Conflicts:
+	hadoop-project/pom.xml
+---
+ hadoop-common-project/hadoop-auth/pom.xml |   19 ++++++++++++++++++-
+ hadoop-project/pom.xml                    |    6 ++++++
+ 2 files changed, 24 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-auth/pom.xml b/hadoop-common-project/hadoop-auth/pom.xml
+index 1deee01..8f751dc 100644
+--- a/hadoop-common-project/hadoop-auth/pom.xml
++++ b/hadoop-common-project/hadoop-auth/pom.xml
+@@ -105,8 +105,25 @@
+     <dependency>
+       <groupId>org.apache.directory.server</groupId>
+       <artifactId>apacheds-kerberos-codec</artifactId>
+-      <version>2.0.0-M15</version>
+       <scope>compile</scope>
++        <exclusions>
++          <exclusion>
++            <groupId>org.apache.directory.api</groupId>
++            <artifactId>api-asn1-ber</artifactId>
++          </exclusion>
++          <exclusion>
++            <groupId>org.apache.directory.api</groupId>
++            <artifactId>api-i18n</artifactId>
++          </exclusion>
++          <exclusion>
++            <groupId>org.apache.directory.api</groupId>
++            <artifactId>api-ldap-model</artifactId>
++          </exclusion>
++          <exclusion>
++            <groupId>net.sf.ehcache</groupId>
++            <artifactId>ehcache-core</artifactId>
++          </exclusion>
++        </exclusions>
+     </dependency>
+   </dependencies>
+ 
+diff --git a/hadoop-project/pom.xml b/hadoop-project/pom.xml
+index 2e477ba..fbf52fd 100644
+--- a/hadoop-project/pom.xml
++++ b/hadoop-project/pom.xml
+@@ -778,6 +778,12 @@
+         <artifactId>grizzly-http-servlet</artifactId>
+         <version>2.1.2</version>
+       </dependency>
++
++      <dependency>
++        <groupId>org.apache.directory.server</groupId>
++        <artifactId>apacheds-kerberos-codec</artifactId>
++        <version>2.0.0-M15</version>
++      </dependency>
+     </dependencies>
+   </dependencyManagement>
+ 
+-- 
+1.7.0.4
+

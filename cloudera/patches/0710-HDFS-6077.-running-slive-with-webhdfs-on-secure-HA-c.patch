@@ -1,0 +1,31 @@
+From 5db11c62594b6b36d17d75e57979719190ea2b4f Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Mon, 10 Mar 2014 20:48:53 +0000
+Subject: [PATCH 710/795] HDFS-6077. running slive with webhdfs on secure HA cluster fails with unkown host exception. Contributed by Jing Zhao.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1576076 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../apache/hadoop/hdfs/web/WebHdfsFileSystem.java  |    6 ++++++
+ 1 files changed, 6 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+index b470bb4..09d5045 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+@@ -1131,4 +1131,10 @@ public MD5MD5CRC32FileChecksum getFileChecksum(final Path p
+     InetSocketAddress[] r = new InetSocketAddress[ret.size()];
+     return ret.toArray(r);
+   }
++
++  @Override
++  public String getCanonicalServiceName() {
++    return tokenServiceName == null ? super.getCanonicalServiceName()
++        : tokenServiceName.toString();
++  }
+ }
+-- 
+1.7.0.4
+

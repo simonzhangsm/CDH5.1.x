@@ -1,0 +1,109 @@
+From d289be53f573727412468c9b5548a37ba744fc31 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Wed, 5 Mar 2014 19:01:05 +0000
+Subject: [PATCH 539/795] HDFS-6044. Add property for setting the NFS look up time for users. Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1574622 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 340ff8abbc1921c3fb12e82522546aa5137f77e6)
+---
+ .../org/apache/hadoop/nfs/nfs3/IdUserGroup.java    |   33 +++++++++++++++++---
+ .../apache/hadoop/nfs/nfs3/TestIdUserGroup.java    |   17 ++++++++++
+ 2 files changed, 45 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+index bf2b542..b818901 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+@@ -23,6 +23,7 @@
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.collect.BiMap;
+@@ -42,9 +43,12 @@
+   static final String MAC_GET_ALL_USERS_CMD = "dscl . -list /Users UniqueID";
+   static final String MAC_GET_ALL_GROUPS_CMD = "dscl . -list /Groups PrimaryGroupID";
+ 
+-  // Do update every 15 minutes
+-  final static long TIMEOUT = 15 * 60 * 1000; // ms
+-
++  // Do update every 15 minutes by default
++  final static long TIMEOUT_DEFAULT = 15 * 60 * 1000; // ms
++  final static long TIMEOUT_MIN = 1 * 60 * 1000; // ms
++  final private long timeout;
++  final static String NFS_USERUPDATE_MILLY = "hadoop.nfs.userupdate.milly";
++  
+   // Maps for id to name map. Guarded by this object monitor lock
+   private BiMap<Integer, String> uidNameMap = HashBiMap.create();
+   private BiMap<Integer, String> gidNameMap = HashBiMap.create();
+@@ -52,11 +56,30 @@
+   private long lastUpdateTime = 0; // Last time maps were updated
+   
+   public IdUserGroup() throws IOException {
++    timeout = TIMEOUT_DEFAULT;
++    updateMaps();
++  }
++  
++  public IdUserGroup(Configuration conf) throws IOException {
++    long updateTime = conf.getLong(NFS_USERUPDATE_MILLY, TIMEOUT_DEFAULT);
++    // Minimal interval is 1 minute
++    if (updateTime < TIMEOUT_MIN) {
++      LOG.info("User configured user account update time is less"
++          + " than 1 minute. Use 1 minute instead.");
++      timeout = TIMEOUT_MIN;
++    } else {
++      timeout = updateTime;
++    }
+     updateMaps();
+   }
+ 
+-  private boolean isExpired() {
+-    return lastUpdateTime - System.currentTimeMillis() > TIMEOUT;
++  @VisibleForTesting
++  public long getTimeout() {
++    return timeout;
++  }
++  
++  synchronized private boolean isExpired() {
++    return lastUpdateTime - System.currentTimeMillis() > timeout;
+   }
+ 
+   // If can't update the maps, will keep using the old ones
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+index 4331238..3adb308 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+@@ -21,6 +21,7 @@
+ import static org.junit.Assert.assertTrue;
+ import java.io.IOException;
+ 
++import org.apache.hadoop.conf.Configuration;
+ import org.junit.Test;
+ 
+ import com.google.common.collect.BiMap;
+@@ -64,4 +65,20 @@ public void testDuplicates() throws IOException {
+     assertEquals(gMap.get(497), "mapred");
+     assertEquals(gMap.get(498), "mapred3");    
+   }
++  
++  @Test
++  public void testUserUpdateSetting() throws IOException {
++    IdUserGroup iug = new IdUserGroup();
++    assertEquals(iug.getTimeout(), IdUserGroup.TIMEOUT_DEFAULT);
++
++    Configuration conf = new Configuration();
++    conf.setLong(IdUserGroup.NFS_USERUPDATE_MILLY, 0);
++    iug = new IdUserGroup(conf);
++    assertEquals(iug.getTimeout(), IdUserGroup.TIMEOUT_MIN);
++
++    conf.setLong(IdUserGroup.NFS_USERUPDATE_MILLY,
++        IdUserGroup.TIMEOUT_DEFAULT * 2);
++    iug = new IdUserGroup(conf);
++    assertEquals(iug.getTimeout(), IdUserGroup.TIMEOUT_DEFAULT * 2);
++  }
+ }
+-- 
+1.7.0.4
+

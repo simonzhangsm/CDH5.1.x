@@ -1,0 +1,30 @@
+From 8afb32aa7683b57d51ae80d5c69221f881b9076e Mon Sep 17 00:00:00 2001
+From: Jonathan Turner Eagles <jeagles@apache.org>
+Date: Wed, 9 Apr 2014 16:20:26 +0000
+Subject: [PATCH 705/795] HDFS-6215. Wrong error message for upgrade. (Kihwal Lee via jeagles)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1586011 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/FSImage.java       |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index 26fa739..3774d65 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -233,7 +233,8 @@ boolean recoverTransitionRead(StartupOption startOpt, FSNamesystem target,
+           + RollingUpgradeStartupOption.STARTED.getOptionString()
+           + "\" option if a rolling upgraded is already started;"
+           + " or restart NameNode with the \""
+-          + StartupOption.UPGRADE + "\" to start a new upgrade.");
++          + StartupOption.UPGRADE.getName() + "\" option to start"
++          + " a new upgrade.");
+     }
+     
+     storage.processStartupOptionsForUpgrade(startOpt, layoutVersion);
+-- 
+1.7.0.4
+

@@ -1,0 +1,171 @@
+From b7e3a9cebf9c78089760b81482ee23309a1927c5 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Tue, 13 May 2014 20:03:52 +0000
+Subject: [PATCH 676/795] YARN-1861. Fixed a bug in RM to reset leader-election on fencing that was causing both RMs to be stuck in standby mode when automatic failover is enabled. Contributed by Karthik Kambatla and Xuan Gong.
+ svn merge --ignore-ancestry -c 1594356 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1594357 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 6c2c025dec85d1b680771fc73dafce5f893554a6)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../apache/hadoop/yarn/client/TestRMFailover.java  |   24 ++++++++++++++++++++
+ .../yarn/server/resourcemanager/AdminService.java  |   12 +++++++++-
+ .../resourcemanager/EmbeddedElectorService.java    |    5 ++++
+ .../server/resourcemanager/ResourceManager.java    |    1 +
+ .../apache/hadoop/yarn/server/MiniYARNCluster.java |   10 +++++---
+ 5 files changed, 47 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+index 50edb32..249e1ce 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+@@ -34,6 +34,7 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.ha.ClientBaseWithFixes;
+ import org.apache.hadoop.ha.HAServiceProtocol;
++import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
+ import org.apache.hadoop.service.Service.STATE;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.client.api.YarnClient;
+@@ -43,6 +44,9 @@
+ import org.apache.hadoop.yarn.exceptions.YarnException;
+ import org.apache.hadoop.yarn.server.MiniYARNCluster;
+ import org.apache.hadoop.yarn.server.resourcemanager.AdminService;
++import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEvent;
++import org.apache.hadoop.yarn.server.resourcemanager.RMFatalEventType;
++import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+ import org.apache.hadoop.yarn.server.webproxy.WebAppProxyServer;
+ import org.junit.After;
+ import org.junit.Assert;
+@@ -170,6 +174,7 @@ public void testExplicitFailover()
+     verifyConnections();
+   }
+ 
++  @SuppressWarnings("unchecked")
+   @Test
+   public void testAutomaticFailover()
+       throws YarnException, InterruptedException, IOException {
+@@ -187,6 +192,25 @@ public void testAutomaticFailover()
+ 
+     failover();
+     verifyConnections();
++
++    // Make the current Active handle an RMFatalEvent,
++    // so it transitions to standby.
++    ResourceManager rm = cluster.getResourceManager(
++        cluster.getActiveRMIndex());
++    RMFatalEvent event =
++        new RMFatalEvent(RMFatalEventType.STATE_STORE_FENCED,
++            "Fake RMFatalEvent");
++    rm.getRMContext().getDispatcher().getEventHandler().handle(event);
++    int maxWaitingAttempts = 2000;
++    while (maxWaitingAttempts-- > 0 ) {
++      if (rm.getRMContext().getHAServiceState() == HAServiceState.STANDBY) {
++        break;
++      }
++      Thread.sleep(1);
++    }
++    Assert.assertFalse("RM didn't transition to Standby ",
++        maxWaitingAttempts == 0);
++    verifyConnections();
+   }
+ 
+   @Test
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+index 6d521d4..1d2f376 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+@@ -26,6 +26,7 @@
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.ha.HAServiceProtocol;
+@@ -86,6 +87,7 @@
+   private String rmId;
+ 
+   private boolean autoFailoverEnabled;
++  private EmbeddedElectorService embeddedElector;
+ 
+   private Server server;
+   private InetSocketAddress masterServiceAddress;
+@@ -106,7 +108,8 @@ public void serviceInit(Configuration conf) throws Exception {
+       autoFailoverEnabled = HAUtil.isAutomaticFailoverEnabled(conf);
+       if (autoFailoverEnabled) {
+         if (HAUtil.isAutomaticFailoverEmbedded(conf)) {
+-          addIfService(createEmbeddedElectorService());
++          embeddedElector = createEmbeddedElectorService();
++          addIfService(embeddedElector);
+         }
+       }
+     }
+@@ -181,6 +184,13 @@ protected EmbeddedElectorService createEmbeddedElectorService() {
+     return new EmbeddedElectorService(rmContext);
+   }
+ 
++  @InterfaceAudience.Private
++  void resetLeaderElection() {
++    if (embeddedElector != null) {
++      embeddedElector.resetLeaderElection();
++    }
++  }
++
+   private UserGroupInformation checkAccess(String method) throws IOException {
+     return RMServerUtils.verifyAccess(adminAcl, method, LOG);
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/EmbeddedElectorService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/EmbeddedElectorService.java
+index 5b45d07..2d1893e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/EmbeddedElectorService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/EmbeddedElectorService.java
+@@ -190,4 +190,9 @@ private boolean isParentZnodeSafe(String clusterId)
+     }
+     return true;
+   }
++
++  public void resetLeaderElection() {
++    elector.quitElection(false);
++    elector.joinElection(localActiveNodeInfo);
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index c8b180f..00113b0 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -658,6 +658,7 @@ public void handle(RMFatalEvent event) {
+             // Transition to standby and reinit active services
+             LOG.info("Transitioning RM to Standby mode");
+             rm.transitionToStandby(true);
++            rm.adminService.resetLeaderElection();
+             return;
+           } catch (Exception e) {
+             LOG.fatal("Failed to transition RM to Standby mode.");
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
+index 805960b..fca4d81 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
+@@ -631,12 +631,14 @@ protected void stopRMProxy() { }
+    */
+   public boolean waitForNodeManagersToConnect(long timeout)
+       throws YarnException, InterruptedException {
+-    ResourceManager rm = getResourceManager();
+     GetClusterMetricsRequest req = GetClusterMetricsRequest.newInstance();
+-
+     for (int i = 0; i < timeout / 100; i++) {
+-      if (nodeManagers.length == rm.getClientRMService().getClusterMetrics(req)
+-          .getClusterMetrics().getNumNodeManagers()) {
++      ResourceManager rm = getResourceManager();
++      if (rm == null) {
++        throw new YarnException("Can not find the active RM.");
++      }
++      else if (nodeManagers.length == rm.getClientRMService()
++            .getClusterMetrics(req).getClusterMetrics().getNumNodeManagers()) {
+         return true;
+       }
+       Thread.sleep(100);
+-- 
+1.7.0.4
+

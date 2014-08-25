@@ -1,0 +1,41 @@
+From e0fdc8685254f9a0c732217f4e9c6f4e2654fbc5 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Thu, 15 May 2014 13:53:19 +0000
+Subject: [PATCH 690/795] HDFS-6400. Cannot execute hdfs oiv_legacy. Contributed by Akira AJISAKA.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1594917 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9b4f57a8f68ec074f747eed38121f670436662aa)
+---
+ hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs  |    2 +-
+ .../offlineImageViewer/OfflineImageViewer.java     |    2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs b/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+index 904ccd2..2d6ecf2 100755
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+@@ -162,7 +162,7 @@ elif [ "$COMMAND" = "jmxget" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.JMXGet
+ elif [ "$COMMAND" = "oiv" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.offlineImageViewer.OfflineImageViewerPB
+-elif [ "COMMAND" = "oiv_legacy" ] ; then
++elif [ "$COMMAND" = "oiv_legacy" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.offlineImageViewer.OfflineImageViewer
+ elif [ "$COMMAND" = "oev" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.offlineEditsViewer.OfflineEditsViewer
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java
+index 4663e37..08985d6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java
+@@ -47,7 +47,7 @@
+   public static final Log LOG = LogFactory.getLog(OfflineImageViewer.class);
+   
+   private final static String usage = 
+-    "Usage: bin/hdfs oiv [OPTIONS] -i INPUTFILE -o OUTPUTFILE\n" +
++    "Usage: bin/hdfs oiv_legacy [OPTIONS] -i INPUTFILE -o OUTPUTFILE\n" +
+     "Offline Image Viewer\n" + 
+     "View a Hadoop fsimage INPUTFILE using the specified PROCESSOR,\n" +
+     "saving the results in OUTPUTFILE.\n" +
+-- 
+1.7.0.4
+

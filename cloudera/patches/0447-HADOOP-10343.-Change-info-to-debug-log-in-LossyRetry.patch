@@ -1,0 +1,36 @@
+From ad1f73c3ccaa42db9850bc2b6c2c949be9526fa0 Mon Sep 17 00:00:00 2001
+From: Arpit Gupta <arpit@apache.org>
+Date: Thu, 13 Feb 2014 22:00:14 +0000
+Subject: [PATCH 447/795] HADOOP-10343. Change info to debug log in LossyRetryInvocationHandler. Contributed by Arpit Gupta
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568059 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 4104f17eae3b659dd0428186abf6929ad7a03c84)
+---
+ .../io/retry/LossyRetryInvocationHandler.java      |    8 ++++++--
+ 1 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/retry/LossyRetryInvocationHandler.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/retry/LossyRetryInvocationHandler.java
+index bdb6a61..7a557c4 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/retry/LossyRetryInvocationHandler.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/retry/LossyRetryInvocationHandler.java
+@@ -51,11 +51,15 @@ protected Object invokeMethod(Method method, Object[] args) throws Throwable {
+     int retryCount = RetryCount.get();
+     if (retryCount < this.numToDrop) {
+       RetryCount.set(++retryCount);
+-      LOG.info("Drop the response. Current retryCount == " + retryCount);
++      if (LOG.isDebugEnabled()) {
++        LOG.debug("Drop the response. Current retryCount == " + retryCount);
++      }
+       throw new RetriableException("Fake Exception");
+     } else {
+-      LOG.info("retryCount == " + retryCount
++      if (LOG.isDebugEnabled()) {
++        LOG.debug("retryCount == " + retryCount
+           + ". It's time to normally process the response");
++      }
+       return result;
+     }
+   }
+-- 
+1.7.0.4
+

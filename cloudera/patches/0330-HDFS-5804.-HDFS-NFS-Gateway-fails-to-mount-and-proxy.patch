@@ -1,0 +1,219 @@
+From 9d1cf5e435e2dfe574af6c1d52d183e173990110 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 31 Jan 2014 23:00:34 +0000
+Subject: [PATCH 330/795] HDFS-5804. HDFS NFS Gateway fails to mount and proxy when using Kerberos. Contributed by Abin Shahab.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1563323 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit aaeee4645774e9f29ce223e3dedd25e5a8b396f0)
+(cherry picked from commit 1982c798fb4cfd700de6e9802d2572764d6c12bc)
+---
+ .../hadoop/hdfs/nfs/nfs3/DFSClientCache.java       |   28 ++++++++++++++++++-
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |   12 +++++---
+ .../org/apache/hadoop/hdfs/nfs/TestReaddir.java    |   14 +++++++++-
+ .../hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java   |   25 +++++++++++++++++
+ .../apache/hadoop/hdfs/nfs/nfs3/TestWrites.java    |    9 ++++++
+ 5 files changed, 80 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/DFSClientCache.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/DFSClientCache.java
+index 1744965..b6822c4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/DFSClientCache.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/DFSClientCache.java
+@@ -26,6 +26,7 @@
+ import java.util.concurrent.ExecutionException;
+ import java.util.concurrent.TimeUnit;
+ 
++import com.google.common.base.Preconditions;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+@@ -163,8 +164,9 @@ synchronized void closeAll(boolean onlyAutomatic) throws IOException {
+     return new CacheLoader<String, DFSClient>() {
+       @Override
+       public DFSClient load(String userName) throws Exception {
+-        UserGroupInformation ugi = UserGroupInformation
+-            .createRemoteUser(userName);
++        UserGroupInformation ugi = getUserGroupInformation(
++                userName,
++                UserGroupInformation.getCurrentUser());
+ 
+         // Guava requires CacheLoader never returns null.
+         return ugi.doAs(new PrivilegedExceptionAction<DFSClient>() {
+@@ -177,6 +179,28 @@ public DFSClient run() throws IOException {
+     };
+   }
+ 
++  /**
++   * This method uses the currentUser, and real user to create a proxy
++   * @param effectiveUser The user who is being proxied by the real user
++   * @param realUser The actual user who does the command
++   * @return Proxy UserGroupInformation
++   * @throws IOException If proxying fails
++   */
++  UserGroupInformation getUserGroupInformation(
++          String effectiveUser,
++          UserGroupInformation realUser)
++          throws IOException {
++    Preconditions.checkNotNull(effectiveUser);
++    Preconditions.checkNotNull(realUser);
++    UserGroupInformation ugi =
++            UserGroupInformation.createProxyUser(effectiveUser, realUser);
++    if (LOG.isDebugEnabled()){
++      LOG.debug(String.format("Created ugi:" +
++              " %s for username: %s", ugi, effectiveUser));
++    }
++    return ugi;
++  }
++
+   private RemovalListener<String, DFSClient> clientRemovalListener() {
+     return new RemovalListener<String, DFSClient>() {
+       @Override
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 17670a9..c2fc709 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -479,9 +479,9 @@ public ACCESS3Response access(XDR xdr, SecurityHandler securityHandler,
+     } 
+ 
+     try {
+-      // Use superUserClient to get file attr since we don't know whether the
+-      // NFS client user has access permission to the file
+-      attrs = writeManager.getFileAttr(superUserClient, handle, iug);
++      // HDFS-5804 removed supserUserClient access
++      attrs = writeManager.getFileAttr(dfsClient, handle, iug);
++
+       if (attrs == null) {
+         LOG.error("Can't get path for fileId:" + handle.getFileId());
+         return new ACCESS3Response(Nfs3Status.NFS3ERR_STALE);
+@@ -603,8 +603,10 @@ public READ3Response read(XDR xdr, SecurityHandler securityHandler,
+       // Only do access check.
+       try {
+         // Don't read from cache. Client may not have read permission.
+-        attrs = Nfs3Utils.getFileAttr(superUserClient,
+-            Nfs3Utils.getFileIdPath(handle), iug);
++        attrs = Nfs3Utils.getFileAttr(
++                  dfsClient,
++                  Nfs3Utils.getFileIdPath(handle),
++                  iug);
+       } catch (IOException e) {
+         if (LOG.isDebugEnabled()) {
+           LOG.debug("Get error accessing file, fileId:" + handle.getFileId());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/TestReaddir.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/TestReaddir.java
+index e1493b6..1ca43bc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/TestReaddir.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/TestReaddir.java
+@@ -22,6 +22,7 @@
+ 
+ import java.io.IOException;
+ import java.net.InetAddress;
++import java.util.Arrays;
+ import java.util.List;
+ 
+ import org.apache.hadoop.conf.Configuration;
+@@ -40,6 +41,9 @@
+ import org.apache.hadoop.nfs.nfs3.response.READDIRPLUS3Response.EntryPlus3;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.SecurityHandler;
++import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.authorize.ProxyUsers;
++import org.apache.hadoop.util.StringUtils;
+ import org.junit.AfterClass;
+ import org.junit.Before;
+ import org.junit.BeforeClass;
+@@ -58,9 +62,17 @@
+   static RpcProgramNfs3 nfsd;
+   static String testdir = "/tmp";
+   static SecurityHandler securityHandler;
+-  
++
+   @BeforeClass
+   public static void setup() throws Exception {
++    String currentUser = System.getProperty("user.name");
++    config.set(
++            ProxyUsers.getProxySuperuserGroupConfKey(currentUser),
++            "*");
++    config.set(
++            ProxyUsers.getProxySuperuserIpConfKey(currentUser),
++            "*");
++    ProxyUsers.refreshSuperUserGroupsConfiguration(config);
+     cluster = new MiniDFSCluster.Builder(config).numDataNodes(1).build();
+     cluster.waitActive();
+     hdfs = cluster.getFileSystem();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java
+index 360bb14..face4fe 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestDFSClientCache.java
+@@ -20,12 +20,15 @@
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertTrue;
++import static org.junit.Assert.assertThat;
++import static org.hamcrest.core.Is.is;
+ 
+ import java.io.IOException;
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.hdfs.DFSClient;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.junit.Test;
+ 
+ public class TestDFSClientCache {
+@@ -49,6 +52,28 @@ public void testEviction() throws IOException {
+     assertEquals(MAX_CACHE_SIZE - 1, cache.clientCache.size());
+   }
+ 
++  @Test
++  public void testGetUserGroupInformation() throws IOException {
++    String userName = "user1";
++    String currentUser = "currentUser";
++
++    UserGroupInformation currentUserUgi = UserGroupInformation
++            .createUserForTesting(currentUser, new String[0]);
++    currentUserUgi.setAuthenticationMethod(
++            UserGroupInformation.AuthenticationMethod.KERBEROS);
++    Configuration conf = new Configuration();
++    conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://localhost");
++    DFSClientCache cache = new DFSClientCache(conf);
++    UserGroupInformation ugiResult
++            = cache.getUserGroupInformation(userName, currentUserUgi);
++
++    assertThat(ugiResult.getUserName(), is(userName));
++    assertThat(ugiResult.getRealUser(), is(currentUserUgi));
++    assertThat(
++            ugiResult.getAuthenticationMethod(),
++            is(UserGroupInformation.AuthenticationMethod.PROXY));
++  }
++
+   private static boolean isDfsClientClose(DFSClient c) {
+     try {
+       c.exists("");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+index 2ef614a..4771204 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+@@ -50,6 +50,7 @@
+ import org.apache.hadoop.nfs.nfs3.response.READ3Response;
+ import org.apache.hadoop.oncrpc.XDR;
+ import org.apache.hadoop.oncrpc.security.SecurityHandler;
++import org.apache.hadoop.security.authorize.ProxyUsers;
+ import org.jboss.netty.channel.Channel;
+ import org.junit.Assert;
+ import org.junit.Test;
+@@ -285,6 +286,14 @@ public void testWriteStableHow() throws IOException, InterruptedException {
+     SecurityHandler securityHandler = Mockito.mock(SecurityHandler.class);
+     Mockito.when(securityHandler.getUser()).thenReturn(
+         System.getProperty("user.name"));
++    String currentUser = System.getProperty("user.name");
++    config.set(
++            ProxyUsers.getProxySuperuserGroupConfKey(currentUser),
++            "*");
++    config.set(
++            ProxyUsers.getProxySuperuserIpConfKey(currentUser),
++            "*");
++    ProxyUsers.refreshSuperUserGroupsConfiguration(config);
+ 
+     try {
+       cluster = new MiniDFSCluster.Builder(config).numDataNodes(1).build();
+-- 
+1.7.0.4
+

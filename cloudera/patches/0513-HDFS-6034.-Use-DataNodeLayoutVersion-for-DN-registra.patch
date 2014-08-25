@@ -1,0 +1,87 @@
+From 6a77da6ce3ba281d7b71c61bce7c6a1296152d78 Mon Sep 17 00:00:00 2001
+From: Tsz-wo Sze <szetszwo@apache.org>
+Date: Sat, 1 Mar 2014 01:14:02 +0000
+Subject: [PATCH 513/795] HDFS-6034. Use DataNodeLayoutVersion for DN registration check and do not verify layout version if there is a rolling upgrade in progress.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1573119 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 29aa51f0266aa926c062e2c505d6f1986e3c286a)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    3 ++
+ .../apache/hadoop/hdfs/server/common/Storage.java  |    1 -
+ .../hdfs/server/namenode/NameNodeRpcServer.java    |   30 ++++++++++++++++----
+ 3 files changed, 27 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index 93388dd..eca8711 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -127,3 +127,6 @@ HDFS-5535 subtasks:
+     HDFS-6031. Add back the "-rollingUpgrade started" namenode startup option;
+     otherwise, namenode cannot start when the layout version is changed.
+     (szetszwo)
++
++    HDFS-6034. Use DataNodeLayoutVersion for DN registration check and do not
++    verify layout version if there is a rolling upgrade in progress.  (szetszwo)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/Storage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/Storage.java
+index 451df4d..3656aa2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/Storage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/Storage.java
+@@ -1019,7 +1019,6 @@ public static String getBuildVersion() {
+   public static String getRegistrationID(StorageInfo storage) {
+     return "NS-" + Integer.toString(storage.getNamespaceID())
+       + "-" + storage.getClusterID()
+-      + "-" + Integer.toString(storage.getLayoutVersion())
+       + "-" + Long.toString(storage.getCTime());
+   }
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+index 018aa32..98eeaaf 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+@@ -105,6 +105,7 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
+ import org.apache.hadoop.hdfs.server.common.IncorrectVersionException;
++import org.apache.hadoop.hdfs.server.datanode.DataNodeLayoutVersion;
+ import org.apache.hadoop.hdfs.server.namenode.NameNode.OperationCategory;
+ import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
+ import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
+@@ -1072,12 +1073,29 @@ public NamespaceInfo versionRequest() throws IOException {
+    * @param nodeReg node registration
+    * @throws UnregisteredNodeException if the registration is invalid
+    */
+-  void verifyRequest(NodeRegistration nodeReg) throws IOException {
+-    if (!namesystem.getRegistrationID().equals(nodeReg.getRegistrationID())) {
+-      LOG.warn("Invalid registrationID - expected: "
+-          + namesystem.getRegistrationID() + " received: "
+-          + nodeReg.getRegistrationID());
+-      throw new UnregisteredNodeException(nodeReg);
++  private void verifyRequest(NodeRegistration nodeReg) throws IOException {
++    // verify registration ID
++    final String id = nodeReg.getRegistrationID();
++    final String expectedID = namesystem.getRegistrationID();
++    if (!expectedID.equals(id)) {
++      LOG.warn("Registration IDs mismatched: the "
++          + nodeReg.getClass().getSimpleName() + " ID is " + id
++          + " but the expected ID is " + expectedID);
++       throw new UnregisteredNodeException(nodeReg);
++    }
++
++    // verify layout version if there is no rolling upgrade.
++    if (!namesystem.isRollingUpgrade()) {
++      final int lv = nodeReg.getVersion();
++      final int expectedLV = nodeReg instanceof NamenodeRegistration?
++          NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION
++          : DataNodeLayoutVersion.CURRENT_LAYOUT_VERSION;
++      if (expectedLV != nodeReg.getVersion()) {
++        LOG.warn("Layout versions mismatched: the "
++            + nodeReg.getClass().getSimpleName() + " LV is " + lv
++            + " but the expected LV is " + expectedLV);
++         throw new UnregisteredNodeException(nodeReg);
++      }
+     }
+   }
+     
+-- 
+1.7.0.4
+

@@ -1,0 +1,28 @@
+From e4356a9be1c250142e09cca9444dd0141a057036 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Sun, 9 Feb 2014 23:32:14 +0000
+Subject: [PATCH 442/795] HDFS-5886. Potential null pointer deference in RpcProgramNfs3#readlink(). Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1566471 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 454e6c56c60d711525f7cd82ed59b5d74ccc8c88)
+---
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index a7c0749..488cd0d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -545,7 +545,8 @@ public READLINK3Response readlink(XDR xdr, SecurityHandler securityHandler,
+         return new READLINK3Response(Nfs3Status.NFS3ERR_SERVERFAULT);
+       }
+       if (MAX_READ_TRANSFER_SIZE < target.getBytes().length) {
+-        return new READLINK3Response(Nfs3Status.NFS3ERR_IO, postOpAttr, null);
++        return new READLINK3Response(Nfs3Status.NFS3ERR_IO, postOpAttr,
++            new byte[0]);
+       }
+ 
+       return new READLINK3Response(Nfs3Status.NFS3_OK, postOpAttr,
+-- 
+1.7.0.4
+

@@ -1,0 +1,29 @@
+From 21f92303cce67df5f1d2151aeca4f604b398f683 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 23 Apr 2014 22:37:24 +0000
+Subject: [PATCH 719/795] HADOOP-10531. hadoop-config.sh - bug in --hosts argument. Contributed by Sebastien Barrier.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1589531 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop-common/src/main/bin/hadoop-config.sh    |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/bin/hadoop-config.sh b/hadoop-common-project/hadoop-common/src/main/bin/hadoop-config.sh
+index e5c40fc..8cfa183 100644
+--- a/hadoop-common-project/hadoop-common/src/main/bin/hadoop-config.sh
++++ b/hadoop-common-project/hadoop-common/src/main/bin/hadoop-config.sh
+@@ -93,7 +93,7 @@ then
+     if [ "--hosts" = "$1" ]
+     then
+         shift
+-        export HADOOP_SLAVES="${HADOOP_CONF_DIR}/$$1"
++        export HADOOP_SLAVES="${HADOOP_CONF_DIR}/$1"
+         shift
+     elif [ "--hostnames" = "$1" ]
+     then
+-- 
+1.7.0.4
+

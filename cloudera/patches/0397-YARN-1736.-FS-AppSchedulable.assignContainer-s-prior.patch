@@ -1,0 +1,98 @@
+From ddcc54248828da632ffd8f3c1a7ef5d4035e02a3 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Thu, 20 Feb 2014 20:13:14 +0000
+Subject: [PATCH 397/795] YARN-1736. FS: AppSchedulable.assignContainer's priority argument is redundant. (Naren Koneru via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570337 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a5c5aa00bc1cd6d1387bc0c157a83c92451bd176)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../scheduler/fair/AppSchedulable.java             |   20 ++++++++++----------
+ 1 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+index 275061a..98451ea 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+@@ -207,7 +207,7 @@ public void unreserve(Priority priority, FSSchedulerNode node) {
+    * sure the particular request should be facilitated by this node.
+    */
+   private Resource assignContainer(FSSchedulerNode node,
+-      Priority priority, ResourceRequest request, NodeType type,
++      ResourceRequest request, NodeType type,
+       boolean reserved) {
+ 
+     // How much does this request need?
+@@ -220,25 +220,25 @@ private Resource assignContainer(FSSchedulerNode node,
+     if (reserved) {
+       container = node.getReservedContainer().getContainer();
+     } else {
+-      container = createContainer(app, node, capability, priority);
++      container = createContainer(app, node, capability, request.getPriority());
+     }
+ 
+     // Can we allocate a container on this node?
+     if (Resources.fitsIn(capability, available)) {
+       // Inform the application of the new container for this request
+       RMContainer allocatedContainer =
+-          app.allocate(type, node, priority, request, container);
++          app.allocate(type, node, request.getPriority(), request, container);
+       if (allocatedContainer == null) {
+         // Did the application need this resource?
+         if (reserved) {
+-          unreserve(priority, node);
++          unreserve(request.getPriority(), node);
+         }
+         return Resources.none();
+       }
+ 
+       // If we had previously made a reservation, delete it
+       if (reserved) {
+-        unreserve(priority, node);
++        unreserve(request.getPriority(), node);
+       }
+ 
+       // Inform the node
+@@ -248,7 +248,7 @@ private Resource assignContainer(FSSchedulerNode node,
+       return container.getResource();
+     } else {
+       // The desired container won't fit here, so reserve
+-      reserve(priority, node, container, reserved);
++      reserve(request.getPriority(), node, container, reserved);
+ 
+       return FairScheduler.CONTAINER_RESERVED;
+     }
+@@ -311,8 +311,8 @@ private Resource assignContainer(FSSchedulerNode node, boolean reserved) {
+ 
+         if (rackLocalRequest != null && rackLocalRequest.getNumContainers() != 0
+             && localRequest != null && localRequest.getNumContainers() != 0) {
+-          return assignContainer(node, priority,
+-              localRequest, NodeType.NODE_LOCAL, reserved);
++          return assignContainer(node, localRequest,
++              NodeType.NODE_LOCAL, reserved);
+         }
+         
+         if (rackLocalRequest != null && !rackLocalRequest.getRelaxLocality()) {
+@@ -322,7 +322,7 @@ private Resource assignContainer(FSSchedulerNode node, boolean reserved) {
+         if (rackLocalRequest != null && rackLocalRequest.getNumContainers() != 0
+             && (allowedLocality.equals(NodeType.RACK_LOCAL) ||
+                 allowedLocality.equals(NodeType.OFF_SWITCH))) {
+-          return assignContainer(node, priority, rackLocalRequest,
++          return assignContainer(node, rackLocalRequest,
+               NodeType.RACK_LOCAL, reserved);
+         }
+ 
+@@ -334,7 +334,7 @@ private Resource assignContainer(FSSchedulerNode node, boolean reserved) {
+         
+         if (offSwitchRequest != null && offSwitchRequest.getNumContainers() != 0
+             && allowedLocality.equals(NodeType.OFF_SWITCH)) {
+-          return assignContainer(node, priority, offSwitchRequest,
++          return assignContainer(node, offSwitchRequest,
+               NodeType.OFF_SWITCH, reserved);
+         }
+       }
+-- 
+1.7.0.4
+

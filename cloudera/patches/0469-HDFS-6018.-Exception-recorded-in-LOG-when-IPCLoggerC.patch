@@ -1,0 +1,26 @@
+From 09f9fe3e1f5e0b3a17750e28242c929d3aef5e50 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Wed, 26 Feb 2014 18:23:42 +0000
+Subject: [PATCH 469/795] HDFS-6018. Exception recorded in LOG when IPCLoggerChannel#close is called. Contributed by Jing Zhao.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1572184 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fe44b2dfcf56113a9206858bc2b7dd81fff4678b)
+---
+ .../hdfs/qjournal/client/IPCLoggerChannel.java     |    1 -
+ 1 files changed, 0 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/IPCLoggerChannel.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/IPCLoggerChannel.java
+index 2f1bff1..07b018a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/IPCLoggerChannel.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/IPCLoggerChannel.java
+@@ -182,7 +182,6 @@ public synchronized void setCommittedTxId(long txid) {
+   
+   @Override
+   public void close() {
+-    QuorumJournalManager.LOG.info("Closing", new Exception());
+     // No more tasks may be submitted after this point.
+     executor.shutdown();
+     if (proxy != null) {
+-- 
+1.7.0.4
+

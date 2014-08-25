@@ -1,0 +1,38 @@
+From 14f6e32250a4f4b266577e9aba47ccd72fd7d666 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Fri, 21 Feb 2014 21:21:48 +0000
+Subject: [PATCH 398/795] YARN-1470. Add audience annotations to MiniYARNCluster. (Anubhav Dhoot via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570709 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e0353d73473df1dd28efc4eea4c34141529a2c5c)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../apache/hadoop/yarn/server/MiniYARNCluster.java |    3 +++
+ 1 files changed, 3 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
+index 1412409..eeb6af3 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
+@@ -29,6 +29,7 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FileContext;
+ import org.apache.hadoop.fs.Path;
+@@ -84,6 +85,8 @@
+  * the <code>hostname:port</code> of the namenodes. In such case, the AM must
+  * do resource request using <code>hostname:port</code> as the location.
+  */
++@InterfaceAudience.Public
++@InterfaceStability.Evolving
+ public class MiniYARNCluster extends CompositeService {
+ 
+   private static final Log LOG = LogFactory.getLog(MiniYARNCluster.class);
+-- 
+1.7.0.4
+

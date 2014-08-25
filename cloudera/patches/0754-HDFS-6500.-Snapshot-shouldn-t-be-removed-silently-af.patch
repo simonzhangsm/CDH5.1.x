@@ -1,0 +1,61 @@
+From 59d5aee15c344ebef0d19a5e5b40d71a9db05943 Mon Sep 17 00:00:00 2001
+From: Junping Du <junping_du@apache.org>
+Date: Sun, 8 Jun 2014 07:06:35 +0000
+Subject: [PATCH 754/795] HDFS-6500. Snapshot shouldn't be removed silently after renaming to an existing snapshot. (Contributed by Nicholas SZE)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1601199 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../snapshot/INodeDirectorySnapshottable.java      |    4 ++--
+ .../apache/hadoop/hdfs/TestSnapshotCommands.java   |   11 +++++++++++
+ 2 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
+index 184aa87..3356056 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
+@@ -234,7 +234,7 @@ Snapshot getSnapshotById(int sid) {
+    *           name does not exist or a snapshot with the new name already
+    *           exists
+    */
+-  public void renameSnapshot(String path, String oldName, String newName)
++  void renameSnapshot(String path, String oldName, String newName)
+       throws SnapshotException {
+     if (newName.equals(oldName)) {
+       return;
+@@ -246,7 +246,7 @@ public void renameSnapshot(String path, String oldName, String newName)
+     } else {
+       final byte[] newNameBytes = DFSUtil.string2Bytes(newName);
+       int indexOfNew = searchSnapshot(newNameBytes);
+-      if (indexOfNew > 0) {
++      if (indexOfNew >= 0) {
+         throw new SnapshotException("The snapshot " + newName
+             + " already exists for directory " + path);
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestSnapshotCommands.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestSnapshotCommands.java
+index d2c7a09..e2db636 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestSnapshotCommands.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestSnapshotCommands.java
+@@ -186,6 +186,17 @@ public void testRenameSnapshot() throws Exception {
+     FsShellRun("-ls /sub1/.snapshot", 0, "/sub1/.snapshot/sn.rename");
+     FsShellRun("-ls /sub1/.snapshot/sn.rename", 0, "/sub1/.snapshot/sn.rename/sub1sub1");
+     FsShellRun("-ls /sub1/.snapshot/sn.rename", 0, "/sub1/.snapshot/sn.rename/sub1sub2");
++
++    //try renaming from a non-existing snapshot
++    FsShellRun("-renameSnapshot /sub1 sn.nonexist sn.rename", 1,
++        "renameSnapshot: The snapshot sn.nonexist does not exist for directory /sub1");
++
++    //try renaming to existing snapshots
++    FsShellRun("-createSnapshot /sub1 sn.new");
++    FsShellRun("-renameSnapshot /sub1 sn.new sn.rename", 1,
++        "renameSnapshot: The snapshot sn.rename already exists for directory /sub1");
++    FsShellRun("-renameSnapshot /sub1 sn.rename sn.new", 1,
++        "renameSnapshot: The snapshot sn.new already exists for directory /sub1");
+   }
+ 
+   @Test
+-- 
+1.7.0.4
+

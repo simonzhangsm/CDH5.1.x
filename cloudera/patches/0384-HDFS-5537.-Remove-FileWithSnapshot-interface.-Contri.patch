@@ -1,0 +1,913 @@
+From 9adc9c3f40f6dbddeac3d4be011eac70f540f411 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 14 Feb 2014 07:18:58 +0000
+Subject: [PATCH 384/795] HDFS-5537. Remove FileWithSnapshot interface.  Contributed by jing9
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568204 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 50da215d22ae1e385499af0a86b42975093e39b6)
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |    2 +-
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |    2 +-
+ .../namenode/FileUnderConstructionFeature.java     |    2 +-
+ .../apache/hadoop/hdfs/server/namenode/INode.java  |    5 +-
+ .../hadoop/hdfs/server/namenode/INodeFile.java     |   46 ++--
+ .../hdfs/server/namenode/INodeReference.java       |   18 +-
+ .../hdfs/server/namenode/snapshot/FileDiff.java    |   92 ++++++++
+ .../server/namenode/snapshot/FileDiffList.java     |   35 +++
+ .../server/namenode/snapshot/FileWithSnapshot.java |  227 --------------------
+ .../snapshot/INodeDirectorySnapshottable.java      |    6 +-
+ .../snapshot/INodeDirectoryWithSnapshot.java       |    8 +-
+ .../namenode/snapshot/INodeFileWithSnapshot.java   |  117 +++++++++--
+ .../namenode/snapshot/SnapshotFSImageFormat.java   |    6 +-
+ .../namenode/snapshot/TestRenameWithSnapshots.java |    1 -
+ 14 files changed, 278 insertions(+), 289 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiff.java
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiffList.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshot.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index ee99ac7..805991f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -475,8 +475,8 @@ boolean removeBlock(String path, INodeFile fileNode, Block block)
+   
+   boolean unprotectedRemoveBlock(String path,
+       INodeFile fileNode, Block block) throws IOException {
+-    Preconditions.checkArgument(fileNode.isUnderConstruction());
+     // modify file-> block and blocksMap
++    // fileNode should be under construction
+     boolean removed = fileNode.removeLastBlock(block);
+     if (!removed) {
+       return false;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index f5e3185..a65c076 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -57,7 +57,7 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiffList;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiffList;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeFileWithSnapshot;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
+index a6947d7..0a7371d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
+@@ -26,7 +26,7 @@
+ import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
+ 
+ /**
+- * I-node for file being written.
++ * Feature for under-construction file.
+  */
+ @InterfaceAudience.Private
+ public class FileUnderConstructionFeature extends INodeFile.Feature {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+index b16a719..1ba48a0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+@@ -35,7 +35,6 @@
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference.DstReference;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithName;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.hdfs.util.ChunkedArrayList;
+@@ -315,7 +314,7 @@ public INodeSymlink asSymlink() {
+    * 1.2.2 Else do nothing with the current INode. Recursively clean its 
+    * children.
+    * 
+-   * 1.3 The current inode is a {@link FileWithSnapshot}.
++   * 1.3 The current inode is a file with snapshot.
+    * Call recordModification(..) to capture the current states.
+    * Mark the INode as deleted.
+    * 
+@@ -328,7 +327,7 @@ public INodeSymlink asSymlink() {
+    * 2. When deleting a snapshot.
+    * 2.1 To clean {@link INodeFile}: do nothing.
+    * 2.2 To clean {@link INodeDirectory}: recursively clean its children.
+-   * 2.3 To clean {@link FileWithSnapshot}: delete the corresponding snapshot in
++   * 2.3 To clean INodeFile with snapshot: delete the corresponding snapshot in
+    * its diff list.
+    * 2.4 To clean {@link INodeDirectoryWithSnapshot}: delete the corresponding 
+    * snapshot in its diff list. Recursively clean its children.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+index 51a77bb..18f3708 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+@@ -33,10 +33,8 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiff;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiffList;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.Util;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiff;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiffList;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeFileWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ 
+@@ -189,7 +187,7 @@ public final INodeFile asFile() {
+   INodeFile toUnderConstruction(String clientName, String clientMachine,
+       DatanodeDescriptor clientNode) {
+     Preconditions.checkState(!isUnderConstruction(),
+-        "file is already an INodeFileUnderConstruction");
++        "file is already under construction");
+     FileUnderConstructionFeature uc = new FileUnderConstructionFeature(
+         clientName, clientMachine, clientNode);
+     addFeature(uc);
+@@ -201,6 +199,8 @@ INodeFile toUnderConstruction(String clientName, String clientMachine,
+    * feature.
+    */
+   public INodeFile toCompleteFile(long mtime) {
++    Preconditions.checkState(isUnderConstruction(),
++        "file is no longer under construction");
+     FileUnderConstructionFeature uc = getFileUnderConstructionFeature();
+     if (uc != null) {
+       assertAllBlocksComplete();
+@@ -222,15 +222,16 @@ private void assertAllBlocksComplete() {
+     }
+   }
+ 
+-  @Override //BlockCollection
++  @Override // BlockCollection
+   public void setBlock(int index, BlockInfo blk) {
+     this.blocks[index] = blk;
+   }
+ 
+-  @Override // BlockCollection
++  @Override // BlockCollection, the file should be under construction
+   public BlockInfoUnderConstruction setLastBlock(BlockInfo lastBlock,
+       DatanodeStorageInfo[] locations) throws IOException {
+-    Preconditions.checkState(isUnderConstruction());
++    Preconditions.checkState(isUnderConstruction(),
++        "file is no longer under construction");
+ 
+     if (numBlocks() == 0) {
+       throw new IOException("Failed to set last block: File is empty.");
+@@ -248,6 +249,8 @@ public BlockInfoUnderConstruction setLastBlock(BlockInfo lastBlock,
+    * the last one on the list.
+    */
+   boolean removeLastBlock(Block oldblock) {
++    Preconditions.checkState(isUnderConstruction(),
++        "file is no longer under construction");
+     if (blocks == null || blocks.length == 0) {
+       return false;
+     }
+@@ -299,10 +302,8 @@ public final short getFileReplication() {
+   }
+ 
+   @Override
+-  public final short getBlockReplication() {
+-    return this instanceof FileWithSnapshot?
+-        Util.getBlockReplication((FileWithSnapshot)this)
+-        : getFileReplication(null);
++  public short getBlockReplication() {
++    return getFileReplication(null);
+   }
+ 
+   /** Set the replication factor of this file. */
+@@ -422,8 +423,8 @@ public void destroyAndCollectBlocks(BlocksMapUpdateInfo collectedBlocks,
+     clear();
+     removedINodes.add(this);
+     
+-    if (this instanceof FileWithSnapshot) {
+-      ((FileWithSnapshot) this).getDiffs().clear();
++    if (this instanceof INodeFileWithSnapshot) {
++      ((INodeFileWithSnapshot) this).getDiffs().clear();
+     }
+   }
+   
+@@ -438,8 +439,8 @@ public String getName() {
+       boolean useCache, int lastSnapshotId) {
+     long nsDelta = 1;
+     final long dsDelta;
+-    if (this instanceof FileWithSnapshot) {
+-      FileDiffList fileDiffList = ((FileWithSnapshot) this).getDiffs();
++    if (this instanceof INodeFileWithSnapshot) {
++      FileDiffList fileDiffList = ((INodeFileWithSnapshot) this).getDiffs();
+       Snapshot last = fileDiffList.getLastSnapshot();
+       List<FileDiff> diffs = fileDiffList.asList();
+ 
+@@ -471,8 +472,8 @@ public final ContentSummaryComputationContext  computeContentSummary(
+   private void computeContentSummary4Snapshot(final Content.Counts counts) {
+     // file length and diskspace only counted for the latest state of the file
+     // i.e. either the current state or the last snapshot
+-    if (this instanceof FileWithSnapshot) {
+-      final FileWithSnapshot withSnapshot = (FileWithSnapshot)this;
++    if (this instanceof INodeFileWithSnapshot) {
++      final INodeFileWithSnapshot withSnapshot = (INodeFileWithSnapshot) this;
+       final FileDiffList diffs = withSnapshot.getDiffs();
+       final int n = diffs.asList().size();
+       counts.add(Content.FILE, n);
+@@ -488,8 +489,8 @@ private void computeContentSummary4Snapshot(final Content.Counts counts) {
+   }
+ 
+   private void computeContentSummary4Current(final Content.Counts counts) {
+-    if (this instanceof FileWithSnapshot
+-        && ((FileWithSnapshot)this).isCurrentFileDeleted()) {
++    if (this instanceof INodeFileWithSnapshot
++        && ((INodeFileWithSnapshot) this).isCurrentFileDeleted()) {
+       return;
+     }
+ 
+@@ -508,8 +509,9 @@ public final long computeFileSize() {
+    * otherwise, get the file size from the given snapshot.
+    */
+   public final long computeFileSize(Snapshot snapshot) {
+-    if (snapshot != null && this instanceof FileWithSnapshot) {
+-      final FileDiff d = ((FileWithSnapshot)this).getDiffs().getDiff(snapshot);
++    if (snapshot != null && this instanceof INodeFileWithSnapshot) {
++      final FileDiff d = ((INodeFileWithSnapshot) this).getDiffs().getDiff(
++          snapshot);
+       if (d != null) {
+         return d.getFileSize();
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+index f77863a..24707a6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+@@ -26,8 +26,8 @@
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.fs.permission.PermissionStatus;
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeFileWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ 
+ import com.google.common.base.Preconditions;
+@@ -102,8 +102,8 @@ static Snapshot getPriorSnapshot(INodeReference ref) {
+     }
+     if (wn != null) {
+       INode referred = wc.getReferredINode();
+-      if (referred instanceof FileWithSnapshot) {
+-        return ((FileWithSnapshot) referred).getDiffs().getPrior(
++      if (referred instanceof INodeFileWithSnapshot) {
++        return ((INodeFileWithSnapshot) referred).getDiffs().getPrior(
+             wn.lastSnapshotId);
+       } else if (referred instanceof INodeDirectoryWithSnapshot) { 
+         return ((INodeDirectoryWithSnapshot) referred).getDiffs().getPrior(
+@@ -547,8 +547,8 @@ public void destroyAndCollectBlocks(BlocksMapUpdateInfo collectedBlocks,
+     private Snapshot getSelfSnapshot() {
+       INode referred = getReferredINode().asReference().getReferredINode();
+       Snapshot snapshot = null;
+-      if (referred instanceof FileWithSnapshot) {
+-        snapshot = ((FileWithSnapshot) referred).getDiffs().getPrior(
++      if (referred instanceof INodeFileWithSnapshot) {
++        snapshot = ((INodeFileWithSnapshot) referred).getDiffs().getPrior(
+             lastSnapshotId);
+       } else if (referred instanceof INodeDirectoryWithSnapshot) {
+         snapshot = ((INodeDirectoryWithSnapshot) referred).getDiffs().getPrior(
+@@ -637,10 +637,10 @@ public void destroyAndCollectBlocks(
+         Snapshot snapshot = getSelfSnapshot(prior);
+         
+         INode referred = getReferredINode().asReference().getReferredINode();
+-        if (referred instanceof FileWithSnapshot) {
++        if (referred instanceof INodeFileWithSnapshot) {
+           // if referred is a file, it must be a FileWithSnapshot since we did
+           // recordModification before the rename
+-          FileWithSnapshot sfile = (FileWithSnapshot) referred;
++          INodeFileWithSnapshot sfile = (INodeFileWithSnapshot) referred;
+           // make sure we mark the file as deleted
+           sfile.deleteCurrentFile();
+           try {
+@@ -671,8 +671,8 @@ private Snapshot getSelfSnapshot(final Snapshot prior) {
+       WithCount wc = (WithCount) getReferredINode().asReference();
+       INode referred = wc.getReferredINode();
+       Snapshot lastSnapshot = null;
+-      if (referred instanceof FileWithSnapshot) {
+-        lastSnapshot = ((FileWithSnapshot) referred).getDiffs()
++      if (referred instanceof INodeFileWithSnapshot) {
++        lastSnapshot = ((INodeFileWithSnapshot) referred).getDiffs()
+             .getLastSnapshot(); 
+       } else if (referred instanceof INodeDirectoryWithSnapshot) {
+         lastSnapshot = ((INodeDirectoryWithSnapshot) referred)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiff.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiff.java
+new file mode 100644
+index 0000000..a5b7bcf
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiff.java
+@@ -0,0 +1,92 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.namenode.snapshot;
++
++import java.io.DataOutput;
++import java.io.IOException;
++import java.util.List;
++
++import org.apache.hadoop.hdfs.server.namenode.FSImageSerialization;
++import org.apache.hadoop.hdfs.server.namenode.INode;
++import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
++import org.apache.hadoop.hdfs.server.namenode.INodeFile;
++import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
++import org.apache.hadoop.hdfs.server.namenode.Quota;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat.ReferenceMap;
++
++/**
++ * The difference of an {@link INodeFile} between two snapshots.
++ */
++public class FileDiff extends
++    AbstractINodeDiff<INodeFileWithSnapshot, INodeFileAttributes, FileDiff> {
++
++  /** The file size at snapshot creation time. */
++  private final long fileSize;
++
++  FileDiff(Snapshot snapshot, INodeFile file) {
++    super(snapshot, null, null);
++    fileSize = file.computeFileSize();
++  }
++
++  /** Constructor used by FSImage loading */
++  FileDiff(Snapshot snapshot, INodeFileAttributes snapshotINode,
++      FileDiff posteriorDiff, long fileSize) {
++    super(snapshot, snapshotINode, posteriorDiff);
++    this.fileSize = fileSize;
++  }
++
++  /** @return the file size in the snapshot. */
++  public long getFileSize() {
++    return fileSize;
++  }
++  
++  @Override
++  Quota.Counts combinePosteriorAndCollectBlocks(
++      INodeFileWithSnapshot currentINode, FileDiff posterior,
++      BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes) {
++    return currentINode.updateQuotaAndCollectBlocks(posterior, collectedBlocks,
++        removedINodes);
++  }
++  
++  @Override
++  public String toString() {
++    return super.toString() + " fileSize=" + fileSize + ", rep="
++        + (snapshotINode == null? "?": snapshotINode.getFileReplication());
++  }
++
++  @Override
++  void write(DataOutput out, ReferenceMap referenceMap) throws IOException {
++    writeSnapshot(out);
++    out.writeLong(fileSize);
++
++    // write snapshotINode
++    if (snapshotINode != null) {
++      out.writeBoolean(true);
++      FSImageSerialization.writeINodeFileAttributes(snapshotINode, out);
++    } else {
++      out.writeBoolean(false);
++    }
++  }
++
++  @Override
++  Quota.Counts destroyDiffAndCollectBlocks(INodeFileWithSnapshot currentINode,
++      BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes) {
++    return currentINode.updateQuotaAndCollectBlocks(this, collectedBlocks,
++        removedINodes);
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiffList.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiffList.java
+new file mode 100644
+index 0000000..8a166e6
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiffList.java
+@@ -0,0 +1,35 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.namenode.snapshot;
++
++import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
++
++/** A list of FileDiffs for storing snapshot data. */
++public class FileDiffList extends
++    AbstractINodeDiffList<INodeFileWithSnapshot, INodeFileAttributes, FileDiff> {
++  
++  @Override
++  FileDiff createDiff(Snapshot snapshot, INodeFileWithSnapshot file) {
++    return new FileDiff(snapshot, file);
++  }
++  
++  @Override
++  INodeFileAttributes createSnapshotCopy(INodeFileWithSnapshot currentINode) {
++    return new INodeFileAttributes.SnapshotCopy(currentINode);
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshot.java
+deleted file mode 100644
+index 31a672f..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshot.java
++++ /dev/null
+@@ -1,227 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.hdfs.server.namenode.snapshot;
+-
+-import java.io.DataOutput;
+-import java.io.IOException;
+-import java.util.List;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+-import org.apache.hadoop.hdfs.server.namenode.FSImageSerialization;
+-import org.apache.hadoop.hdfs.server.namenode.INode;
+-import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
+-import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+-import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
+-import org.apache.hadoop.hdfs.server.namenode.Quota;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat.ReferenceMap;
+-
+-/**
+- * An interface for {@link INodeFile} to support snapshot.
+- */
+-@InterfaceAudience.Private
+-public interface FileWithSnapshot {
+-  /**
+-   * The difference of an {@link INodeFile} between two snapshots.
+-   */
+-  public static class FileDiff extends AbstractINodeDiff<INodeFile, INodeFileAttributes, FileDiff> {
+-    /** The file size at snapshot creation time. */
+-    private final long fileSize;
+-
+-    private FileDiff(Snapshot snapshot, INodeFile file) {
+-      super(snapshot, null, null);
+-      fileSize = file.computeFileSize();
+-    }
+-
+-    /** Constructor used by FSImage loading */
+-    FileDiff(Snapshot snapshot, INodeFileAttributes snapshotINode,
+-        FileDiff posteriorDiff, long fileSize) {
+-      super(snapshot, snapshotINode, posteriorDiff);
+-      this.fileSize = fileSize;
+-    }
+-
+-    /** @return the file size in the snapshot. */
+-    public long getFileSize() {
+-      return fileSize;
+-    }
+-
+-    private static Quota.Counts updateQuotaAndCollectBlocks(
+-        INodeFile currentINode, FileDiff removed,
+-        BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes) {
+-      FileWithSnapshot sFile = (FileWithSnapshot) currentINode;
+-      long oldDiskspace = currentINode.diskspaceConsumed();
+-      if (removed.snapshotINode != null) {
+-        short replication = removed.snapshotINode.getFileReplication();
+-        short currentRepl = currentINode.getBlockReplication();
+-        if (currentRepl == 0) {
+-          oldDiskspace = currentINode.computeFileSize(true, true) * replication;
+-        } else if (replication > currentRepl) {  
+-          oldDiskspace = oldDiskspace / currentINode.getBlockReplication()
+-              * replication;
+-        }
+-      }
+-      
+-      Util.collectBlocksAndClear(sFile, collectedBlocks, removedINodes);
+-      
+-      long dsDelta = oldDiskspace - currentINode.diskspaceConsumed();
+-      return Quota.Counts.newInstance(0, dsDelta);
+-    }
+-    
+-    @Override
+-    Quota.Counts combinePosteriorAndCollectBlocks(INodeFile currentINode,
+-        FileDiff posterior, BlocksMapUpdateInfo collectedBlocks,
+-        final List<INode> removedINodes) {
+-      return updateQuotaAndCollectBlocks(currentINode, posterior,
+-          collectedBlocks, removedINodes);
+-    }
+-    
+-    @Override
+-    public String toString() {
+-      return super.toString() + " fileSize=" + fileSize + ", rep="
+-          + (snapshotINode == null? "?": snapshotINode.getFileReplication());
+-    }
+-
+-    @Override
+-    void write(DataOutput out, ReferenceMap referenceMap) throws IOException {
+-      writeSnapshot(out);
+-      out.writeLong(fileSize);
+-
+-      // write snapshotINode
+-      if (snapshotINode != null) {
+-        out.writeBoolean(true);
+-        FSImageSerialization.writeINodeFileAttributes(snapshotINode, out);
+-      } else {
+-        out.writeBoolean(false);
+-      }
+-    }
+-
+-    @Override
+-    Quota.Counts destroyDiffAndCollectBlocks(INodeFile currentINode,
+-        BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes) {
+-      return updateQuotaAndCollectBlocks(currentINode, this,
+-          collectedBlocks, removedINodes);
+-    }
+-  }
+-
+-  /** A list of FileDiffs for storing snapshot data. */
+-  public static class FileDiffList
+-      extends AbstractINodeDiffList<INodeFile, INodeFileAttributes, FileDiff> {
+-
+-    @Override
+-    FileDiff createDiff(Snapshot snapshot, INodeFile file) {
+-      return new FileDiff(snapshot, file);
+-    }
+-    
+-    @Override
+-    INodeFileAttributes createSnapshotCopy(INodeFile currentINode) {
+-      return new INodeFileAttributes.SnapshotCopy(currentINode);
+-    }
+-  }
+-
+-  /** @return the {@link INodeFile} view of this object. */
+-  public INodeFile asINodeFile();
+-
+-  /** @return the file diff list. */
+-  public FileDiffList getDiffs();
+-
+-  /** Is the current file deleted? */
+-  public boolean isCurrentFileDeleted();
+-  
+-  /** Delete the file from the current tree */
+-  public void deleteCurrentFile();
+-
+-  /** Utility methods for the classes which implement the interface. */
+-  public static class Util {
+-    /** 
+-     * @return block replication, which is the max file replication among
+-     *         the file and the diff list.
+-     */
+-    public static short getBlockReplication(final FileWithSnapshot file) {
+-      short max = file.isCurrentFileDeleted()? 0
+-          : file.asINodeFile().getFileReplication();
+-      for(FileDiff d : file.getDiffs()) {
+-        if (d.snapshotINode != null) {
+-          final short replication = d.snapshotINode.getFileReplication();
+-          if (replication > max) {
+-            max = replication;
+-          }
+-        }
+-      }
+-      return max;
+-    }
+-
+-    /**
+-     * If some blocks at the end of the block list no longer belongs to
+-     * any inode, collect them and update the block list.
+-     */
+-    static void collectBlocksAndClear(final FileWithSnapshot file,
+-        final BlocksMapUpdateInfo info, final List<INode> removedINodes) {
+-      // check if everything is deleted.
+-      if (file.isCurrentFileDeleted()
+-          && file.getDiffs().asList().isEmpty()) {
+-        file.asINodeFile().destroyAndCollectBlocks(info, removedINodes);
+-        return;
+-      }
+-
+-      // find max file size.
+-      final long max;
+-      if (file.isCurrentFileDeleted()) {
+-        final FileDiff last = file.getDiffs().getLast();
+-        max = last == null? 0: last.fileSize;
+-      } else { 
+-        max = file.asINodeFile().computeFileSize();
+-      }
+-
+-      collectBlocksBeyondMax(file, max, info);
+-    }
+-
+-    private static void collectBlocksBeyondMax(final FileWithSnapshot file,
+-        final long max, final BlocksMapUpdateInfo collectedBlocks) {
+-      final BlockInfo[] oldBlocks = file.asINodeFile().getBlocks();
+-      if (oldBlocks != null) {
+-        //find the minimum n such that the size of the first n blocks > max
+-        int n = 0;
+-        for(long size = 0; n < oldBlocks.length && max > size; n++) {
+-          size += oldBlocks[n].getNumBytes();
+-        }
+-        
+-        // starting from block n, the data is beyond max.
+-        if (n < oldBlocks.length) {
+-          // resize the array.  
+-          final BlockInfo[] newBlocks;
+-          if (n == 0) {
+-            newBlocks = null;
+-          } else {
+-            newBlocks = new BlockInfo[n];
+-            System.arraycopy(oldBlocks, 0, newBlocks, 0, n);
+-          }
+-          
+-          // set new blocks
+-          file.asINodeFile().setBlocks(newBlocks);
+-
+-          // collect the blocks beyond max.  
+-          if (collectedBlocks != null) {
+-            for(; n < oldBlocks.length; n++) {
+-              collectedBlocks.addDeleteBlock(oldBlocks[n]);
+-            }
+-          }
+-        }
+-      }
+-    }
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
+index 1e2c5dd..e31e579 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectorySnapshottable.java
+@@ -432,8 +432,8 @@ private void computeDiffRecursively(INode node, List<byte[]> parentPath,
+           parentPath.remove(parentPath.size() - 1);
+         }
+       }
+-    } else if (node.isFile() && node.asFile() instanceof FileWithSnapshot) {
+-      FileWithSnapshot file = (FileWithSnapshot) node.asFile();
++    } else if (node.isFile() && node.asFile() instanceof INodeFileWithSnapshot) {
++      INodeFileWithSnapshot file = (INodeFileWithSnapshot) node.asFile();
+       Snapshot earlierSnapshot = diffReport.isFromEarlier() ? diffReport.from
+           : diffReport.to;
+       Snapshot laterSnapshot = diffReport.isFromEarlier() ? diffReport.to
+@@ -441,7 +441,7 @@ private void computeDiffRecursively(INode node, List<byte[]> parentPath,
+       boolean change = file.getDiffs().changedBetweenSnapshots(earlierSnapshot,
+           laterSnapshot);
+       if (change) {
+-        diffReport.addFileDiff(file.asINodeFile(), relativePath);
++        diffReport.addFileDiff(file, relativePath);
+       }
+     }
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
+index 5fcd65d..33261a2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
+@@ -804,10 +804,10 @@ public void getSnapshotDirectory(List<INodeDirectory> snapshotDir) {
+         // For DstReference node, since the node is not in the created list of
+         // prior, we should treat it as regular file/dir
+       } else if (topNode.isFile()
+-          && topNode.asFile() instanceof FileWithSnapshot) {
+-        FileWithSnapshot fs = (FileWithSnapshot) topNode.asFile();
+-        counts.add(fs.getDiffs().deleteSnapshotDiff(post, prior,
+-            topNode.asFile(), collectedBlocks, removedINodes, countDiffChange));
++          && topNode.asFile() instanceof INodeFileWithSnapshot) {
++        INodeFileWithSnapshot fs = (INodeFileWithSnapshot) topNode.asFile();
++        counts.add(fs.getDiffs().deleteSnapshotDiff(post, prior, fs,
++            collectedBlocks, removedINodes, countDiffChange));
+       } else if (topNode.isDirectory()) {
+         INodeDirectory dir = topNode.asDirectory();
+         ChildrenDiff priorChildrenDiff = null;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileWithSnapshot.java
+index 7c98cab..c3dc95b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileWithSnapshot.java
+@@ -21,6 +21,7 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
++import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
+@@ -31,14 +32,13 @@
+  * Represent an {@link INodeFile} that is snapshotted.
+  */
+ @InterfaceAudience.Private
+-public class INodeFileWithSnapshot extends INodeFile
+-    implements FileWithSnapshot {
++public class INodeFileWithSnapshot extends INodeFile {
+   private final FileDiffList diffs;
+   private boolean isCurrentFileDeleted = false;
+ 
+   public INodeFileWithSnapshot(INodeFile f) {
+-    this(f, f instanceof FileWithSnapshot?
+-        ((FileWithSnapshot)f).getDiffs(): null);
++    this(f, f instanceof INodeFileWithSnapshot ? 
++        ((INodeFileWithSnapshot) f).getDiffs() : null);
+   }
+ 
+   public INodeFileWithSnapshot(INodeFile f, FileDiffList diffs) {
+@@ -46,12 +46,12 @@ public INodeFileWithSnapshot(INodeFile f, FileDiffList diffs) {
+     this.diffs = diffs != null? diffs: new FileDiffList();
+   }
+ 
+-  @Override
++  /** Is the current file deleted? */
+   public boolean isCurrentFileDeleted() {
+     return isCurrentFileDeleted;
+   }
+   
+-  @Override
++  /** Delete the file from the current tree */
+   public void deleteCurrentFile() {
+     isCurrentFileDeleted = true;
+   }
+@@ -70,12 +70,7 @@ public INodeFileWithSnapshot recordModification(final Snapshot latest,
+     return this;
+   }
+ 
+-  @Override
+-  public INodeFile asINodeFile() {
+-    return this;
+-  }
+-
+-  @Override
++  /** @return the file diff list. */
+   public FileDiffList getDiffs() {
+     return diffs;
+   }
+@@ -90,7 +85,7 @@ public FileDiffList getDiffs() {
+         recordModification(prior, null);
+         deleteCurrentFile();
+       }
+-      Util.collectBlocksAndClear(this, collectedBlocks, removedINodes);
++      this.collectBlocksAndClear(collectedBlocks, removedINodes);
+       return Quota.Counts.newInstance();
+     } else { // delete a snapshot
+       prior = getDiffs().updatePrior(snapshot, prior);
+@@ -104,4 +99,100 @@ public String toDetailString() {
+     return super.toDetailString()
+         + (isCurrentFileDeleted()? "(DELETED), ": ", ") + diffs;
+   }
++  
++  /** 
++   * @return block replication, which is the max file replication among
++   *         the file and the diff list.
++   */
++  @Override
++  public short getBlockReplication() {
++    short max = isCurrentFileDeleted() ? 0 : getFileReplication();
++    for(FileDiff d : getDiffs()) {
++      if (d.snapshotINode != null) {
++        final short replication = d.snapshotINode.getFileReplication();
++        if (replication > max) {
++          max = replication;
++        }
++      }
++    }
++    return max;
++  }
++  
++  /**
++   * If some blocks at the end of the block list no longer belongs to
++   * any inode, collect them and update the block list.
++   */
++  void collectBlocksAndClear(final BlocksMapUpdateInfo info,
++      final List<INode> removedINodes) {
++    // check if everything is deleted.
++    if (isCurrentFileDeleted() && getDiffs().asList().isEmpty()) {
++      destroyAndCollectBlocks(info, removedINodes);
++      return;
++    }
++
++    // find max file size.
++    final long max;
++    if (isCurrentFileDeleted()) {
++      final FileDiff last = getDiffs().getLast();
++      max = last == null? 0: last.getFileSize();
++    } else { 
++      max = computeFileSize();
++    }
++
++    collectBlocksBeyondMax(max, info);
++  }
++
++  private void collectBlocksBeyondMax(final long max,
++      final BlocksMapUpdateInfo collectedBlocks) {
++    final BlockInfo[] oldBlocks = getBlocks();
++    if (oldBlocks != null) {
++      //find the minimum n such that the size of the first n blocks > max
++      int n = 0;
++      for(long size = 0; n < oldBlocks.length && max > size; n++) {
++        size += oldBlocks[n].getNumBytes();
++      }
++      
++      // starting from block n, the data is beyond max.
++      if (n < oldBlocks.length) {
++        // resize the array.  
++        final BlockInfo[] newBlocks;
++        if (n == 0) {
++          newBlocks = null;
++        } else {
++          newBlocks = new BlockInfo[n];
++          System.arraycopy(oldBlocks, 0, newBlocks, 0, n);
++        }
++        
++        // set new blocks
++        setBlocks(newBlocks);
++
++        // collect the blocks beyond max.  
++        if (collectedBlocks != null) {
++          for(; n < oldBlocks.length; n++) {
++            collectedBlocks.addDeleteBlock(oldBlocks[n]);
++          }
++        }
++      }
++    }
++  }
++  
++  Quota.Counts updateQuotaAndCollectBlocks(FileDiff removed,
++      BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes) {
++    long oldDiskspace = this.diskspaceConsumed();
++    if (removed.snapshotINode != null) {
++      short replication = removed.snapshotINode.getFileReplication();
++      short currentRepl = getBlockReplication();
++      if (currentRepl == 0) {
++        oldDiskspace = computeFileSize(true, true) * replication;
++      } else if (replication > currentRepl) {  
++        oldDiskspace = oldDiskspace / getBlockReplication()
++            * replication;
++      }
++    }
++    
++    this.collectBlocksAndClear(collectedBlocks, removedINodes);
++    
++    long dsDelta = oldDiskspace - diskspaceConsumed();
++    return Quota.Counts.newInstance(0, dsDelta);
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
+index 01233dd..d66b254 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
+@@ -36,8 +36,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiff;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiffList;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot.DirectoryDiff;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot.DirectoryDiffList;
+ import org.apache.hadoop.hdfs.tools.snapshot.SnapshotDiff;
+@@ -99,8 +97,8 @@ public static void saveDirectoryDiffList(final INodeDirectory dir,
+   
+   public static void saveFileDiffList(final INodeFile file,
+       final DataOutput out) throws IOException {
+-    saveINodeDiffs(file instanceof FileWithSnapshot?
+-        ((FileWithSnapshot)file).getDiffs(): null, out, null);
++    saveINodeDiffs(file instanceof INodeFileWithSnapshot?
++        ((INodeFileWithSnapshot) file).getDiffs(): null, out, null);
+   }
+ 
+   public static FileDiffList loadFileDiffList(DataInput in,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
+index c0bd91c..5111176 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
+@@ -63,7 +63,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithCount;
+ import org.apache.hadoop.hdfs.server.namenode.Quota;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiff;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot.ChildrenDiff;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot.DirectoryDiff;
+ import org.apache.hadoop.hdfs.util.Diff.ListType;
+-- 
+1.7.0.4
+

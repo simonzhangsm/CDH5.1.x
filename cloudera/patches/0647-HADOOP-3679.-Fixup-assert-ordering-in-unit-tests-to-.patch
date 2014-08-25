@@ -1,0 +1,672 @@
+From d7926fa2b79a694a5d3e882f0f82804a87d45da8 Mon Sep 17 00:00:00 2001
+From: Christopher Douglas <cdouglas@apache.org>
+Date: Fri, 14 Mar 2014 00:47:04 +0000
+Subject: [PATCH 647/795] HADOOP-3679. Fixup assert ordering in unit tests to yield meaningful error
+ messages. Contributed by Jay Vyas
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1577397 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f0254e8d5d3bbd1e080c5b614ab44ffae01b5886)
+---
+ .../test/java/org/apache/hadoop/fs/TestPath.java   |   49 ++++++++-----
+ .../test/java/org/apache/hadoop/fs/TestStat.java   |    4 +-
+ .../org/apache/hadoop/io/TestDataByteBuffers.java  |   13 ++--
+ .../java/org/apache/hadoop/io/TestIOUtils.java     |   12 ++--
+ .../test/java/org/apache/hadoop/io/TestText.java   |   35 ++++++----
+ .../test/java/org/apache/hadoop/ipc/TestRPC.java   |   44 ++++++------
+ .../net/TestNetworkTopologyWithNodeGroup.java      |   18 +++---
+ .../org/apache/hadoop/util/TestGenericsUtil.java   |   77 +++++++++++---------
+ .../org/apache/hadoop/nfs/nfs3/TestFileHandle.java |    3 +-
+ .../apache/hadoop/nfs/nfs3/TestIdUserGroup.java    |   20 +++---
+ .../java/org/apache/hadoop/oncrpc/TestXDR.java     |   10 ++-
+ 11 files changed, 160 insertions(+), 125 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestPath.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestPath.java
+index 2504edf..94908da 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestPath.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestPath.java
+@@ -278,11 +278,11 @@ public void testChildParentResolution() throws URISyntaxException, IOException {
+     Path child  = new Path("foo2://bar2/baz2");
+     assertEquals(child, new Path(parent, child));
+   }
+-  
++
+   @Test (timeout = 30000)
+   public void testScheme() throws java.io.IOException {
+-    assertEquals("foo:/bar", new Path("foo:/","/bar").toString()); 
+-    assertEquals("foo://bar/baz", new Path("foo://bar/","/baz").toString()); 
++    assertEquals("foo:/bar", new Path("foo:/","/bar").toString());
++    assertEquals("foo://bar/baz", new Path("foo://bar/","/baz").toString());
+   }
+ 
+   @Test (timeout = 30000)
+@@ -311,12 +311,19 @@ public void testURI() throws URISyntaxException, IOException {
+   @Test (timeout = 30000)
+   public void testPathToUriConversion() throws URISyntaxException, IOException {
+     // Path differs from URI in that it ignores the query part..
+-    assertEquals(new URI(null, null, "/foo?bar", null, null),  new Path("/foo?bar").toUri());
+-    assertEquals(new URI(null, null, "/foo\"bar", null, null), new Path("/foo\"bar").toUri());
+-    assertEquals(new URI(null, null, "/foo bar", null, null),  new Path("/foo bar").toUri());
+-    // therefore "foo?bar" is a valid Path, so a URI created from a Path has path "foo?bar" 
+-    // where in a straight URI the path part is just "foo"
+-    assertEquals("/foo?bar", new Path("http://localhost/foo?bar").toUri().getPath());
++    assertEquals("? mark char in to URI",
++            new URI(null, null, "/foo?bar", null, null),
++            new Path("/foo?bar").toUri());
++    assertEquals("escape slashes chars in to URI",
++            new URI(null, null, "/foo\"bar", null, null),
++            new Path("/foo\"bar").toUri());
++    assertEquals("spaces in chars to URI",
++            new URI(null, null, "/foo bar", null, null),
++            new Path("/foo bar").toUri());
++    // therefore "foo?bar" is a valid Path, so a URI created from a Path
++    // has path "foo?bar" where in a straight URI the path part is just "foo"
++    assertEquals("/foo?bar",
++            new Path("http://localhost/foo?bar").toUri().getPath());
+     assertEquals("/foo",     new URI("http://localhost/foo?bar").getPath());
+ 
+     // The path part handling in Path is equivalent to URI
+@@ -332,11 +339,14 @@ public void testPathToUriConversion() throws URISyntaxException, IOException {
+   @Test (timeout = 30000)
+   public void testReservedCharacters() throws URISyntaxException, IOException {
+     // URI encodes the path
+-    assertEquals("/foo%20bar", new URI(null, null, "/foo bar", null, null).getRawPath());
++    assertEquals("/foo%20bar",
++            new URI(null, null, "/foo bar", null, null).getRawPath());
+     // URI#getPath decodes the path
+-    assertEquals("/foo bar",   new URI(null, null, "/foo bar", null, null).getPath());
++    assertEquals("/foo bar",
++            new URI(null, null, "/foo bar", null, null).getPath());
+     // URI#toString returns an encoded path
+-    assertEquals("/foo%20bar", new URI(null, null, "/foo bar", null, null).toString());
++    assertEquals("/foo%20bar",
++            new URI(null, null, "/foo bar", null, null).toString());
+     assertEquals("/foo%20bar", new Path("/foo bar").toUri().toString());
+     // Reserved chars are not encoded
+     assertEquals("/foo;bar",   new URI("/foo;bar").getPath());
+@@ -345,12 +355,17 @@ public void testReservedCharacters() throws URISyntaxException, IOException {
+     assertEquals("/foo+bar",   new URI("/foo+bar").getRawPath());
+ 
+     // URI#getPath decodes the path part (and URL#getPath does not decode)
+-    assertEquals("/foo bar",   new Path("http://localhost/foo bar").toUri().getPath());
+-    assertEquals("/foo%20bar", new Path("http://localhost/foo bar").toUri().toURL().getPath());
+-    assertEquals("/foo?bar",   new URI("http", "localhost", "/foo?bar", null, null).getPath());
+-    assertEquals("/foo%3Fbar", new URI("http", "localhost", "/foo?bar", null, null).toURL().getPath());
++    assertEquals("/foo bar",
++            new Path("http://localhost/foo bar").toUri().getPath());
++    assertEquals("/foo%20bar",
++            new Path("http://localhost/foo bar").toUri().toURL().getPath());
++    assertEquals("/foo?bar",
++            new URI("http", "localhost", "/foo?bar", null, null).getPath());
++    assertEquals("/foo%3Fbar",
++            new URI("http", "localhost", "/foo?bar", null, null).
++                toURL().getPath());
+   }
+-  
++
+   @Test (timeout = 30000)
+   public void testMakeQualified() throws URISyntaxException {
+     URI defaultUri = new URI("hdfs://host1/dir1");
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestStat.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestStat.java
+index 9a0154c..32721cd 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestStat.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestStat.java
+@@ -125,10 +125,10 @@ public void testStatFileNotFound() throws Exception {
+       // expected
+     }
+   }
+-  
++
+   @Test(timeout=10000)
+   public void testStatEnvironment() throws Exception {
+-    assertEquals(stat.getEnvironment("LANG"), "C");
++    assertEquals("C", stat.getEnvironment("LANG"));
+   }
+ 
+   @Test(timeout=10000)
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestDataByteBuffers.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestDataByteBuffers.java
+index aeaefb6..1a9dd3b 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestDataByteBuffers.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestDataByteBuffers.java
+@@ -139,24 +139,25 @@ public void testDataOutputByteBufferCompatibility() throws IOException {
+     writeJunk(dob, r, seed, 1000);
+     writeJunk(dobb, r, seed, 1000);
+     byte[] check = toBytes(dobb.getData(), dobb.getLength());
+-    assertEquals(dob.getLength(), check.length);
+-    assertArrayEquals(Arrays.copyOf(dob.getData(), dob.getLength()), check);
++    assertEquals(check.length, dob.getLength());
++    assertArrayEquals(check, Arrays.copyOf(dob.getData(), dob.getLength()));
+ 
+     dob.reset();
+     dobb.reset();
+     writeJunk(dob, r, seed, 3000);
+     writeJunk(dobb, r, seed, 3000);
+     check = toBytes(dobb.getData(), dobb.getLength());
+-    assertEquals(dob.getLength(), check.length);
+-    assertArrayEquals(Arrays.copyOf(dob.getData(), dob.getLength()), check);
++    assertEquals(check.length, dob.getLength());
++    assertArrayEquals(check, Arrays.copyOf(dob.getData(), dob.getLength()));
+ 
+     dob.reset();
+     dobb.reset();
+     writeJunk(dob, r, seed, 1000);
+     writeJunk(dobb, r, seed, 1000);
+     check = toBytes(dobb.getData(), dobb.getLength());
+-    assertEquals(dob.getLength(), check.length);
+-    assertArrayEquals(Arrays.copyOf(dob.getData(), dob.getLength()), check);
++    assertEquals("Failed Checking length = " + check.length,
++            check.length, dob.getLength());
++    assertArrayEquals(check, Arrays.copyOf(dob.getData(), dob.getLength()));
+   }
+ 
+   @Test
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestIOUtils.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestIOUtils.java
+index b78b1ea..4be8a44 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestIOUtils.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestIOUtils.java
+@@ -190,16 +190,16 @@ public void testSkipFully() throws IOException {
+         IOUtils.skipFully(in, 2);
+         fail("expected to get a PrematureEOFException");
+       } catch (EOFException e) {
+-        assertEquals(e.getMessage(), "Premature EOF from inputStream " +
+-            "after skipping 1 byte(s).");
++        assertEquals("Premature EOF from inputStream " +
++                "after skipping 1 byte(s).",e.getMessage());
+       }
+       in.reset();
+       try {
+         IOUtils.skipFully(in, 20);
+         fail("expected to get a PrematureEOFException");
+       } catch (EOFException e) {
+-        assertEquals(e.getMessage(), "Premature EOF from inputStream " +
+-            "after skipping 5 byte(s).");
++        assertEquals("Premature EOF from inputStream " +
++                "after skipping 5 byte(s).",e.getMessage());
+       }
+       in.reset();
+       IOUtils.skipFully(in, 5);
+@@ -207,8 +207,8 @@ public void testSkipFully() throws IOException {
+         IOUtils.skipFully(in, 10);
+         fail("expected to get a PrematureEOFException");
+       } catch (EOFException e) {
+-        assertEquals(e.getMessage(), "Premature EOF from inputStream " +
+-            "after skipping 0 byte(s).");
++        assertEquals("Premature EOF from inputStream " +
++                "after skipping 0 byte(s).",e.getMessage());
+       }
+     } finally {
+       in.close();
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestText.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestText.java
+index 0fbe46a..4b04931 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestText.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/TestText.java
+@@ -212,10 +212,13 @@ public void testCompare() throws Exception {
+           
+       assertEquals(ret1, ret2);
+           
+-      // test equal
+-      assertEquals(txt1.compareTo(txt3), 0);
+-      assertEquals(comparator.compare(out1.getData(), 0, out3.getLength(),
+-                                      out3.getData(), 0, out3.getLength()), 0);
++      assertEquals("Equivalence of different txt objects, same content" ,
++              0,
++              txt1.compareTo(txt3));
++      assertEquals("Equvalence of data output buffers",
++              0,
++              comparator.compare(out1.getData(), 0, out3.getLength(),
++                      out3.getData(), 0, out3.getLength()));
+     }
+   }
+       
+@@ -287,7 +290,7 @@ public ConcurrentEncodeDecodeThread(String name) {
+ 
+     @Override
+     public void run() {
+-      String name = this.getName();
++      final String name = this.getName();
+       DataOutputBuffer out = new DataOutputBuffer();
+       DataInputBuffer in = new DataInputBuffer();
+       for (int i=0; i < 1000; ++i) {
+@@ -298,7 +301,7 @@ public void run() {
+           in.reset(out.getData(), out.getLength());
+           String s = WritableUtils.readString(in);
+           
+-          assertEquals(name, s);
++          assertEquals("input buffer reset contents = " + name, name, s);
+         } catch (Exception ioe) {
+           throw new RuntimeException(ioe);
+         }
+@@ -388,13 +391,19 @@ public void testbytesToCodePointWithInvalidUTF() {
+     }
+   }
+   
+-  public void testUtf8Length() {         
+-    assertEquals("testUtf8Length1 error   !!!", 1, Text.utf8Length(new String(new char[]{(char)1})));
+-    assertEquals("testUtf8Length127 error !!!", 1, Text.utf8Length(new String(new char[]{(char)127})));
+-    assertEquals("testUtf8Length128 error !!!", 2, Text.utf8Length(new String(new char[]{(char)128})));
+-    assertEquals("testUtf8Length193 error !!!", 2, Text.utf8Length(new String(new char[]{(char)193})));    
+-    assertEquals("testUtf8Length225 error !!!", 2, Text.utf8Length(new String(new char[]{(char)225})));
+-    assertEquals("testUtf8Length254 error !!!", 2, Text.utf8Length(new String(new char[]{(char)254})));                 
++  public void testUtf8Length() {
++    assertEquals("testUtf8Length1 error   !!!",
++            1, Text.utf8Length(new String(new char[]{(char)1})));
++    assertEquals("testUtf8Length127 error !!!",
++            1, Text.utf8Length(new String(new char[]{(char)127})));
++    assertEquals("testUtf8Length128 error !!!",
++            2, Text.utf8Length(new String(new char[]{(char)128})));
++    assertEquals("testUtf8Length193 error !!!",
++            2, Text.utf8Length(new String(new char[]{(char)193})));
++    assertEquals("testUtf8Length225 error !!!",
++            2, Text.utf8Length(new String(new char[]{(char)225})));
++    assertEquals("testUtf8Length254 error !!!",
++            2, Text.utf8Length(new String(new char[]{(char)254})));
+   }
+   
+   public static void main(String[] args)  throws Exception
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestRPC.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestRPC.java
+index 6aac0fb..2f651ca 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestRPC.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestRPC.java
+@@ -228,7 +228,7 @@ public void run() {
+         assertTrue("Exception from RPC exchange() "  + e, false);
+       }
+       assertEquals(indata.length, outdata.length);
+-      assertEquals(val, 3);
++      assertEquals(3, val);
+       for (int i = 0; i < outdata.length; i++) {
+         assertEquals(outdata[i], i);
+       }
+@@ -468,17 +468,17 @@ private void testCallsInternal(Configuration conf) throws Exception {
+     assertTrue(Arrays.equals(stringResults, null));
+ 
+     UTF8 utf8Result = (UTF8)proxy.echo(new UTF8("hello world"));
+-    assertEquals(utf8Result, new UTF8("hello world"));
++    assertEquals(new UTF8("hello world"), utf8Result );
+ 
+     utf8Result = (UTF8)proxy.echo((UTF8)null);
+-    assertEquals(utf8Result, null);
++    assertEquals(null, utf8Result);
+ 
+     int intResult = proxy.add(1, 2);
+     assertEquals(intResult, 3);
+ 
+     intResult = proxy.add(new int[] {1, 2});
+     assertEquals(intResult, 3);
+-    
++
+     // Test protobufs
+     EnumDescriptorProto sendProto =
+       EnumDescriptorProto.newBuilder().setName("test").build();
+@@ -603,28 +603,28 @@ public void testServerAddress() throws IOException {
+     } finally {
+       server.stop();
+     }
+-    assertEquals(bindAddr.getAddress(), InetAddress.getLocalHost());
++    assertEquals(InetAddress.getLocalHost(), bindAddr.getAddress());
+   }
+-  
++
+   @Test
+   public void testAuthorization() throws Exception {
+     Configuration conf = new Configuration();
+     conf.setBoolean(CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION,
+         true);
+-    
++
+     // Expect to succeed
+     conf.set(ACL_CONFIG, "*");
+     doRPCs(conf, false);
+-    
++
+     // Reset authorization to expect failure
+     conf.set(ACL_CONFIG, "invalid invalid");
+     doRPCs(conf, true);
+-    
++
+     conf.setInt(CommonConfigurationKeys.IPC_SERVER_RPC_READ_THREADS_KEY, 2);
+     // Expect to succeed
+     conf.set(ACL_CONFIG, "*");
+     doRPCs(conf, false);
+-    
++
+     // Reset authorization to expect failure
+     conf.set(ACL_CONFIG, "invalid invalid");
+     doRPCs(conf, true);
+@@ -658,43 +658,43 @@ public void testStopNonRegisteredProxy() throws Exception {
+    * be stopped without error.
+    */
+   @Test
+-  public void testStopMockObject() throws Exception {
+-    RPC.stopProxy(MockitoUtil.mockProtocol(TestProtocol.class)); 
++  public void testStopMockObject() throws IOException {
++    RPC.stopProxy(MockitoUtil.mockProtocol(TestProtocol.class));
+   }
+-  
++
+   @Test
+   public void testStopProxy() throws IOException {
+     StoppedProtocol proxy = RPC.getProxy(StoppedProtocol.class,
+         StoppedProtocol.versionID, null, conf);
+     StoppedInvocationHandler invocationHandler = (StoppedInvocationHandler)
+         Proxy.getInvocationHandler(proxy);
+-    assertEquals(invocationHandler.getCloseCalled(), 0);
++    assertEquals(0, invocationHandler.getCloseCalled());
+     RPC.stopProxy(proxy);
+-    assertEquals(invocationHandler.getCloseCalled(), 1);
++    assertEquals(1, invocationHandler.getCloseCalled());
+   }
+-  
++
+   @Test
+   public void testWrappedStopProxy() throws IOException {
+     StoppedProtocol wrappedProxy = RPC.getProxy(StoppedProtocol.class,
+         StoppedProtocol.versionID, null, conf);
+     StoppedInvocationHandler invocationHandler = (StoppedInvocationHandler)
+         Proxy.getInvocationHandler(wrappedProxy);
+-    
++
+     StoppedProtocol proxy = (StoppedProtocol) RetryProxy.create(StoppedProtocol.class,
+         wrappedProxy, RetryPolicies.RETRY_FOREVER);
+-    
+-    assertEquals(invocationHandler.getCloseCalled(), 0);
++
++    assertEquals(0, invocationHandler.getCloseCalled());
+     RPC.stopProxy(proxy);
+-    assertEquals(invocationHandler.getCloseCalled(), 1);
++    assertEquals(1, invocationHandler.getCloseCalled());
+   }
+-  
++
+   @Test
+   public void testErrorMsgForInsecureClient() throws Exception {
+     Configuration serverConf = new Configuration(conf);
+     SecurityUtil.setAuthenticationMethod(AuthenticationMethod.KERBEROS,
+                                          serverConf);
+     UserGroupInformation.setConfiguration(serverConf);
+-    
++
+     final Server server = new RPC.Builder(serverConf).setProtocol(TestProtocol.class)
+         .setInstance(new TestImpl()).setBindAddress(ADDRESS).setPort(0)
+         .setNumHandlers(5).setVerbose(true).build();
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/net/TestNetworkTopologyWithNodeGroup.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/net/TestNetworkTopologyWithNodeGroup.java
+index 2b6ce62..5fa2e14 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/net/TestNetworkTopologyWithNodeGroup.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/net/TestNetworkTopologyWithNodeGroup.java
+@@ -54,17 +54,17 @@
+ 
+   @Test
+   public void testNumOfChildren() throws Exception {
+-    assertEquals(cluster.getNumOfLeaves(), dataNodes.length);
++    assertEquals(dataNodes.length, cluster.getNumOfLeaves());
+   }
+ 
+   @Test
+   public void testNumOfRacks() throws Exception {
+-    assertEquals(cluster.getNumOfRacks(), 3);
++    assertEquals(3, cluster.getNumOfRacks());
+   }
+ 
+   @Test
+   public void testRacks() throws Exception {
+-    assertEquals(cluster.getNumOfRacks(), 3);
++    assertEquals(3, cluster.getNumOfRacks());
+     assertTrue(cluster.isOnSameRack(dataNodes[0], dataNodes[1]));
+     assertTrue(cluster.isOnSameRack(dataNodes[1], dataNodes[2]));
+     assertFalse(cluster.isOnSameRack(dataNodes[2], dataNodes[3]));
+@@ -76,7 +76,7 @@ public void testRacks() throws Exception {
+ 
+   @Test
+   public void testNodeGroups() throws Exception {
+-    assertEquals(cluster.getNumOfRacks(), 3);
++    assertEquals(3, cluster.getNumOfRacks());
+     assertTrue(cluster.isOnSameNodeGroup(dataNodes[0], dataNodes[1]));
+     assertFalse(cluster.isOnSameNodeGroup(dataNodes[1], dataNodes[2]));
+     assertFalse(cluster.isOnSameNodeGroup(dataNodes[2], dataNodes[3]));
+@@ -88,11 +88,11 @@ public void testNodeGroups() throws Exception {
+ 
+   @Test
+   public void testGetDistance() throws Exception {
+-    assertEquals(cluster.getDistance(dataNodes[0], dataNodes[0]), 0);
+-    assertEquals(cluster.getDistance(dataNodes[0], dataNodes[1]), 2);
+-    assertEquals(cluster.getDistance(dataNodes[0], dataNodes[2]), 4);
+-    assertEquals(cluster.getDistance(dataNodes[0], dataNodes[3]), 6);
+-    assertEquals(cluster.getDistance(dataNodes[0], dataNodes[6]), 8);
++    assertEquals(0, cluster.getDistance(dataNodes[0], dataNodes[0]));
++    assertEquals(2, cluster.getDistance(dataNodes[0], dataNodes[1]));
++    assertEquals(4, cluster.getDistance(dataNodes[0], dataNodes[2]));
++    assertEquals(6, cluster.getDistance(dataNodes[0], dataNodes[3]));
++    assertEquals(8, cluster.getDistance(dataNodes[0], dataNodes[6]));
+   }
+ 
+   @Test
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestGenericsUtil.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestGenericsUtil.java
+index cf90332..25e2ce9 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestGenericsUtil.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestGenericsUtil.java
+@@ -28,100 +28,107 @@
+ public class TestGenericsUtil extends TestCase {
+ 
+   public void testToArray() {
+-    
++
+     //test a list of size 10
+-    List<Integer> list = new ArrayList<Integer>(); 
+-    
++    List<Integer> list = new ArrayList<Integer>();
++
+     for(int i=0; i<10; i++) {
+       list.add(i);
+     }
+-    
++
+     Integer[] arr = GenericsUtil.toArray(list);
+-    
++
+     for (int i = 0; i < arr.length; i++) {
+-      assertEquals(list.get(i), arr[i]);
++      assertEquals(
++              "Array has identical elements as input list",
++              list.get(i), arr[i]);
+     }
+   }
+-  
++
+   public void testWithEmptyList() {
+     try {
+       List<String> list = new ArrayList<String>();
+       String[] arr = GenericsUtil.toArray(list);
+       fail("Empty array should throw exception");
+       System.out.println(arr); //use arr so that compiler will not complain
+-      
++
+     }catch (IndexOutOfBoundsException ex) {
+       //test case is successful
+     }
+   }
+- 
++
+   public void testWithEmptyList2() {
+     List<String> list = new ArrayList<String>();
+     //this method should not throw IndexOutOfBoundsException
+     String[] arr = GenericsUtil.<String>toArray(String.class, list);
+-    
+-    assertEquals(0, arr.length);
++
++    assertEquals("Assert list creation w/ no elements results in length 0",
++            0, arr.length);
+   }
+-  
++
+   /** This class uses generics */
+   private class GenericClass<T> {
+     T dummy;
+     List<T> list = new ArrayList<T>();
+-    
++
+     void add(T item) {
+       list.add(item);
+     }
+-    
++
+     T[] funcThatUsesToArray() {
+       T[] arr = GenericsUtil.toArray(list);
+       return arr;
+     }
+   }
+-  
++
+   public void testWithGenericClass() {
+-    
++
+     GenericClass<String> testSubject = new GenericClass<String>();
+-    
++
+     testSubject.add("test1");
+     testSubject.add("test2");
+-    
++
+     try {
+-      //this cast would fail, if we had not used GenericsUtil.toArray, since the 
++      //this cast would fail, if we had not used GenericsUtil.toArray, since the
+       //rmethod would return Object[] rather than String[]
+       String[] arr = testSubject.funcThatUsesToArray();
+-      
++
+       assertEquals("test1", arr[0]);
+       assertEquals("test2", arr[1]);
+-      
++
+     }catch (ClassCastException ex) {
+       fail("GenericsUtil#toArray() is not working for generic classes");
+     }
+-    
++
+   }
+-  
++
+   public void testGenericOptionsParser() throws Exception {
+      GenericOptionsParser parser = new GenericOptionsParser(
+         new Configuration(), new String[] {"-jt"});
+-    assertEquals(parser.getRemainingArgs().length, 0);
+-    
++    assertEquals(0, parser.getRemainingArgs().length);
++
+     //  test if -D accepts -Dx=y=z
+-    parser = 
+-      new GenericOptionsParser(new Configuration(), 
++    parser =
++      new GenericOptionsParser(new Configuration(),
+                                new String[] {"-Dx=y=z"});
+-    assertEquals(parser.getConfiguration().get("x"), "y=z");
++    assertEquals(
++            "Options parser gets entire ='s expresion",
++            "y=z", parser.getConfiguration().get("x"));
+   }
+-  
++
+   public void testGetClass() {
+-    
++
+     //test with Integer
+-    Integer x = new Integer(42); 
++    Integer x = new Integer(42);
+     Class<Integer> c = GenericsUtil.getClass(x);
+-    assertEquals(Integer.class, c);
+-    
++    assertEquals("Correct generic type is acquired from object",
++            Integer.class, c);
++
+     //test with GenericClass<Integer>
+     GenericClass<Integer> testSubject = new GenericClass<Integer>();
+     Class<GenericClass<Integer>> c2 = GenericsUtil.getClass(testSubject);
+-    assertEquals(GenericClass.class, c2);
++    assertEquals("Inner generics are acquired from object.",
++            GenericClass.class, c2);
+   }
+-  
++
+ }
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestFileHandle.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestFileHandle.java
+index 0c82cb0..5391664 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestFileHandle.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestFileHandle.java
+@@ -34,6 +34,7 @@ public void testConstructor() {
+     // Deserialize it back 
+     FileHandle handle2 = new FileHandle();
+     handle2.deserialize(xdr.asReadOnlyWrap());
+-    Assert.assertEquals(handle.getFileId(), 1024);
++    Assert.assertEquals("Failed: Assert 1024 is id ", 1024, 
++            handle.getFileId());
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+index c991f86..77477ff 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+@@ -53,19 +53,19 @@ public void testDuplicates() throws IOException {
+ 
+     IdUserGroup.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":");
+     assertTrue(uMap.size() == 5);
+-    assertEquals(uMap.get(0), "root");
+-    assertEquals(uMap.get(11501), "hdfs");
+-    assertEquals(uMap.get(11502), "hdfs2");
+-    assertEquals(uMap.get(2), "bin");
+-    assertEquals(uMap.get(1), "daemon");
+-    
++    assertEquals("root", uMap.get(0));
++    assertEquals("hdfs", uMap.get(11501));
++    assertEquals("hdfs2",uMap.get(11502));
++    assertEquals("bin", uMap.get(2));
++    assertEquals("daemon", uMap.get(1));
++
+     IdUserGroup.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":");
+     assertTrue(gMap.size() == 3);
+-    assertEquals(gMap.get(11501), "hdfs");
+-    assertEquals(gMap.get(497), "mapred");
+-    assertEquals(gMap.get(498), "mapred3");    
++    assertEquals("hdfs",gMap.get(11501));
++    assertEquals("mapred", gMap.get(497));
++    assertEquals("mapred3", gMap.get(498));
+   }
+-  
++
+   @Test
+   public void testIdOutOfIntegerRange() throws IOException {
+     String GET_ALL_USERS_CMD = "echo \""
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/oncrpc/TestXDR.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/oncrpc/TestXDR.java
+index 98836db..4c6c735 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/oncrpc/TestXDR.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/oncrpc/TestXDR.java
+@@ -21,24 +21,26 @@
+ import org.junit.Test;
+ 
+ public class TestXDR {
++  static final int WRITE_VALUE=23;
+   private void serializeInt(int times) {
+     XDR w = new XDR();
+     for (int i = 0; i < times; ++i)
+-      w.writeInt(23);
++      w.writeInt(WRITE_VALUE);
+ 
+     XDR r = w.asReadOnlyWrap();
+     for (int i = 0; i < times; ++i)
+-      Assert.assertEquals(r.readInt(), 23);
++      Assert.assertEquals(
++              WRITE_VALUE,r.readInt());
+   }
+ 
+   private void serializeLong(int times) {
+     XDR w = new XDR();
+     for (int i = 0; i < times; ++i)
+-      w.writeLongAsHyper(23);
++      w.writeLongAsHyper(WRITE_VALUE);
+ 
+     XDR r = w.asReadOnlyWrap();
+     for (int i = 0; i < times; ++i)
+-      Assert.assertEquals(r.readHyper(), 23);
++      Assert.assertEquals(WRITE_VALUE, r.readHyper());
+   }
+ 
+   @Test
+-- 
+1.7.0.4
+

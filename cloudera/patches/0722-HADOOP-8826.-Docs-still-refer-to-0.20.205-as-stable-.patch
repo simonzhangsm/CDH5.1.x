@@ -1,0 +1,28 @@
+From 0d6f7f3b8726f480e35103f62e1b531f2d4e816c Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 3 Jun 2014 00:01:38 -0700
+Subject: [PATCH 722/795] HADOOP-8826. Docs still refer to 0.20.205 as stable line (Mit Desai via jeagles)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1586687 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop-yarn-site/src/site/apt/YARN.apt.vm      |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YARN.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YARN.apt.vm
+index d380fdb..465c5d1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YARN.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/YARN.apt.vm
+@@ -72,6 +72,6 @@ Apache Hadoop NextGen MapReduce (YARN)
+   monitoring for progress.
+ 
+   MRV2 maintains <<API compatibility>> with previous stable release 
+-  (hadoop-0.20.205).  This means that all Map-Reduce jobs should still run 
++  (hadoop-1.x).  This means that all Map-Reduce jobs should still run 
+   unchanged on top of MRv2 with just a recompile.
+ 
+-- 
+1.7.0.4
+

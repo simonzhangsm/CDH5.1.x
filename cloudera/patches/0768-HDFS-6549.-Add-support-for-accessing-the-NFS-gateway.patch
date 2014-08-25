@@ -1,0 +1,294 @@
+From 24d42e4d9f49370da36582c7b83364b7e9f8750b Mon Sep 17 00:00:00 2001
+From: Aaron Myers <atm@apache.org>
+Date: Thu, 19 Jun 2014 19:41:24 +0000
+Subject: [PATCH 768/795] HDFS-6549. Add support for accessing the NFS gateway from the AIX NFS client. Contributed by Aaron T. Myers.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1604023 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit cc8a40ec3fb25b53cfe7b7d1635e68be758efc0c)
+(cherry picked from commit 7c546f788d334f0d5907eea7c4552d29a4eba269)
+---
+ .../apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java |    4 +-
+ .../apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java   |   36 ++++++++++++---
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |   49 ++++++++++++++++---
+ .../apache/hadoop/hdfs/nfs/nfs3/WriteManager.java  |    7 ++-
+ .../apache/hadoop/hdfs/nfs/nfs3/TestWrites.java    |   25 ++++++++++-
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |   19 ++++++++
+ 6 files changed, 121 insertions(+), 19 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java
+index d1543b8..2f65ce4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java
+@@ -55,4 +55,6 @@
+   public static final String DFS_NFS_PORT_MONITORING_DISABLED_KEY = "nfs.port.monitoring.disabled";
+   public static final boolean DFS_NFS_PORT_MONITORING_DISABLED_DEFAULT = true;
+ 
+-}
+\ No newline at end of file
++  public static final String  AIX_COMPAT_MODE_KEY = "nfs.aix.compatibility.mode.enabled";
++  public static final boolean AIX_COMPAT_MODE_DEFAULT = false;
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
+index a2f8393..25be154 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/OpenFileCtx.java
+@@ -94,6 +94,7 @@
+    */
+   private AtomicLong nextOffset;
+   private final HdfsDataOutputStream fos;
++  private final boolean aixCompatMode;
+   
+   // It's updated after each sync to HDFS
+   private Nfs3FileAttributes latestAttr;
+@@ -198,8 +199,15 @@ private long updateNonSequentialWriteInMemory(long count) {
+   
+   OpenFileCtx(HdfsDataOutputStream fos, Nfs3FileAttributes latestAttr,
+       String dumpFilePath, DFSClient client, IdUserGroup iug) {
++    this(fos, latestAttr, dumpFilePath, client, iug, false);
++  }
++  
++  OpenFileCtx(HdfsDataOutputStream fos, Nfs3FileAttributes latestAttr,
++      String dumpFilePath, DFSClient client, IdUserGroup iug,
++      boolean aixCompatMode) {
+     this.fos = fos;
+     this.latestAttr = latestAttr;
++    this.aixCompatMode = aixCompatMode;
+     // We use the ReverseComparatorOnMin as the comparator of the map. In this
+     // way, we first dump the data with larger offset. In the meanwhile, we
+     // retrieve the last element to write back to HDFS.
+@@ -787,15 +795,29 @@ synchronized COMMIT_STATUS checkCommitInternal(long commitOffset,
+     }
+ 
+     if (commitOffset > 0) {
+-      if (commitOffset > flushed) {
+-        if (!fromRead) {
+-          CommitCtx commitCtx = new CommitCtx(commitOffset, channel, xid,
+-              preOpAttr);
+-          pendingCommits.put(commitOffset, commitCtx);
++      if (aixCompatMode) {
++        // The AIX NFS client misinterprets RFC-1813 and will always send 4096
++        // for the commitOffset even if fewer bytes than that have ever (or will
++        // ever) be sent by the client. So, if in AIX compatibility mode, we
++        // will always DO_SYNC if the number of bytes to commit have already all
++        // been flushed, else we will fall through to the logic below which
++        // checks for pending writes in the case that we're being asked to
++        // commit more bytes than have so far been flushed. See HDFS-6549 for
++        // more info.
++        if (commitOffset <= flushed) {
++          return COMMIT_STATUS.COMMIT_DO_SYNC;
+         }
+-        return COMMIT_STATUS.COMMIT_WAIT;
+       } else {
+-        return COMMIT_STATUS.COMMIT_DO_SYNC;
++        if (commitOffset > flushed) {
++          if (!fromRead) {
++            CommitCtx commitCtx = new CommitCtx(commitOffset, channel, xid,
++                preOpAttr);
++            pendingCommits.put(commitOffset, commitCtx);
++          }
++          return COMMIT_STATUS.COMMIT_WAIT;
++        } else {
++          return COMMIT_STATUS.COMMIT_DO_SYNC;
++        } 
+       }
+     }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 4fc14ba..446e722 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -153,6 +153,7 @@
+   private final short replication;
+   private final long blockSize;
+   private final int bufferSize;
++  private final boolean aixCompatMode;
+   private Statistics statistics;
+   private String writeDumpDir; // The dir save dump files
+   
+@@ -170,8 +171,11 @@ public RpcProgramNfs3(NfsConfiguration config, DatagramSocket registrationSocket
+     config.set(FsPermission.UMASK_LABEL, "000");
+     iug = new IdUserGroup(config);
+     
++    aixCompatMode = config.getBoolean(
++        NfsConfigKeys.AIX_COMPAT_MODE_KEY,
++        NfsConfigKeys.AIX_COMPAT_MODE_DEFAULT);
+     exports = NfsExports.getInstance(config);
+-    writeManager = new WriteManager(iug, config);
++    writeManager = new WriteManager(iug, config, aixCompatMode);
+     clientCache = new DFSClientCache(config);
+     replication = (short) config.getInt(DFSConfigKeys.DFS_REPLICATION_KEY,
+         DFSConfigKeys.DFS_REPLICATION_DEFAULT);
+@@ -900,7 +904,8 @@ CREATE3Response create(XDR xdr, SecurityHandler securityHandler,
+       
+       // Add open stream
+       OpenFileCtx openFileCtx = new OpenFileCtx(fos, postOpObjAttr,
+-          writeDumpDir + "/" + postOpObjAttr.getFileId(), dfsClient, iug);
++          writeDumpDir + "/" + postOpObjAttr.getFileId(), dfsClient, iug,
++          aixCompatMode);
+       fileHandle = new FileHandle(postOpObjAttr.getFileId());
+       if (!writeManager.addOpenFileStream(fileHandle, openFileCtx)) {
+         LOG.warn("Can't add more stream, close it."
+@@ -1438,9 +1443,24 @@ public READDIR3Response readdir(XDR xdr, SecurityHandler securityHandler,
+       }
+       long cookieVerf = request.getCookieVerf();
+       if ((cookieVerf != 0) && (cookieVerf != dirStatus.getModificationTime())) {
+-        LOG.error("CookierVerf mismatch. request cookierVerf:" + cookieVerf
+-            + " dir cookieVerf:" + dirStatus.getModificationTime());
+-        return new READDIR3Response(Nfs3Status.NFS3ERR_BAD_COOKIE);
++        if (aixCompatMode) {
++          // The AIX NFS client misinterprets RFC-1813 and will repeatedly send
++          // the same cookieverf value even across VFS-level readdir calls,
++          // instead of getting a new cookieverf for every VFS-level readdir
++          // call, and reusing the cookieverf only in the event that multiple
++          // incremental NFS-level readdir calls must be made to fetch all of
++          // the directory entries. This means that whenever a readdir call is
++          // made by an AIX NFS client for a given directory, and that directory
++          // is subsequently modified, thus changing its mtime, no later readdir
++          // calls will succeed from AIX for that directory until the FS is
++          // unmounted/remounted. See HDFS-6549 for more info.
++          LOG.warn("AIX compatibility mode enabled, ignoring cookieverf " +
++              "mismatches.");
++        } else {
++          LOG.error("CookieVerf mismatch. request cookieVerf: " + cookieVerf
++              + " dir cookieVerf: " + dirStatus.getModificationTime());
++          return new READDIR3Response(Nfs3Status.NFS3ERR_BAD_COOKIE);
++        }
+       }
+ 
+       if (cookie == 0) {
+@@ -1588,9 +1608,22 @@ READDIRPLUS3Response readdirplus(XDR xdr, SecurityHandler securityHandler,
+       }
+       long cookieVerf = request.getCookieVerf();
+       if ((cookieVerf != 0) && (cookieVerf != dirStatus.getModificationTime())) {
+-        LOG.error("CookierVerf mismatch. request cookierVerf:" + cookieVerf
+-            + " dir cookieVerf:" + dirStatus.getModificationTime());
+-        return new READDIRPLUS3Response(Nfs3Status.NFS3ERR_BAD_COOKIE);
++        if (aixCompatMode) {
++          // The AIX NFS client misinterprets RFC-1813 and will repeatedly send
++          // the same cookieverf value even across VFS-level readdir calls,
++          // instead of getting a new cookieverf for every VFS-level readdir
++          // call. This means that whenever a readdir call is made by an AIX NFS
++          // client for a given directory, and that directory is subsequently
++          // modified, thus changing its mtime, no later readdir calls will
++          // succeed for that directory from AIX until the FS is
++          // unmounted/remounted. See HDFS-6549 for more info.
++          LOG.warn("AIX compatibility mode enabled, ignoring cookieverf " +
++              "mismatches.");
++        } else {
++          LOG.error("cookieverf mismatch. request cookieverf: " + cookieVerf
++              + " dir cookieverf: " + dirStatus.getModificationTime());
++          return new READDIRPLUS3Response(Nfs3Status.NFS3ERR_BAD_COOKIE);
++        }
+       }
+ 
+       if (cookie == 0) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
+index 2cd8b22..5f2ded7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/WriteManager.java
+@@ -58,6 +58,7 @@
+   private boolean asyncDataServiceStarted = false;
+ 
+   private final int maxStreams;
++  private final boolean aixCompatMode;
+ 
+   /**
+    * The time limit to wait for accumulate reordered sequential writes to the
+@@ -79,9 +80,11 @@ boolean addOpenFileStream(FileHandle h, OpenFileCtx ctx) {
+     return fileContextCache.put(h, ctx);
+   }
+   
+-  WriteManager(IdUserGroup iug, final NfsConfiguration config) {
++  WriteManager(IdUserGroup iug, final NfsConfiguration config,
++      boolean aixCompatMode) {
+     this.iug = iug;
+     this.config = config;
++    this.aixCompatMode = aixCompatMode;
+     streamTimeout = config.getLong(NfsConfigKeys.DFS_NFS_STREAM_TIMEOUT_KEY,
+         NfsConfigKeys.DFS_NFS_STREAM_TIMEOUT_DEFAULT);
+     LOG.info("Stream timeout is " + streamTimeout + "ms.");
+@@ -175,7 +178,7 @@ void handleWrite(DFSClient dfsClient, WRITE3Request request, Channel channel,
+       String writeDumpDir = config.get(NfsConfigKeys.DFS_NFS_FILE_DUMP_DIR_KEY,
+           NfsConfigKeys.DFS_NFS_FILE_DUMP_DIR_DEFAULT);
+       openFileCtx = new OpenFileCtx(fos, latestAttr, writeDumpDir + "/"
+-          + fileHandle.getFileId(), dfsClient, iug);
++          + fileHandle.getFileId(), dfsClient, iug, aixCompatMode);
+ 
+       if (!addOpenFileStream(fileHandle, openFileCtx)) {
+         LOG.info("Can't add new stream. Close it. Tell client to retry.");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+index 38d1425..1aed72c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+@@ -189,6 +189,29 @@ public void testCheckCommit() throws IOException {
+     ret = ctx.checkCommit(dfsClient, 0, ch, 1, attr, false);
+     Assert.assertTrue(ret == COMMIT_STATUS.COMMIT_FINISHED);
+   }
++  
++  @Test
++  public void testCheckCommitAixCompatMode() throws IOException {
++    DFSClient dfsClient = Mockito.mock(DFSClient.class);
++    Nfs3FileAttributes attr = new Nfs3FileAttributes();
++    HdfsDataOutputStream fos = Mockito.mock(HdfsDataOutputStream.class);
++
++    // Last argument "true" here to enable AIX compatibility mode.
++    OpenFileCtx ctx = new OpenFileCtx(fos, attr, "/dumpFilePath", dfsClient,
++        new IdUserGroup(new NfsConfiguration()), true);
++    
++    // Test fall-through to pendingWrites check in the event that commitOffset
++    // is greater than the number of bytes we've so far flushed.
++    Mockito.when(fos.getPos()).thenReturn((long) 2);
++    COMMIT_STATUS status = ctx.checkCommitInternal(5, null, 1, attr, false);
++    Assert.assertTrue(status == COMMIT_STATUS.COMMIT_FINISHED);
++    
++    // Test the case when we actually have received more bytes than we're trying
++    // to commit.
++    Mockito.when(fos.getPos()).thenReturn((long) 10);
++    status = ctx.checkCommitInternal(5, null, 1, attr, false);
++    Assert.assertTrue(status == COMMIT_STATUS.COMMIT_DO_SYNC);
++  }
+ 
+   @Test
+   // Validate all the commit check return codes OpenFileCtx.COMMIT_STATUS, which
+@@ -206,7 +229,7 @@ public void testCheckCommitFromRead() throws IOException {
+ 
+     FileHandle h = new FileHandle(1); // fake handle for "/dumpFilePath"
+     COMMIT_STATUS ret;
+-    WriteManager wm = new WriteManager(new IdUserGroup(config), config);
++    WriteManager wm = new WriteManager(new IdUserGroup(config), config, false);
+     assertTrue(wm.addOpenFileStream(h, ctx));
+     
+     // Test inactive open file context
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index 8896e20..1d19372 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -90,6 +90,25 @@ HDFS NFS Gateway
+   </property>
+ ----
+ 
++   The AIX NFS client has a {{{https://issues.apache.org/jira/browse/HDFS-6549}few known issues}}
++   that prevent it from working correctly by default with the HDFS NFS
++   Gateway. If you want to be able to access the HDFS NFS Gateway from AIX, you
++   should set the following configuration setting to enable work-arounds for these
++   issues:
++
++----
++<property>
++  <name>nfs.aix.compatibility.mode.enabled</name>
++  <value>true</value>
++</property>
++----
++
++   Note that regular, non-AIX clients should NOT enable AIX compatibility mode.
++   The work-arounds implemented by AIX compatibility mode effectively disable
++   safeguards to ensure that listing of directory contents via NFS returns
++   consistent results, and that all data sent to the NFS server can be assured to
++   have been committed.
++
+    It's strongly recommended for the users to update a few configuration properties based on their use
+    cases. All the related configuration properties can be added or updated in hdfs-site.xml.
+   
+-- 
+1.7.0.4
+

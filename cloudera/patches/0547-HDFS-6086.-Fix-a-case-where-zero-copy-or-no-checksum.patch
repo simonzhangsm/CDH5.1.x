@@ -1,0 +1,220 @@
+From 3fec310293ccbab20b8ba9f0c0311c3e37f50ee7 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Tue, 11 Mar 2014 22:41:05 +0000
+Subject: [PATCH 547/795] HDFS-6086. Fix a case where zero-copy or no-checksum reads were not allowed even when the block was cached. (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1576533 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7c663a535bddb71de6b102ff74d6bb04c04c414b)
+(cherry picked from commit 74134395bfdf7cae7937a6725ebab2d0eb94e376)
+---
+ .../hadoop/hdfs/client/ShortCircuitReplica.java    |   10 +++++++++-
+ .../hadoop/hdfs/server/datanode/DataXceiver.java   |    4 +++-
+ .../hdfs/server/datanode/ShortCircuitRegistry.java |   17 +++++++++++++----
+ .../server/datanode/fsdataset/FsDatasetSpi.java    |    8 ++++++++
+ .../datanode/fsdataset/impl/FsDatasetCache.java    |    6 ++++++
+ .../datanode/fsdataset/impl/FsDatasetImpl.java     |    4 ++++
+ .../hadoop/hdfs/server/namenode/CacheManager.java  |    8 +++++---
+ .../hadoop/fs/TestEnhancedByteBufferAccess.java    |   17 +++++++++++++++--
+ .../hdfs/server/datanode/SimulatedFSDataset.java   |    5 +++++
+ 9 files changed, 68 insertions(+), 11 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/ShortCircuitReplica.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/ShortCircuitReplica.java
+index b4140be..f9e169e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/ShortCircuitReplica.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/ShortCircuitReplica.java
+@@ -191,7 +191,15 @@ public boolean addNoChecksumAnchor() {
+     if (slot == null) {
+       return false;
+     }
+-    return slot.addAnchor();
++    boolean result = slot.addAnchor();
++    if (LOG.isTraceEnabled()) {
++      if (result) {
++        LOG.trace(this + ": added no-checksum anchor to slot " + slot);
++      } else {
++        LOG.trace(this + ": could not add no-checksum anchor to slot " + slot);
++      }
++    }
++    return result;
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+index a41d8a6..25acf51 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+@@ -261,8 +261,10 @@ public void requestShortCircuitFds(final ExtendedBlock blk,
+             "anything but a UNIX domain socket.");
+       }
+       if (slotId != null) {
++        boolean isCached = datanode.data.
++            isCached(blk.getBlockPoolId(), blk.getBlockId());
+         datanode.shortCircuitRegistry.registerSlot(
+-            ExtendedBlockId.fromExtendedBlock(blk), slotId);
++            ExtendedBlockId.fromExtendedBlock(blk), slotId, isCached);
+       }
+       try {
+         fis = datanode.requestShortCircuitFdsForRead(blk, token, maxVersion);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ShortCircuitRegistry.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ShortCircuitRegistry.java
+index 634bb9a..f7c1983 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ShortCircuitRegistry.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ShortCircuitRegistry.java
+@@ -287,12 +287,12 @@ public NewShmInfo createNewMemorySegment(String clientName,
+     return info;
+   }
+   
+-  public synchronized void registerSlot(ExtendedBlockId blockId, SlotId slotId)
+-      throws InvalidRequestException {
++  public synchronized void registerSlot(ExtendedBlockId blockId, SlotId slotId,
++      boolean isCached) throws InvalidRequestException {
+     if (!enabled) {
+       if (LOG.isTraceEnabled()) {
+-        LOG.trace("registerSlot: ShortCircuitRegistry is " +
+-            "not enabled.");
++        LOG.trace(this + " can't register a slot because the " +
++            "ShortCircuitRegistry is not enabled.");
+       }
+       throw new UnsupportedOperationException();
+     }
+@@ -303,8 +303,17 @@ public synchronized void registerSlot(ExtendedBlockId blockId, SlotId slotId)
+           "registered with shmId " + shmId);
+     }
+     Slot slot = shm.registerSlot(slotId.getSlotIdx(), blockId);
++    if (isCached) {
++      slot.makeAnchorable();
++    } else {
++      slot.makeUnanchorable();
++    }
+     boolean added = slots.put(blockId, slot);
+     Preconditions.checkState(added);
++    if (LOG.isTraceEnabled()) {
++      LOG.trace(this + ": registered " + blockId + " with slot " +
++        slotId + " (isCached=" + isCached + ")");
++    }
+   }
+   
+   public synchronized void unregisterSlot(SlotId slotId)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/FsDatasetSpi.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/FsDatasetSpi.java
+index e60f937..7f5e03e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/FsDatasetSpi.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/FsDatasetSpi.java
+@@ -320,6 +320,14 @@ public String recoverClose(ExtendedBlock b, long newGS, long expectedBlockLen
+    */
+   public void uncache(String bpid, long[] blockIds);
+ 
++  /**
++   * Determine if the specified block is cached.
++   * @param bpid Block pool id
++   * @param blockIds - block id
++   * @returns true if the block is cached
++   */
++  public boolean isCached(String bpid, long blockId);
++
+     /**
+      * Check if all the data directories are healthy
+      * @throws DiskErrorException
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetCache.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetCache.java
+index f0eefc1..2061e88 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetCache.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetCache.java
+@@ -473,4 +473,10 @@ public long getNumBlocksFailedToUncache() {
+   public long getNumBlocksCached() {
+     return numBlocksCached.get();
+   }
++
++  public synchronized boolean isCached(String bpid, long blockId) {
++    ExtendedBlockId block = new ExtendedBlockId(blockId, bpid);
++    Value val = mappableBlockMap.get(block);
++    return (val != null) && val.state.shouldAdvertise();
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
+index 14195d2..ff6e2af 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
+@@ -1271,6 +1271,10 @@ public void uncache(String bpid, long[] blockIds) {
+     }
+   }
+ 
++  public boolean isCached(String bpid, long blockId) {
++    return cacheManager.isCached(bpid, blockId);
++  }
++
+   @Override // FsDatasetSpi
+   public synchronized boolean contains(final ExtendedBlock block) {
+     final long blockId = block.getLocalBlock().getBlockId();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
+index de536b3..7be7a87 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
+@@ -917,9 +917,11 @@ public final void processCacheReport(final DatanodeID datanodeID,
+     if (metrics != null) {
+       metrics.addCacheBlockReport((int) (endTime - startTime));
+     }
+-    LOG.info("Processed cache report from "
+-        + datanodeID + ", blocks: " + blockIds.size()
+-        + ", processing time: " + (endTime - startTime) + " msecs");
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("Processed cache report from "
++          + datanodeID + ", blocks: " + blockIds.size()
++          + ", processing time: " + (endTime - startTime) + " msecs");
++    }
+   }
+ 
+   private void processCacheReportImpl(final DatanodeDescriptor datanode,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestEnhancedByteBufferAccess.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestEnhancedByteBufferAccess.java
+index bf32708..d9f1b28 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestEnhancedByteBufferAccess.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestEnhancedByteBufferAccess.java
+@@ -607,7 +607,7 @@ public void testZeroCopyReadOfCachedData() throws Exception {
+     conf.setLong(DFS_DATANODE_MAX_LOCKED_MEMORY_KEY,
+         DFSTestUtil.roundUpToMultiple(TEST_FILE_LENGTH, 4096));
+     MiniDFSCluster cluster = null;
+-    ByteBuffer result = null;
++    ByteBuffer result = null, result2 = null;
+     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+     cluster.waitActive();
+     FsDatasetSpi<?> fsd = cluster.getDataNodes().get(0).getFSDataset();
+@@ -644,9 +644,22 @@ public void testZeroCopyReadOfCachedData() throws Exception {
+     } catch (UnsupportedOperationException e) {
+       Assert.fail("expected to be able to read cached file via zero-copy");
+     }
+-    // Verify result
+     Assert.assertArrayEquals(Arrays.copyOfRange(original, 0,
+         BLOCK_SIZE), byteBufferToArray(result));
++    // Test that files opened after the cache operation has finished
++    // still get the benefits of zero-copy (regression test for HDFS-6086)
++    FSDataInputStream fsIn2 = fs.open(TEST_PATH);
++    try {
++      result2 = fsIn2.read(null, TEST_FILE_LENGTH,
++          EnumSet.noneOf(ReadOption.class));
++    } catch (UnsupportedOperationException e) {
++      Assert.fail("expected to be able to read cached file via zero-copy");
++    }
++    Assert.assertArrayEquals(Arrays.copyOfRange(original, 0,
++        BLOCK_SIZE), byteBufferToArray(result2));
++    fsIn2.releaseBuffer(result2);
++    fsIn2.close();
++    
+     // check that the replica is anchored 
+     final ExtendedBlock firstBlock =
+         DFSTestUtil.getFirstBlock(fs, TEST_PATH);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/SimulatedFSDataset.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/SimulatedFSDataset.java
+index 73e4666..09c9b47 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/SimulatedFSDataset.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/SimulatedFSDataset.java
+@@ -641,6 +641,11 @@ public void uncache(String bpid, long[] uncacheBlks) {
+         "SimulatedFSDataset does not support uncache operation!");
+   }
+ 
++  @Override // FSDatasetSpi
++  public boolean isCached(String bpid, long blockId) {
++    return false;
++  }
++
+   private BInfo getBInfo(final ExtendedBlock b) {
+     final Map<Block, BInfo> map = blockMap.get(b.getBlockPoolId());
+     return map == null? null: map.get(b.getLocalBlock());
+-- 
+1.7.0.4
+

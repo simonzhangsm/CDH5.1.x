@@ -1,0 +1,38 @@
+From b318fc0ab175eb473d08c200384087cfbf180da2 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Fri, 7 Mar 2014 05:44:57 +0000
+Subject: [PATCH 542/795] HDFS-6063. TestAclCLI fails intermittently when running test 24: copyFromLocal. Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1575171 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 37d599ab7f9e4503a6f32a75575067fe75cc3495)
+---
+ .../hadoop-hdfs/src/test/resources/testAclCLI.xml  |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testAclCLI.xml b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testAclCLI.xml
+index 2edc46e..703dbc8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testAclCLI.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testAclCLI.xml
+@@ -977,8 +977,8 @@
+       <test-commands>
+         <command>-fs NAMENODE -mkdir /dir1</command>
+         <command>-fs NAMENODE -setfacl -m default:user:charlie:rwx /dir1</command>
+-        <command>-fs NAMENODE -copyFromLocal CLITEST_DATA/data15bytes /dir1/data15bytes</command>
+-        <command>-fs NAMENODE -getfacl /dir1/data15bytes</command>
++        <command>-fs NAMENODE -copyFromLocal CLITEST_DATA/data1k /dir1/data1k</command>
++        <command>-fs NAMENODE -getfacl /dir1/data1k</command>
+       </test-commands>
+       <cleanup-commands>
+         <command>-fs NAMENODE -rm -R /dir1</command>
+@@ -986,7 +986,7 @@
+       <comparators>
+         <comparator>
+           <type>RegexpComparator</type>
+-          <expected-output>^# file: /dir1/data15bytes$</expected-output>
++          <expected-output>^# file: /dir1/data1k$</expected-output>
+         </comparator>
+         <comparator>
+           <type>RegexpComparator</type>
+-- 
+1.7.0.4
+

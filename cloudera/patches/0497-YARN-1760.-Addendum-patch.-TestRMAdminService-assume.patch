@@ -1,0 +1,60 @@
+From 88c74823f71adfa08debc3ace5207625b8807879 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Sat, 1 Mar 2014 08:47:02 +0000
+Subject: [PATCH 497/795] YARN-1760. Addendum patch. TestRMAdminService assumes Capacity Scheduler.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1573135 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit cecd932e113b0e55d6d57d425f7f3786366a318d)
+---
+ .../server/resourcemanager/TestRMAdminService.java |   15 +++++++--------
+ 1 files changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index 69e2cbd..9966065 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -68,9 +68,16 @@
+   private Path workingPath;
+   private Path tmpDir;
+ 
++  static {
++    YarnConfiguration.addDefaultResource(
++        YarnConfiguration.CS_CONFIGURATION_FILE);
++  }
++
+   @Before
+   public void setup() throws IOException {
+     configuration = new YarnConfiguration();
++    configuration.set(YarnConfiguration.RM_SCHEDULER,
++        CapacityScheduler.class.getCanonicalName());
+     fs = FileSystem.get(configuration);
+     workingPath =
+         new Path(new File("target", this.getClass().getSimpleName()
+@@ -94,16 +101,9 @@ public void tearDown() throws IOException {
+     fs.delete(tmpDir, true);
+   }
+ 
+-  private void useCapacityScheduler() {
+-    configuration.set(YarnConfiguration.RM_SCHEDULER,
+-        CapacityScheduler.class.getCanonicalName());
+-    configuration.addResource(YarnConfiguration.CS_CONFIGURATION_FILE);
+-  }
+-
+   @Test
+   public void testAdminRefreshQueuesWithLocalConfigurationProvider()
+       throws IOException, YarnException {
+-    useCapacityScheduler();
+     rm = new MockRM(configuration);
+     rm.init(configuration);
+     rm.start();
+@@ -126,7 +126,6 @@ public void testAdminRefreshQueuesWithFileSystemBasedConfigurationProvider()
+       throws IOException, YarnException {
+     configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
+         "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
+-    useCapacityScheduler();
+     try {
+       rm = new MockRM(configuration);
+       rm.init(configuration);
+-- 
+1.7.0.4
+

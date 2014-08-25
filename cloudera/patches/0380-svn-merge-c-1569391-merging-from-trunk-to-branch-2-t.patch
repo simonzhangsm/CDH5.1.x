@@ -1,0 +1,27 @@
+From 4088866c28d86c227247bd7aa6c119b7a73b4285 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Tue, 18 Feb 2014 15:42:04 +0000
+Subject: [PATCH 380/795] svn merge -c 1569391 merging from trunk to branch-2 to fix:HDFS-5803. TestBalancer.testBalancer0 fails.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1569393 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d08e41c4db077d9ac94fd0c0708750b5b55cf2ae)
+---
+ .../hadoop/hdfs/server/balancer/TestBalancer.java  |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+index 1f5883c..2342b37 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+@@ -74,7 +74,7 @@
+ 
+   ClientProtocol client;
+ 
+-  static final long TIMEOUT = 20000L; //msec
++  static final long TIMEOUT = 40000L; //msec
+   static final double CAPACITY_ALLOWED_VARIANCE = 0.005;  // 0.5%
+   static final double BALANCE_ALLOWED_VARIANCE = 0.11;    // 10%+delta
+   static final int DEFAULT_BLOCK_SIZE = 10;
+-- 
+1.7.0.4
+

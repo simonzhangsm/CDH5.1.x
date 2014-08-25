@@ -1,0 +1,27 @@
+From c8d4a12a99479ca365935d57de3213d6a8b705dd Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Tue, 13 May 2014 17:12:03 +0000
+Subject: [PATCH 691/795] HADOOP-10572. Merging change r1594289 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1594291 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e21743d15c2ea1ee11771fab19e14e7b9980fe63)
+---
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index 280f636..7f8e821 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -318,7 +318,7 @@ HDFS NFS Gateway
+   The users can mount the HDFS namespace as shown below:
+ 
+ -------------------------------------------------------------------  
+-       mount -t nfs -o vers=3,proto=tcp,nolock $server:/  $mount_point
++       mount -t nfs -o vers=3,proto=tcp,nolock,noacl $server:/  $mount_point
+ -------------------------------------------------------------------
+ 
+   Then the users can access HDFS as part of the local file system except that, 
+-- 
+1.7.0.4
+

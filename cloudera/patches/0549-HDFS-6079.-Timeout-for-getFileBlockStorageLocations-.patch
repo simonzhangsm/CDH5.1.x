@@ -1,0 +1,190 @@
+From e466d6851b5ff7e8d46c8120acba3b192f67ad86 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 12 Mar 2014 22:56:35 +0000
+Subject: [PATCH 549/795] HDFS-6079. Timeout for getFileBlockStorageLocations does not work. Contributed by Andrew Wang.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1576980 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit ff8302d9a92bdce520b903485e5c0291aa30e752)
+---
+ .../hadoop/hdfs/BlockStorageLocationUtil.java      |    4 ++
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |    3 +-
+ .../hadoop/hdfs/server/datanode/DataNode.java      |    3 ++
+ .../server/datanode/DataNodeFaultInjector.java     |   38 ++++++++++++++++++++
+ .../hadoop/hdfs/TestDistributedFileSystem.java     |   33 ++++++++++++++++-
+ 5 files changed, 78 insertions(+), 3 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNodeFaultInjector.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockStorageLocationUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockStorageLocationUtil.java
+index a2a53d3..fddaf0a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockStorageLocationUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockStorageLocationUtil.java
+@@ -24,6 +24,7 @@
+ import java.util.List;
+ import java.util.Map;
+ import java.util.concurrent.Callable;
++import java.util.concurrent.CancellationException;
+ import java.util.concurrent.ExecutionException;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Future;
+@@ -158,6 +159,9 @@
+       try {
+         HdfsBlocksMetadata metadata = future.get();
+         metadatas.put(callable.getDatanodeInfo(), metadata);
++      } catch (CancellationException e) {
++        LOG.info("Cancelled while waiting for datanode "
++            + datanode.getIpcAddr(false) + ": " + e.toString());
+       } catch (ExecutionException e) {
+         Throwable t = e.getCause();
+         if (t instanceof InvalidBlockTokenException) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index a93308e..c40d4e4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -1241,7 +1241,8 @@ boolean recoverLease(String src) throws IOException {
+             getConf().connectToDnViaHostname);
+     
+     if (LOG.isTraceEnabled()) {
+-      LOG.trace("metadata returned: " + Joiner.on("\n").withKeyValueSeparator("=").join(metadatas));
++      LOG.trace("metadata returned: "
++          + Joiner.on("\n").withKeyValueSeparator("=").join(metadatas));
+     }
+     
+     // Regroup the returned VolumeId metadata to again be grouped by
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index 30e5e17..5b6374f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -1155,6 +1155,9 @@ public HdfsBlocksMetadata getHdfsBlocksMetadata(
+       checkBlockToken(new ExtendedBlock(bpId, blockIds[i]),
+           tokens.get(i), BlockTokenSecretManager.AccessMode.READ);
+     }
++
++    DataNodeFaultInjector.get().getHdfsBlocksMetadata();
++
+     return data.getHdfsBlocksMetadata(bpId, blockIds);
+   }
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNodeFaultInjector.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNodeFaultInjector.java
+new file mode 100644
+index 0000000..31ac80b
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNodeFaultInjector.java
+@@ -0,0 +1,38 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.datanode;
++
++import com.google.common.annotations.VisibleForTesting;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++
++/**
++ * Used for injecting faults in DFSClient and DFSOutputStream tests.
++ * Calls into this are a no-op in production code. 
++ */
++@VisibleForTesting
++@InterfaceAudience.Private
++public class DataNodeFaultInjector {
++  public static DataNodeFaultInjector instance = new DataNodeFaultInjector();
++
++  public static DataNodeFaultInjector get() {
++    return instance;
++  }
++
++  public void getHdfsBlocksMetadata() {}
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDistributedFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDistributedFileSystem.java
+index a55eb6d..a0198bb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDistributedFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDistributedFileSystem.java
+@@ -36,6 +36,7 @@
+ import java.util.EnumSet;
+ import java.util.List;
+ import java.util.Random;
++import java.util.concurrent.CancellationException;
+ 
+ import org.apache.commons.lang.ArrayUtils;
+ import org.apache.commons.logging.impl.Log4JLogger;
+@@ -58,6 +59,7 @@
+ import org.apache.hadoop.fs.VolumeId;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.MiniDFSCluster.DataNodeProperties;
++import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
+ import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
+ import org.apache.hadoop.hdfs.web.HftpFileSystem;
+ import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
+@@ -68,6 +70,9 @@
+ import org.apache.hadoop.util.Time;
+ import org.apache.log4j.Level;
+ import org.junit.Test;
++import org.mockito.Mockito;
++import org.mockito.invocation.InvocationOnMock;
++import org.mockito.stubbing.Answer;
+ 
+ import com.google.common.base.Supplier;
+ import com.google.common.collect.Lists;
+@@ -749,7 +754,10 @@ public void testGetFileBlockStorageLocationsError() throws Exception {
+     conf.setBoolean(DFSConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED,
+         true);
+     conf.setInt(
++        DFSConfigKeys.DFS_CLIENT_FILE_BLOCK_STORAGE_LOCATIONS_TIMEOUT_MS, 1500);
++    conf.setInt(
+         CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 0);
++    
+     MiniDFSCluster cluster = null;
+     try {
+       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+@@ -794,12 +802,33 @@ public Boolean get() {
+       List<BlockLocation> allLocs = Lists.newArrayList();
+       allLocs.addAll(Arrays.asList(blockLocs1));
+       allLocs.addAll(Arrays.asList(blockLocs2));
+-          
++
++      // Stall on the DN to test the timeout
++      DataNodeFaultInjector injector = Mockito.mock(DataNodeFaultInjector.class);
++      Mockito.doAnswer(new Answer<Void>() {
++        @Override
++        public Void answer(InvocationOnMock invocation) throws Throwable {
++          Thread.sleep(3000);
++          return null;
++        }
++      }).when(injector).getHdfsBlocksMetadata();
++      DataNodeFaultInjector.instance = injector;
++
++      BlockStorageLocation[] locs = fs.getFileBlockStorageLocations(allLocs);
++      for (BlockStorageLocation loc: locs) {
++        assertEquals(
++            "Found more than 0 cached hosts although RPCs supposedly timed out",
++            0, loc.getCachedHosts().length);
++      }
++
++      // Restore a default injector
++      DataNodeFaultInjector.instance = new DataNodeFaultInjector();
++
+       // Stop a datanode to simulate a failure.
+       DataNodeProperties stoppedNode = cluster.stopDataNode(0);
+       
+       // Fetch VolumeBlockLocations
+-      BlockStorageLocation[] locs = fs.getFileBlockStorageLocations(allLocs);
++      locs = fs.getFileBlockStorageLocations(allLocs);
+       assertEquals("Expected two HdfsBlockLocation for two 1-block files", 2,
+           locs.length);
+   
+-- 
+1.7.0.4
+

@@ -1,0 +1,530 @@
+From 934e95471bd0f9bf1abe6c9aace451ffe178a979 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Tue, 25 Mar 2014 06:50:14 +0000
+Subject: [PATCH 657/795] HDFS-5840. Merge r1581260 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1581261 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 114ca1e688b433a86befe1eaa2ecc6f337791cb9)
+
+Conflicts:
+
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+	hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournal.java
+---
+ .../main/java/org/apache/hadoop/hdfs/DFSUtil.java  |   26 +++++-------
+ .../hdfs/qjournal/client/QuorumJournalManager.java |   12 ++++-
+ .../hadoop/hdfs/qjournal/server/JNStorage.java     |   18 +++++++-
+ .../hadoop/hdfs/qjournal/server/Journal.java       |    6 ++-
+ .../hadoop/hdfs/qjournal/server/JournalNode.java   |   16 +++++--
+ .../hadoop/hdfs/server/namenode/FSEditLog.java     |    6 +-
+ .../hadoop/hdfs/server/namenode/FSImage.java       |   16 +++++--
+ .../hadoop/hdfs/server/namenode/NNUpgradeUtil.java |   32 +++++++++++---
+ .../hadoop/hdfs/qjournal/server/TestJournal.java   |   18 ++++++--
+ .../server/namenode/ha/TestHAStateTransitions.java |   44 ++++++++++++++++++++
+ .../site/apt/HDFSHighAvailabilityWithQJM.apt.vm    |   11 ++++-
+ 11 files changed, 155 insertions(+), 50 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+index eb49590..aa5598e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+@@ -1759,23 +1759,19 @@ public static long parseRelativeTime(String relTime) throws IOException {
+    * 
+    * @param objects the collection of objects to check for equality.
+    */
+-  public static void assertAllResultsEqual(Collection<?> objects) {
+-    Object[] resultsArray = objects.toArray();
+-    
+-    if (resultsArray.length == 0)
++  public static void assertAllResultsEqual(Collection<?> objects)
++      throws AssertionError {
++    if (objects.size() == 0 || objects.size() == 1)
+       return;
+     
+-    for (int i = 0; i < resultsArray.length; i++) {
+-      if (i == 0)
+-        continue;
+-      else {
+-        Object currElement = resultsArray[i];
+-        Object lastElement = resultsArray[i - 1];
+-        if ((currElement == null && currElement != lastElement) ||
+-            (currElement != null && !currElement.equals(lastElement))) {
+-          throw new AssertionError("Not all elements match in results: " +
+-            Arrays.toString(resultsArray));
+-        }
++    Object[] resultsArray = objects.toArray();
++    for (int i = 1; i < resultsArray.length; i++) {
++      Object currElement = resultsArray[i];
++      Object lastElement = resultsArray[i - 1];
++      if ((currElement == null && currElement != lastElement) ||
++          (currElement != null && !currElement.equals(lastElement))) {
++        throw new AssertionError("Not all elements match in results: " +
++          Arrays.toString(resultsArray));
+       }
+     }
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/QuorumJournalManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/QuorumJournalManager.java
+index d01c429..aa257d5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/QuorumJournalManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/QuorumJournalManager.java
+@@ -569,7 +569,11 @@ public boolean canRollBack(StorageInfo storage, StorageInfo prevStorage,
+       
+       // Either they all return the same thing or this call fails, so we can
+       // just return the first result.
+-      DFSUtil.assertAllResultsEqual(call.getResults().values());
++      try {
++        DFSUtil.assertAllResultsEqual(call.getResults().values());
++      } catch (AssertionError ae) {
++        throw new IOException("Results differed for canRollBack", ae);
++      }
+       for (Boolean result : call.getResults().values()) {
+         return result;
+       }
+@@ -634,7 +638,11 @@ public long getJournalCTime() throws IOException {
+       
+       // Either they all return the same thing or this call fails, so we can
+       // just return the first result.
+-      DFSUtil.assertAllResultsEqual(call.getResults().values());
++      try {
++        DFSUtil.assertAllResultsEqual(call.getResults().values());
++      } catch (AssertionError ae) {
++        throw new IOException("Results differed for getJournalCTime", ae);
++      }
+       for (Long result : call.getResults().values()) {
+         return result;
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JNStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JNStorage.java
+index 097633e..286ee94 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JNStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JNStorage.java
+@@ -65,15 +65,15 @@
+    * @param errorReporter a callback to report errors
+    * @throws IOException 
+    */
+-  protected JNStorage(Configuration conf, File logDir,
++  protected JNStorage(Configuration conf, File logDir, StartupOption startOpt,
+       StorageErrorReporter errorReporter) throws IOException {
+     super(NodeType.JOURNAL_NODE);
+     
+     sd = new StorageDirectory(logDir);
+     this.addStorageDir(sd);
+     this.fjm = new FileJournalManager(conf, sd, errorReporter);
+-    
+-    analyzeStorage();
++
++    analyzeAndRecoverStorage(startOpt);
+   }
+   
+   FileJournalManager getJournalManager() {
+@@ -216,6 +216,18 @@ protected void setLayoutVersion(Properties props, StorageDirectory sd)
+     layoutVersion = lv;
+   }
+ 
++  void analyzeAndRecoverStorage(StartupOption startOpt) throws IOException {
++    this.state = sd.analyzeStorage(startOpt, this);
++    final boolean needRecover = state != StorageState.NORMAL
++        && state != StorageState.NON_EXISTENT
++        && state != StorageState.NOT_FORMATTED;
++    if (state == StorageState.NORMAL && startOpt != StartupOption.ROLLBACK) {
++      readProperties(sd);
++    } else if (needRecover) {
++      sd.doRecover(state);
++    }
++  }
++
+   void checkConsistentNamespace(NamespaceInfo nsInfo)
+       throws IOException {
+     if (nsInfo.getNamespaceID() != getNamespaceID()) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
+index b647c42..4dd1171 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java
+@@ -43,6 +43,7 @@
+ import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.PrepareRecoveryResponseProto;
+ import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.SegmentStateProto;
+ import org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.StorageErrorReporter;
+ import org.apache.hadoop.hdfs.server.common.StorageInfo;
+ import org.apache.hadoop.hdfs.server.namenode.EditLogOutputStream;
+@@ -138,8 +139,9 @@
+   private static final int WARN_SYNC_MILLIS_THRESHOLD = 1000;
+ 
+   Journal(Configuration conf, File logDir, String journalId,
+-      StorageErrorReporter errorReporter) throws IOException {
+-    storage = new JNStorage(conf, logDir, errorReporter);
++      StartupOption startOpt, StorageErrorReporter errorReporter)
++      throws IOException {
++    storage = new JNStorage(conf, logDir, startOpt, errorReporter);
+     this.journalId = journalId;
+ 
+     refreshCachedData();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
+index 344987f..34a8108 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
+@@ -34,6 +34,7 @@
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.qjournal.client.QuorumJournalManager;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.StorageErrorReporter;
+ import org.apache.hadoop.hdfs.server.common.StorageInfo;
+ import org.apache.hadoop.io.IOUtils;
+@@ -77,19 +78,24 @@
+    */
+   private int resultCode = 0;
+ 
+-  synchronized Journal getOrCreateJournal(String jid) throws IOException {
++  synchronized Journal getOrCreateJournal(String jid, StartupOption startOpt)
++      throws IOException {
+     QuorumJournalManager.checkJournalId(jid);
+     
+     Journal journal = journalsById.get(jid);
+     if (journal == null) {
+       File logDir = getLogDir(jid);
+       LOG.info("Initializing journal in directory " + logDir);      
+-      journal = new Journal(conf, logDir, jid, new ErrorReporter());
++      journal = new Journal(conf, logDir, jid, startOpt, new ErrorReporter());
+       journalsById.put(jid, journal);
+     }
+     
+     return journal;
+   }
++  
++  Journal getOrCreateJournal(String jid) throws IOException {
++    return getOrCreateJournal(jid, StartupOption.REGULAR);
++  }
+ 
+   @Override
+   public void setConf(Configuration conf) {
+@@ -301,12 +307,12 @@ public void doFinalize(String journalId) throws IOException {
+ 
+   public Boolean canRollBack(String journalId, StorageInfo storage,
+       StorageInfo prevStorage, int targetLayoutVersion) throws IOException {
+-    return getOrCreateJournal(journalId).canRollBack(storage, prevStorage,
+-        targetLayoutVersion);
++    return getOrCreateJournal(journalId, StartupOption.ROLLBACK).canRollBack(
++        storage, prevStorage, targetLayoutVersion);
+   }
+ 
+   public void doRollback(String journalId) throws IOException {
+-    getOrCreateJournal(journalId).doRollback();
++    getOrCreateJournal(journalId, StartupOption.ROLLBACK).doRollback();
+   }
+ 
+   public void discardSegments(String journalId, long startTxId)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+index c2c632d..ef77b83 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+@@ -44,9 +44,9 @@
+ 
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
+-import org.apache.hadoop.hdfs.server.common.Storage;
+ import org.apache.hadoop.hdfs.server.common.Storage.FormatConfirmable;
+ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
++import org.apache.hadoop.hdfs.server.common.StorageInfo;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AddCachePoolOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AddOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AddBlockOp;
+@@ -1366,8 +1366,8 @@ public synchronized void doFinalizeOfSharedLog() throws IOException {
+       }
+     }
+   }
+-  
+-  public synchronized boolean canRollBackSharedLog(Storage prevStorage,
++
++  public synchronized boolean canRollBackSharedLog(StorageInfo prevStorage,
+       int targetLayoutVersion) throws IOException {
+     for (JournalAndStream jas : journalSet.getAllJournalStreams()) {
+       if (jas.isShared()) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index b64488c..4a9315f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -397,6 +397,10 @@ void doUpgrade(FSNamesystem target) throws IOException {
+ 
+     saveFSImageInAllDirs(target, editLog.getLastWrittenTxId());
+ 
++    // upgrade shared edit storage first
++    if (target.isHaEnabled()) {
++      editLog.doUpgradeOfSharedLog();
++    }
+     for (Iterator<StorageDirectory> it = storage.dirIterator(false); it.hasNext();) {
+       StorageDirectory sd = it.next();
+       try {
+@@ -406,9 +410,6 @@ void doUpgrade(FSNamesystem target) throws IOException {
+         continue;
+       }
+     }
+-    if (target.isHaEnabled()) {
+-      editLog.doUpgradeOfSharedLog();
+-    }
+     storage.reportErrorsOnDirectories(errorSDs);
+     
+     isUpgradeFinalized = false;
+@@ -434,14 +435,19 @@ void doRollback(FSNamesystem fsns) throws IOException {
+             HdfsConstants.NAMENODE_LAYOUT_VERSION)) {
+           continue;
+         }
++        LOG.info("Can perform rollback for " + sd);
+         canRollback = true;
+       }
+       
+       if (fsns.isHaEnabled()) {
+         // If HA is enabled, check if the shared log can be rolled back as well.
+         editLog.initJournalsForWrite();
+-        canRollback |= editLog.canRollBackSharedLog(prevState.getStorage(),
+-            HdfsConstants.NAMENODE_LAYOUT_VERSION);
++        boolean canRollBackSharedEditLog = editLog.canRollBackSharedLog(
++            prevState.getStorage(), HdfsConstants.NAMENODE_LAYOUT_VERSION);
++        if (canRollBackSharedEditLog) {
++          LOG.info("Can perform rollback for shared edit log.");
++          canRollback = true;
++        }
+       }
+       
+       if (!canRollback)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNUpgradeUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNUpgradeUtil.java
+index 1c491e5..546480d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNUpgradeUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNUpgradeUtil.java
+@@ -26,6 +26,8 @@
+ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
+ import org.apache.hadoop.hdfs.server.common.StorageInfo;
+ 
++import com.google.common.base.Preconditions;
++
+ abstract class NNUpgradeUtil {
+   
+   private static final Log LOG = LogFactory.getLog(NNUpgradeUtil.class);
+@@ -82,7 +84,8 @@ static void doFinalize(StorageDirectory sd) throws IOException {
+       return;
+     }
+     LOG.info("Finalizing upgrade of storage directory " + sd.getRoot());
+-    assert sd.getCurrentDir().exists() : "Current directory must exist.";
++    Preconditions.checkState(sd.getCurrentDir().exists(),
++        "Current directory must exist.");
+     final File tmpDir = sd.getFinalizedTmp();
+     // rename previous to tmp and remove
+     NNStorage.rename(prevDir, tmpDir);
+@@ -105,9 +108,14 @@ static void doPreUpgrade(StorageDirectory sd) throws IOException {
+     File curDir = sd.getCurrentDir();
+     File prevDir = sd.getPreviousDir();
+     File tmpDir = sd.getPreviousTmp();
+-    assert curDir.exists() : "Current directory must exist.";
+-    assert !prevDir.exists() : "previous directory must not exist.";
+-    assert !tmpDir.exists() : "previous.tmp directory must not exist.";
++
++    Preconditions.checkState(curDir.exists(),
++        "Current directory must exist for preupgrade.");
++    Preconditions.checkState(!prevDir.exists(),
++        "Previous directory must not exist for preupgrade.");
++    Preconditions.checkState(!tmpDir.exists(),
++        "Previous.tmp directory must not exist for preupgrade."
++            + "Consider restarting for recovery.");
+ 
+     // rename current to tmp
+     NNStorage.rename(curDir, tmpDir);
+@@ -136,6 +144,11 @@ static void doUpgrade(StorageDirectory sd, Storage storage) throws
+       
+       File prevDir = sd.getPreviousDir();
+       File tmpDir = sd.getPreviousTmp();
++      Preconditions.checkState(!prevDir.exists(),
++          "previous directory must not exist for upgrade.");
++      Preconditions.checkState(tmpDir.exists(),
++          "previous.tmp directory must exist for upgrade.");
++
+       // rename tmp to previous
+       NNStorage.rename(tmpDir, prevDir);
+     } catch (IOException ioe) {
+@@ -154,14 +167,19 @@ static void doUpgrade(StorageDirectory sd, Storage storage) throws
+   static void doRollBack(StorageDirectory sd)
+       throws IOException {
+     File prevDir = sd.getPreviousDir();
+-    if (!prevDir.exists())
++    if (!prevDir.exists()) {
+       return;
++    }
+ 
+     File tmpDir = sd.getRemovedTmp();
+-    assert !tmpDir.exists() : "removed.tmp directory must not exist.";
++    Preconditions.checkState(!tmpDir.exists(),
++        "removed.tmp directory must not exist for rollback."
++            + "Consider restarting for recovery.");
+     // rename current to tmp
+     File curDir = sd.getCurrentDir();
+-    assert curDir.exists() : "Current directory must exist.";
++    Preconditions.checkState(curDir.exists(),
++        "Current directory must exist for rollback.");
++
+     NNStorage.rename(curDir, tmpDir);
+     // rename previous to current
+     NNStorage.rename(prevDir, curDir);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournal.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournal.java
+index e94dbea..ac38415 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournal.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/server/TestJournal.java
+@@ -31,6 +31,10 @@
+ import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.NewEpochResponseProto;
+ import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.NewEpochResponseProtoOrBuilder;
+ import org.apache.hadoop.hdfs.qjournal.server.Journal;
++import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos.SegmentStateProto;
++import org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
++import org.apache.hadoop.hdfs.server.common.Storage;
+ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
+ import org.apache.hadoop.hdfs.server.common.Storage;
+ import org.apache.hadoop.hdfs.server.common.StorageErrorReporter;
+@@ -62,7 +66,7 @@
+   public void setup() throws Exception {
+     FileUtil.fullyDelete(TEST_LOG_DIR);
+     conf = new Configuration();
+-    journal = new Journal(conf, TEST_LOG_DIR, JID,
++    journal = new Journal(conf, TEST_LOG_DIR, JID, StartupOption.REGULAR,
+       mockErrorReporter);
+     journal.format(FAKE_NSINFO);
+   }
+@@ -139,7 +143,8 @@ public void testRestartJournal() throws Exception {
+     journal.close(); // close to unlock the storage dir
+     
+     // Now re-instantiate, make sure history is still there
+-    journal = new Journal(conf, TEST_LOG_DIR, JID, mockErrorReporter);
++    journal = new Journal(conf, TEST_LOG_DIR, JID, StartupOption.REGULAR,
++        mockErrorReporter);
+     
+     // The storage info should be read, even if no writer has taken over.
+     assertEquals(storageString,
+@@ -196,7 +201,8 @@ public void testJournalLocking() throws Exception {
+ 
+     journal.newEpoch(FAKE_NSINFO,  1);
+     try {
+-      new Journal(conf, TEST_LOG_DIR, JID, mockErrorReporter);
++      new Journal(conf, TEST_LOG_DIR, JID, StartupOption.REGULAR,
++          mockErrorReporter);
+       fail("Did not fail to create another journal in same dir");
+     } catch (IOException ioe) {
+       GenericTestUtils.assertExceptionContains(
+@@ -207,7 +213,8 @@ public void testJournalLocking() throws Exception {
+     
+     // Journal should no longer be locked after the close() call.
+     // Hence, should be able to create a new Journal in the same dir.
+-    Journal journal2 = new Journal(conf, TEST_LOG_DIR, JID, mockErrorReporter);
++    Journal journal2 = new Journal(conf, TEST_LOG_DIR, JID,
++        StartupOption.REGULAR, mockErrorReporter);
+     journal2.newEpoch(FAKE_NSINFO, 2);
+     journal2.close();
+   }
+@@ -235,7 +242,8 @@ public void testFinalizeWhenEditsAreMissed() throws Exception {
+     // Check that, even if we re-construct the journal by scanning the
+     // disk, we don't allow finalizing incorrectly.
+     journal.close();
+-    journal = new Journal(conf, TEST_LOG_DIR, JID, mockErrorReporter);
++    journal = new Journal(conf, TEST_LOG_DIR, JID, StartupOption.REGULAR,
++        mockErrorReporter);
+     
+     try {
+       journal.finalizeLogSegment(makeRI(4), 1, 6);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestHAStateTransitions.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestHAStateTransitions.java
+index 2873bc6..c3438a1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestHAStateTransitions.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestHAStateTransitions.java
+@@ -28,6 +28,7 @@
+ import java.io.IOException;
+ import java.net.URI;
+ import java.util.LinkedList;
++import java.util.List;
+ import java.util.concurrent.locks.ReentrantReadWriteLock;
+ 
+ import org.apache.commons.logging.Log;
+@@ -41,8 +42,12 @@
+ import org.apache.hadoop.ha.HAServiceProtocol.StateChangeRequestInfo;
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.DFSTestUtil;
++import org.apache.hadoop.hdfs.DFSUtil;
++import org.apache.hadoop.hdfs.HAUtil;
++import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.MiniDFSNNTopology;
++import org.apache.hadoop.hdfs.protocol.ClientProtocol;
+ import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
+ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.EditLogFileOutputStream;
+@@ -556,6 +561,45 @@ public void testSecretManagerState() throws Exception {
+     }
+   }
+   
++  /**
++   * This test also serves to test
++   * {@link HAUtil#getProxiesForAllNameNodesInNameservice(Configuration, String)} and
++   * {@link DFSUtil#getRpcAddressesForNameserviceId(Configuration, String, String)}
++   * by virtue of the fact that it wouldn't work properly if the proxies
++   * returned were not for the correct NNs.
++   */
++  @Test
++  public void testIsAtLeastOneActive() throws Exception {
++    MiniDFSCluster cluster = new MiniDFSCluster.Builder(new HdfsConfiguration())
++        .nnTopology(MiniDFSNNTopology.simpleHATopology())
++        .numDataNodes(0)
++        .build();
++    try {
++      Configuration conf = new HdfsConfiguration();
++      HATestUtil.setFailoverConfigurations(cluster, conf);
++      
++      List<ClientProtocol> namenodes =
++          HAUtil.getProxiesForAllNameNodesInNameservice(conf,
++              HATestUtil.getLogicalHostname(cluster));
++      
++      assertEquals(2, namenodes.size());
++      
++      assertFalse(HAUtil.isAtLeastOneActive(namenodes));
++      cluster.transitionToActive(0);
++      assertTrue(HAUtil.isAtLeastOneActive(namenodes));
++      cluster.transitionToStandby(0);
++      assertFalse(HAUtil.isAtLeastOneActive(namenodes));
++      cluster.transitionToActive(1);
++      assertTrue(HAUtil.isAtLeastOneActive(namenodes));
++      cluster.transitionToStandby(1);
++      assertFalse(HAUtil.isAtLeastOneActive(namenodes));
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
++  
+   private boolean isDTRunning(NameNode nn) {
+     return NameNodeAdapter.getDtSecretManager(nn.getNamesystem()).isRunning();
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/HDFSHighAvailabilityWithQJM.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/HDFSHighAvailabilityWithQJM.apt.vm
+index 31dccb2..31630fc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/HDFSHighAvailabilityWithQJM.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/HDFSHighAvailabilityWithQJM.apt.vm
+@@ -780,14 +780,19 @@ digest:hdfs-zkfcs:vlUvLnd8MlacsE80rDuu6ONESbM=:rwcda
+ 
+     [[1]] Shut down all of the NNs as normal, and install the newer software.
+ 
+-    [[2]] Start one of the NNs with the <<<'-upgrade'>>> flag.
++    [[2]] Start up all of the JNs. Note that it is <<critical>> that all the
++    JNs be running when performing the upgrade, rollback, or finalization
++    operations. If any of the JNs are down at the time of running any of these
++    operations, the operation will fail.
++
++    [[3]] Start one of the NNs with the <<<'-upgrade'>>> flag.
+   
+-    [[3]] On start, this NN will not enter the standby state as usual in an HA
++    [[4]] On start, this NN will not enter the standby state as usual in an HA
+     setup. Rather, this NN will immediately enter the active state, perform an
+     upgrade of its local storage dirs, and also perform an upgrade of the shared
+     edit log.
+   
+-    [[4]] At this point the other NN in the HA pair will be out of sync with
++    [[5]] At this point the other NN in the HA pair will be out of sync with
+     the upgraded NN. In order to bring it back in sync and once again have a highly
+     available setup, you should re-bootstrap this NameNode by running the NN with
+     the <<<'-bootstrapStandby'>>> flag. It is an error to start this second NN with
+-- 
+1.7.0.4
+

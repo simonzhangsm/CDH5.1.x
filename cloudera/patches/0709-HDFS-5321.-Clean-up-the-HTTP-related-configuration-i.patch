@@ -1,0 +1,343 @@
+From d1fe05aea088d8003312ea3c807ef1035d64d43e Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Wed, 5 Mar 2014 00:28:21 +0000
+Subject: [PATCH 709/795] HDFS-5321. Clean up the HTTP-related configuration in HDFS. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1574270 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/fs/http/client/HttpFSFileSystem.java    |    3 +-
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    2 -
+ .../main/java/org/apache/hadoop/hdfs/DFSUtil.java  |   41 --------------------
+ .../org/apache/hadoop/hdfs/web/HftpFileSystem.java |    3 +-
+ .../apache/hadoop/hdfs/web/HsftpFileSystem.java    |    3 +-
+ .../apache/hadoop/hdfs/web/SWebHdfsFileSystem.java |    3 +-
+ .../apache/hadoop/hdfs/web/WebHdfsFileSystem.java  |   38 +++++++++++++++++-
+ .../java/org/apache/hadoop/hdfs/TestDFSUtil.java   |   20 ----------
+ .../apache/hadoop/hdfs/web/TestHftpFileSystem.java |   41 ++------------------
+ 9 files changed, 43 insertions(+), 111 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSFileSystem.java
+index 60b56f6..d1460fe 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/main/java/org/apache/hadoop/fs/http/client/HttpFSFileSystem.java
+@@ -329,8 +329,7 @@ public URI getUri() {
+    */
+   @Override
+   protected int getDefaultPort() {
+-    return getConf().getInt(DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_KEY,
+-        DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT);
++    return DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT;
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 322c634..953592b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -123,7 +123,6 @@
+     "dfs.namenode.path.based.cache.block.map.allocation.percent";
+   public static final float    DFS_NAMENODE_PATH_BASED_CACHE_BLOCK_MAP_ALLOCATION_PERCENT_DEFAULT = 0.25f;
+ 
+-  public static final String  DFS_NAMENODE_HTTP_PORT_KEY = "dfs.http.port";
+   public static final int     DFS_NAMENODE_HTTP_PORT_DEFAULT = 50070;
+   public static final String  DFS_NAMENODE_HTTP_ADDRESS_KEY = "dfs.namenode.http-address";
+   public static final String  DFS_NAMENODE_HTTP_ADDRESS_DEFAULT = "0.0.0.0:" + DFS_NAMENODE_HTTP_PORT_DEFAULT;
+@@ -298,7 +297,6 @@
+ 
+   //Following keys have no defaults
+   public static final String  DFS_DATANODE_DATA_DIR_KEY = "dfs.datanode.data.dir";
+-  public static final String  DFS_NAMENODE_HTTPS_PORT_KEY = "dfs.https.port";
+   public static final int     DFS_NAMENODE_HTTPS_PORT_DEFAULT = 50470;
+   public static final String  DFS_NAMENODE_HTTPS_ADDRESS_KEY = "dfs.namenode.https-address";
+   public static final String  DFS_NAMENODE_HTTPS_ADDRESS_DEFAULT = "0.0.0.0:" + DFS_NAMENODE_HTTPS_PORT_DEFAULT;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+index efe4f2c..56d319a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+@@ -43,7 +43,6 @@
+ import java.net.URISyntaxException;
+ import java.security.SecureRandom;
+ import java.text.SimpleDateFormat;
+-import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Collections;
+@@ -732,46 +731,6 @@ public static String addKeySuffixes(String key, String... suffixes) {
+   }
+ 
+   /**
+-   * Resolve an HDFS URL into real INetSocketAddress. It works like a DNS resolver
+-   * when the URL points to an non-HA cluster. When the URL points to an HA
+-   * cluster, the resolver further resolves the logical name (i.e., the authority
+-   * in the URL) into real namenode addresses.
+-   */
+-  public static InetSocketAddress[] resolveWebHdfsUri(URI uri, Configuration conf)
+-      throws IOException {
+-    int defaultPort;
+-    String scheme = uri.getScheme();
+-    if (WebHdfsFileSystem.SCHEME.equals(scheme)) {
+-      defaultPort = DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT;
+-    } else if (SWebHdfsFileSystem.SCHEME.equals(scheme)) {
+-      defaultPort = DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_DEFAULT;
+-    } else {
+-      throw new IllegalArgumentException("Unsupported scheme: " + scheme);
+-    }
+-
+-    ArrayList<InetSocketAddress> ret = new ArrayList<InetSocketAddress>();
+-
+-    if (!HAUtil.isLogicalUri(conf, uri)) {
+-      InetSocketAddress addr = NetUtils.createSocketAddr(uri.getAuthority(),
+-          defaultPort);
+-      ret.add(addr);
+-
+-    } else {
+-      Map<String, Map<String, InetSocketAddress>> addresses = DFSUtil
+-          .getHaNnWebHdfsAddresses(conf, scheme);
+-
+-      for (Map<String, InetSocketAddress> addrs : addresses.values()) {
+-        for (InetSocketAddress addr : addrs.values()) {
+-          ret.add(addr);
+-        }
+-      }
+-    }
+-
+-    InetSocketAddress[] r = new InetSocketAddress[ret.size()];
+-    return ret.toArray(r);
+-  }
+-  
+-  /**
+    * Returns list of InetSocketAddress corresponding to  backup node rpc 
+    * addresses from the configuration.
+    * 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/HftpFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/HftpFileSystem.java
+index 880081d..af4a423 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/HftpFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/HftpFileSystem.java
+@@ -123,8 +123,7 @@ protected SimpleDateFormat initialValue() {
+ 
+   @Override
+   protected int getDefaultPort() {
+-    return getConf().getInt(DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_KEY,
+-        DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT);
++    return DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT;
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/HsftpFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/HsftpFileSystem.java
+index b232f5b..3029e2a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/HsftpFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/HsftpFileSystem.java
+@@ -64,7 +64,6 @@ protected void initTokenAspect() {
+ 
+   @Override
+   protected int getDefaultPort() {
+-    return getConf().getInt(DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_KEY,
+-                            DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_DEFAULT);
++    return DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_DEFAULT;
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/SWebHdfsFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/SWebHdfsFileSystem.java
+index 916138e..3c65ad8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/SWebHdfsFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/SWebHdfsFileSystem.java
+@@ -42,7 +42,6 @@ protected synchronized void initializeTokenAspect() {
+ 
+   @Override
+   protected int getDefaultPort() {
+-    return getConf().getInt(DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_KEY,
+-        DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_DEFAULT);
++    return DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_DEFAULT;
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+index eae9e42..b470bb4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+@@ -29,6 +29,7 @@
+ import java.net.URI;
+ import java.net.URL;
+ import java.security.PrivilegedExceptionAction;
++import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.StringTokenizer;
+@@ -172,7 +173,7 @@ public synchronized void initialize(URI uri, Configuration conf
+ 
+     ugi = UserGroupInformation.getCurrentUser();
+     this.uri = URI.create(uri.getScheme() + "://" + uri.getAuthority());
+-    this.nnAddrs = DFSUtil.resolveWebHdfsUri(this.uri, conf);
++    this.nnAddrs = resolveNNAddr();
+ 
+     boolean isHA = HAUtil.isLogicalUri(conf, this.uri);
+     // In non-HA case, the code needs to call getCanonicalUri() in order to
+@@ -237,8 +238,7 @@ public static boolean isEnabled(final Configuration conf, final Log log) {
+ 
+   @Override
+   protected int getDefaultPort() {
+-    return getConf().getInt(DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_KEY,
+-        DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT);
++    return DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT;
+   }
+ 
+   @Override
+@@ -1099,4 +1099,36 @@ public MD5MD5CRC32FileChecksum getFileChecksum(final Path p
+     final Map<?, ?> m = run(op, p);
+     return JsonUtil.toMD5MD5CRC32FileChecksum(m);
+   }
++
++  /**
++   * Resolve an HDFS URL into real INetSocketAddress. It works like a DNS
++   * resolver when the URL points to an non-HA cluster. When the URL points to
++   * an HA cluster, the resolver further resolves the logical name (i.e., the
++   * authority in the URL) into real namenode addresses.
++   */
++  private InetSocketAddress[] resolveNNAddr() throws IOException {
++    Configuration conf = getConf();
++    final String scheme = uri.getScheme();
++
++    ArrayList<InetSocketAddress> ret = new ArrayList<InetSocketAddress>();
++
++    if (!HAUtil.isLogicalUri(conf, uri)) {
++      InetSocketAddress addr = NetUtils.createSocketAddr(uri.getAuthority(),
++          getDefaultPort());
++      ret.add(addr);
++
++    } else {
++      Map<String, Map<String, InetSocketAddress>> addresses = DFSUtil
++          .getHaNnWebHdfsAddresses(conf, scheme);
++
++      for (Map<String, InetSocketAddress> addrs : addresses.values()) {
++        for (InetSocketAddress addr : addrs.values()) {
++          ret.add(addr);
++        }
++      }
++    }
++
++    InetSocketAddress[] r = new InetSocketAddress[ret.size()];
++    return ret.toArray(r);
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUtil.java
+index 1d5728d..cb32de0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUtil.java
+@@ -32,7 +32,6 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICE_ID;
+ import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
+ import static org.hamcrest.CoreMatchers.not;
+-import static org.junit.Assert.assertArrayEquals;
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertNull;
+@@ -579,25 +578,6 @@ public void testGetHaNnHttpAddresses() throws IOException {
+     assertEquals(NS1_NN2_ADDR, map.get("ns1").get("nn2").toString());
+   }
+ 
+-  @Test
+-  public void testResolve() throws IOException, URISyntaxException {
+-    final String LOGICAL_HOST_NAME = "ns1";
+-    final String NS1_NN1_HOST      = "ns1-nn1.example.com";
+-    final String NS1_NN2_HOST      = "ns1-nn2.example.com";
+-    final String NS1_NN1_ADDR      = "ns1-nn1.example.com:8020";
+-    final String NS1_NN2_ADDR      = "ns1-nn2.example.com:8020";
+-    final int DEFAULT_PORT         = NameNode.DEFAULT_PORT;
+-
+-    Configuration conf = createWebHDFSHAConfiguration(LOGICAL_HOST_NAME, NS1_NN1_ADDR, NS1_NN2_ADDR);
+-    URI uri = new URI("webhdfs://ns1");
+-    assertTrue(HAUtil.isLogicalUri(conf, uri));
+-    InetSocketAddress[] addrs = DFSUtil.resolveWebHdfsUri(uri, conf);
+-    assertArrayEquals(new InetSocketAddress[] {
+-      new InetSocketAddress(NS1_NN1_HOST, DEFAULT_PORT),
+-      new InetSocketAddress(NS1_NN2_HOST, DEFAULT_PORT),
+-    }, addrs);
+-  }
+-
+   private static Configuration createWebHDFSHAConfiguration(String logicalHostName, String nnaddr1, String nnaddr2) {
+     HdfsConfiguration conf = new HdfsConfiguration();
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHftpFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHftpFileSystem.java
+index db0fda5..2afcfd7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHftpFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHftpFileSystem.java
+@@ -311,23 +311,6 @@ public void testHftpDefaultPorts() throws IOException {
+   }
+ 
+   @Test
+-  public void testHftpCustomDefaultPorts() throws IOException {
+-    Configuration conf = new Configuration();
+-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_KEY, 123);
+-
+-    URI uri = URI.create("hftp://localhost");
+-    HftpFileSystem fs = (HftpFileSystem) FileSystem.get(uri, conf);
+-
+-    assertEquals(123, fs.getDefaultPort());
+-
+-    assertEquals(uri, fs.getUri());
+-
+-    // HFTP uses http to get the token so canonical service name should
+-    // return the http port.
+-    assertEquals("127.0.0.1:123", fs.getCanonicalServiceName());
+-  }
+-
+-  @Test
+   public void testHftpCustomUriPortWithDefaultPorts() throws IOException {
+     Configuration conf = new Configuration();
+     URI uri = URI.create("hftp://localhost:123");
+@@ -343,12 +326,11 @@ public void testHftpCustomUriPortWithDefaultPorts() throws IOException {
+   @Test
+   public void testHftpCustomUriPortWithCustomDefaultPorts() throws IOException {
+     Configuration conf = new Configuration();
+-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_KEY, 123);
+-
+     URI uri = URI.create("hftp://localhost:789");
+     HftpFileSystem fs = (HftpFileSystem) FileSystem.get(uri, conf);
+ 
+-    assertEquals(123, fs.getDefaultPort());
++    assertEquals(DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT,
++        fs.getDefaultPort());
+ 
+     assertEquals(uri, fs.getUri());
+     assertEquals("127.0.0.1:789", fs.getCanonicalServiceName());
+@@ -383,20 +365,6 @@ public void testHsftpDefaultPorts() throws IOException {
+         fs.getCanonicalServiceName());
+   }
+ 
+-  @Test
+-  public void testHsftpCustomDefaultPorts() throws IOException {
+-    Configuration conf = new Configuration();
+-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_KEY, 123);
+-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_KEY, 456);
+-
+-    URI uri = URI.create("hsftp://localhost");
+-    HsftpFileSystem fs = (HsftpFileSystem) FileSystem.get(uri, conf);
+-
+-    assertEquals(456, fs.getDefaultPort());
+-
+-    assertEquals(uri, fs.getUri());
+-    assertEquals("127.0.0.1:456", fs.getCanonicalServiceName());
+-  }
+ 
+   @Test
+   public void testHsftpCustomUriPortWithDefaultPorts() throws IOException {
+@@ -414,13 +382,12 @@ public void testHsftpCustomUriPortWithDefaultPorts() throws IOException {
+   @Test
+   public void testHsftpCustomUriPortWithCustomDefaultPorts() throws IOException {
+     Configuration conf = new Configuration();
+-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_KEY, 123);
+-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_KEY, 456);
+ 
+     URI uri = URI.create("hsftp://localhost:789");
+     HsftpFileSystem fs = (HsftpFileSystem) FileSystem.get(uri, conf);
+ 
+-    assertEquals(456, fs.getDefaultPort());
++    assertEquals(DFSConfigKeys.DFS_NAMENODE_HTTPS_PORT_DEFAULT,
++        fs.getDefaultPort());
+ 
+     assertEquals(uri, fs.getUri());
+     assertEquals("127.0.0.1:789", fs.getCanonicalServiceName());
+-- 
+1.7.0.4
+

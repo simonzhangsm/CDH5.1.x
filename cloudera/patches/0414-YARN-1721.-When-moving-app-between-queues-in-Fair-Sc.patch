@@ -1,0 +1,73 @@
+From 60af07ef9245e4c8fe6f342f81ead6dec14edfe8 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Tue, 18 Feb 2014 17:51:40 +0000
+Subject: [PATCH 414/795] YARN-1721. When moving app between queues in Fair Scheduler, grab lock on FSSchedulerApp (Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1569443 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fe3ec372da017b1b1b898868dff74c2062a18b2a)
+---
+ .../scheduler/fair/FairScheduler.java              |   40 ++++++++++---------
+ 1 files changed, 21 insertions(+), 19 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index fc9387e..e8209e2 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -1368,24 +1368,26 @@ public synchronized String moveApplication(ApplicationId appId,
+       throw new YarnException("App to be moved " + appId + " not found.");
+     }
+     FSSchedulerApp attempt = (FSSchedulerApp) app.getCurrentAppAttempt();
+-    
+-    FSLeafQueue oldQueue = (FSLeafQueue) app.getQueue();
+-    FSLeafQueue targetQueue = queueMgr.getLeafQueue(queueName, false);
+-    if (targetQueue == null) {
+-      throw new YarnException("Target queue " + queueName
+-          + " not found or is not a leaf queue.");
+-    }
+-    if (targetQueue == oldQueue) {
+-      return oldQueue.getQueueName();
+-    }
+-    
+-    if (oldQueue.getRunnableAppSchedulables().contains(
+-        attempt.getAppSchedulable())) {
+-      verifyMoveDoesNotViolateConstraints(attempt, oldQueue, targetQueue);
++    // To serialize with FairScheduler#allocate, synchronize on app attempt
++    synchronized (attempt) {
++      FSLeafQueue oldQueue = (FSLeafQueue) app.getQueue();
++      FSLeafQueue targetQueue = queueMgr.getLeafQueue(queueName, false);
++      if (targetQueue == null) {
++        throw new YarnException("Target queue " + queueName
++            + " not found or is not a leaf queue.");
++      }
++      if (targetQueue == oldQueue) {
++        return oldQueue.getQueueName();
++      }
++      
++      if (oldQueue.getRunnableAppSchedulables().contains(
++          attempt.getAppSchedulable())) {
++        verifyMoveDoesNotViolateConstraints(attempt, oldQueue, targetQueue);
++      }
++      
++      executeMove(app, attempt, oldQueue, targetQueue);
++      return targetQueue.getQueueName();
+     }
+-    
+-    executeMove(app, attempt, oldQueue, targetQueue);
+-    return targetQueue.getQueueName();
+   }
+   
+   private void verifyMoveDoesNotViolateConstraints(FSSchedulerApp app,
+@@ -1422,8 +1424,8 @@ private void verifyMoveDoesNotViolateConstraints(FSSchedulerApp app,
+   }
+   
+   /**
+-   * Helper for moveApplication, which is synchronized, so all operations will
+-   * be atomic.
++   * Helper for moveApplication, which has appropriate synchronization, so all
++   * operations will be atomic.
+    */
+   private void executeMove(SchedulerApplication app, FSSchedulerApp attempt,
+       FSLeafQueue oldQueue, FSLeafQueue newQueue) {
+-- 
+1.7.0.4
+

@@ -1,0 +1,123 @@
+From 3186cbc8061ba2c33b8fc8da690a55533949159b Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 21 Feb 2014 06:17:59 +0000
+Subject: [PATCH 462/795] HADOOP-10355. Fix TestLoadGenerator#testLoadGenerator. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570464 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 84cafbd5b13b65e63ab5c5870ac7216f3fd05767)
+---
+ .../hadoop/fs/loadGenerator/LoadGenerator.java     |   82 ++++++++++----------
+ 1 files changed, 42 insertions(+), 40 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/loadGenerator/LoadGenerator.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/loadGenerator/LoadGenerator.java
+index fcdcc1d..994b9b2 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/loadGenerator/LoadGenerator.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/loadGenerator/LoadGenerator.java
+@@ -45,6 +45,8 @@
+ import org.apache.hadoop.util.Tool;
+ import org.apache.hadoop.util.ToolRunner;
+ 
++import com.google.common.base.Preconditions;
++
+ /** The load generator is a tool for testing NameNode behavior under
+  * different client loads.
+  * It allows the user to generate different mixes of read, write,
+@@ -488,7 +490,35 @@ private int init(String[] args) throws IOException {
+     
+     return initFileDirTables();
+   }
+-  
++
++  private static void parseScriptLine(String line, ArrayList<Long> duration,
++      ArrayList<Double> readProb, ArrayList<Double> writeProb) {
++    String[] a = line.split("\\s");
++
++    if (a.length != 3) {
++      throw new IllegalArgumentException("Incorrect number of parameters: "
++          + line);
++    }
++
++    try {
++      long d = Long.parseLong(a[0]);
++      double r = Double.parseDouble(a[1]);
++      double w = Double.parseDouble(a[2]);
++
++      Preconditions.checkArgument(d >= 0, "Invalid duration: " + d);
++      Preconditions.checkArgument(0 <= r && r <= 1.0,
++          "The read probability must be [0, 1]: " + r);
++      Preconditions.checkArgument(0 <= w && w <= 1.0,
++          "The read probability must be [0, 1]: " + w);
++
++      readProb.add(r);
++      duration.add(d);
++      writeProb.add(w);
++    } catch (NumberFormatException nfe) {
++      throw new IllegalArgumentException("Cannot parse: " + line);
++    }
++  }
++
+   /**
+    * Read a script file of the form: lines of text with duration in seconds,
+    * read probability and write probability, separated by white space.
+@@ -508,47 +538,19 @@ private int loadScriptFile(String filename) throws IOException  {
+     String line;
+     // Read script, parse values, build array of duration, read and write probs
+ 
+-    while ((line = br.readLine()) != null) {
+-      lineNum++;
+-      if (line.startsWith("#") || line.isEmpty()) // skip comments and blanks
+-        continue;
+-
+-      String[] a = line.split("\\s");
+-      if (a.length != 3) {
+-        System.err.println("Line " + lineNum
+-            + ": Incorrect number of parameters: " + line);
+-      }
+-
+-      try {
+-        long d = Long.parseLong(a[0]);
+-        if (d < 0) {
+-          System.err.println("Line " + lineNum + ": Invalid duration: " + d);
+-          return -1;
+-        }
+-
+-        double r = Double.parseDouble(a[1]);
+-        if (r < 0.0 || r > 1.0) {
+-          System.err.println("Line " + lineNum
+-              + ": The read probability must be [0, 1]: " + r);
+-          return -1;
+-        }
+-
+-        double w = Double.parseDouble(a[2]);
+-        if (w < 0.0 || w > 1.0) {
+-          System.err.println("Line " + lineNum
+-              + ": The read probability must be [0, 1]: " + r);
+-          return -1;
+-        }
++    try {
++      while ((line = br.readLine()) != null) {
++        lineNum++;
++        if (line.startsWith("#") || line.isEmpty()) // skip comments and blanks
++          continue;
+ 
+-        readProb.add(r);
+-        duration.add(d);
+-        writeProb.add(w);
+-      } catch (NumberFormatException nfe) {
+-        System.err.println(lineNum + ": Can't parse: " + line);
+-        return -1;
+-      } finally {
+-        IOUtils.cleanup(LOG, br);
++        parseScriptLine(line, duration, readProb, writeProb);
+       }
++    } catch (IllegalArgumentException e) {
++      System.err.println("Line: " + lineNum + ", " + e.getMessage());
++      return -1;
++    } finally {
++      IOUtils.cleanup(LOG, br);
+     }
+     
+     // Copy vectors to arrays of values, to avoid autoboxing overhead later
+-- 
+1.7.0.4
+

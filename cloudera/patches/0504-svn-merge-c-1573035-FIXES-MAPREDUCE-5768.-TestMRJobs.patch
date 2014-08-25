@@ -1,0 +1,75 @@
+From b6e34e93afafc201e41053f859025551930b37a8 Mon Sep 17 00:00:00 2001
+From: Jason Darrell Lowe <jlowe@apache.org>
+Date: Fri, 28 Feb 2014 19:28:03 +0000
+Subject: [PATCH 504/795] svn merge -c 1573035 FIXES: MAPREDUCE-5768. TestMRJobs.testContainerRollingLog fails on trunk. Contributed by Gera Shegalov
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1573037 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f6084ad7a043e2a454647a2eb2095ba7dc2e93cc)
+---
+ .../org/apache/hadoop/mapreduce/v2/TestMRJobs.java |   32 +++++++-------------
+ 1 files changed, 11 insertions(+), 21 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/TestMRJobs.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/TestMRJobs.java
+index 5601c7f..441fd98 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/TestMRJobs.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/TestMRJobs.java
+@@ -23,7 +23,6 @@
+ import java.io.FileInputStream;
+ import java.io.FileNotFoundException;
+ import java.io.FileOutputStream;
+-import java.io.InputStreamReader;
+ import java.io.IOException;
+ import java.io.StringReader;
+ import java.net.URI;
+@@ -82,8 +81,10 @@
+ import org.apache.hadoop.util.JarFinder;
+ import org.apache.hadoop.util.Shell;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.api.records.ContainerId;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
++import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.apache.log4j.Level;
+ import org.junit.AfterClass;
+ import org.junit.Assert;
+@@ -492,28 +493,17 @@ public void testContainerRollingLog() throws IOException,
+         LOG.info("Checking for glob: " + absSyslogGlob);
+         final FileStatus[] syslogs = localFs.globStatus(absSyslogGlob);
+         for (FileStatus slog : syslogs) {
+-          // check all syslogs for the container
+-          //
+-          final FileStatus[] sysSiblings = localFs.globStatus(new Path(
+-              slog.getPath().getParent(), TaskLog.LogName.SYSLOG + "*"));
+-          boolean foundAppMaster = false;
+-          floop:
+-          for (FileStatus f : sysSiblings) {
+-            final BufferedReader reader = new BufferedReader(
+-                new InputStreamReader(localFs.open(f.getPath())));
+-            String line;
+-            try {
+-              while ((line = reader.readLine()) != null) {
+-                if (line.contains(MRJobConfig.APPLICATION_MASTER_CLASS)) {
+-                  foundAppMaster = true;
+-                  break floop;
+-                }
+-              }
+-            } finally {
+-              reader.close();
+-            }
++          boolean foundAppMaster = job.isUber();
++          final Path containerPathComponent = slog.getPath().getParent();
++          if (!foundAppMaster) {
++            final ContainerId cid = ConverterUtils.toContainerId(
++                containerPathComponent.getName());
++            foundAppMaster = (cid.getId() == 1);
+           }
+ 
++          final FileStatus[] sysSiblings = localFs.globStatus(new Path(
++              containerPathComponent, TaskLog.LogName.SYSLOG + "*"));
++
+           if (foundAppMaster) {
+             numAppMasters++;
+           } else {
+-- 
+1.7.0.4
+

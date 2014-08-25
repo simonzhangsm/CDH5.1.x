@@ -1,0 +1,27 @@
+From fd535233b94eb29a2aabab304daff40f38d610ef Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Fri, 14 Feb 2014 22:17:34 +0000
+Subject: [PATCH 363/795] HDFS-5949. Merging change r1568536 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568537 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f401c2bb06a7a05878828fa30c9783c4a1c4401f)
+---
+ .../hadoop-hdfs/src/main/webapps/hdfs/explorer.js  |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
+index 1aa0c39..d82a0ab 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
+@@ -112,7 +112,7 @@
+       $('#file-info-tail').hide();
+       $('#file-info-title').text("File information - " + path);
+ 
+-      var download_url = '/webhdfs/v1' + abs_path + '/?op=OPEN';
++      var download_url = '/webhdfs/v1' + abs_path + '?op=OPEN';
+ 
+       $('#file-info-download').attr('href', download_url);
+       $('#file-info-preview').click(function() {
+-- 
+1.7.0.4
+

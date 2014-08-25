@@ -1,0 +1,1073 @@
+From f8a89a4df1d346d3869623e7e286f867a5c88a8f Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Wed, 14 May 2014 22:35:56 +0000
+Subject: [PATCH 612/795] HDFS-6326. WebHdfs ACL compatibility is broken. Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1594743 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../apache/hadoop/fs/permission/FsPermission.java  |   21 +++++
+ .../org/apache/hadoop/fs/shell/AclCommands.java    |   30 +++-----
+ .../main/java/org/apache/hadoop/fs/shell/Ls.java   |   47 +-----------
+ .../hadoop/hdfs/protocol/FsAclPermission.java      |   63 ++++++++++++++
+ .../apache/hadoop/hdfs/protocolPB/PBHelper.java    |    7 +-
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   22 +++++-
+ .../java/org/apache/hadoop/hdfs/web/JsonUtil.java  |   14 +++-
+ .../hadoop-hdfs/src/main/webapps/hdfs/dfs-dust.js  |    9 ++-
+ .../src/main/webapps/hdfs/explorer.html            |    2 +-
+ .../hdfs/server/namenode/AclTestHelpers.java       |    6 +-
+ .../hadoop/hdfs/server/namenode/FSAclBaseTest.java |   86 ++++++++++++--------
+ .../hdfs/server/namenode/TestFSImageWithAcl.java   |   12 ++--
+ .../namenode/snapshot/TestAclWithSnapshot.java     |   56 +++++++-------
+ 13 files changed, 228 insertions(+), 147 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/FsAclPermission.java
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/permission/FsPermission.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/permission/FsPermission.java
+index 2895609..ee84437 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/permission/FsPermission.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/permission/FsPermission.java
+@@ -158,6 +158,17 @@ public short toShort() {
+     return (short)s;
+   }
+ 
++  /**
++   * Encodes the object to a short.  Unlike {@link #toShort()}, this method may
++   * return values outside the fixed range 00000 - 01777 if extended features
++   * are encoded into this permission, such as the ACL bit.
++   *
++   * @return short extended short representation of this permission
++   */
++  public short toExtendedShort() {
++    return toShort();
++  }
++
+   @Override
+   public boolean equals(Object obj) {
+     if (obj instanceof FsPermission) {
+@@ -273,6 +284,16 @@ public boolean getStickyBit() {
+     return stickyBit;
+   }
+ 
++  /**
++   * Returns true if there is also an ACL (access control list).
++   *
++   * @return boolean true if there is also an ACL (access control list).
++   */
++  public boolean getAclBit() {
++    // File system subclasses that support the ACL bit would override this.
++    return false;
++  }
++
+   /** Set the user file creation mask (umask) */
+   public static void setUMask(Configuration conf, FsPermission umask) {
+     conf.set(UMASK_LABEL, String.format("%1$03o", umask.toShort()));
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/AclCommands.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/AclCommands.java
+index f17457c..9f14152 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/AclCommands.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/AclCommands.java
+@@ -75,29 +75,21 @@ protected void processOptions(LinkedList<String> args) throws IOException {
+ 
+     @Override
+     protected void processPath(PathData item) throws IOException {
+-      AclStatus aclStatus = item.fs.getAclStatus(item.path);
+       out.println("# file: " + item);
+-      out.println("# owner: " + aclStatus.getOwner());
+-      out.println("# group: " + aclStatus.getGroup());
+-      List<AclEntry> entries = aclStatus.getEntries();
+-      if (aclStatus.isStickyBit()) {
+-        String stickyFlag = "T";
+-        for (AclEntry aclEntry : entries) {
+-          if (aclEntry.getType() == AclEntryType.OTHER
+-              && aclEntry.getScope() == AclEntryScope.ACCESS
+-              && aclEntry.getPermission().implies(FsAction.EXECUTE)) {
+-            stickyFlag = "t";
+-            break;
+-          }
+-        }
+-        out.println("# flags: --" + stickyFlag);
++      out.println("# owner: " + item.stat.getOwner());
++      out.println("# group: " + item.stat.getGroup());
++      FsPermission perm = item.stat.getPermission();
++      if (perm.getStickyBit()) {
++        out.println("# flags: --" +
++          (perm.getOtherAction().implies(FsAction.EXECUTE) ? "t" : "T"));
+       }
+ 
+-      FsPermission perm = item.stat.getPermission();
+-      if (entries.isEmpty()) {
+-        printMinimalAcl(perm);
+-      } else {
++      if (perm.getAclBit()) {
++        AclStatus aclStatus = item.fs.getAclStatus(item.path);
++        List<AclEntry> entries = aclStatus.getEntries();
+         printExtendedAcl(perm, entries);
++      } else {
++        printMinimalAcl(perm);
+       }
+ 
+       out.println();
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Ls.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Ls.java
+index eecd3b0..fa7e5d7 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Ls.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Ls.java
+@@ -31,8 +31,6 @@
+ import org.apache.hadoop.fs.FileStatus;
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
+-import org.apache.hadoop.ipc.RemoteException;
+-import org.apache.hadoop.ipc.RpcNoSuchMethodException;
+ 
+ import com.google.common.collect.Sets;
+ 
+@@ -116,7 +114,7 @@ protected void processPath(PathData item) throws IOException {
+     FileStatus stat = item.stat;
+     String line = String.format(lineFormat,
+         (stat.isDirectory() ? "d" : "-"),
+-        stat.getPermission() + (hasAcl(item) ? "+" : " "),
++        stat.getPermission() + (stat.getPermission().getAclBit() ? "+" : " "),
+         (stat.isFile() ? stat.getReplication() : "-"),
+         stat.getOwner(),
+         stat.getGroup(),
+@@ -153,49 +151,6 @@ private void adjustColumnWidths(PathData items[]) {
+     lineFormat = fmt.toString();
+   }
+ 
+-  /**
+-   * Calls getAclStatus to determine if the given item has an ACL.  For
+-   * compatibility, this method traps errors caused by the RPC method missing
+-   * from the server side.  This would happen if the client was connected to an
+-   * old NameNode that didn't have the ACL APIs.  This method also traps the
+-   * case of the client-side FileSystem not implementing the ACL APIs.
+-   * FileSystem instances that do not support ACLs are remembered.  This
+-   * prevents the client from sending multiple failing RPC calls during a
+-   * recursive ls.
+-   *
+-   * @param item PathData item to check
+-   * @return boolean true if item has an ACL
+-   * @throws IOException if there is a failure
+-   */
+-  private boolean hasAcl(PathData item) throws IOException {
+-    FileSystem fs = item.fs;
+-    if (aclNotSupportedFsSet.contains(fs.getUri())) {
+-      // This FileSystem failed to run the ACL API in an earlier iteration.
+-      return false;
+-    }
+-    try {
+-      return !fs.getAclStatus(item.path).getEntries().isEmpty();
+-    } catch (RemoteException e) {
+-      // If this is a RpcNoSuchMethodException, then the client is connected to
+-      // an older NameNode that doesn't support ACLs.  Keep going.
+-      IOException e2 = e.unwrapRemoteException(RpcNoSuchMethodException.class);
+-      if (!(e2 instanceof RpcNoSuchMethodException)) {
+-        throw e;
+-      }
+-    } catch (IOException e) {
+-      // The NameNode supports ACLs, but they are not enabled.  Keep going.
+-      String message = e.getMessage();
+-      if (message != null && !message.contains("ACLs has been disabled")) {
+-        throw e;
+-      }
+-    } catch (UnsupportedOperationException e) {
+-      // The underlying FileSystem doesn't implement ACLs.  Keep going.
+-    }
+-    // Remember that this FileSystem cannot support ACLs.
+-    aclNotSupportedFsSet.add(fs.getUri());
+-    return false;
+-  }
+-
+   private int maxLength(int n, Object value) {
+     return Math.max(n, (value != null) ? String.valueOf(value).length() : 0);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/FsAclPermission.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/FsAclPermission.java
+new file mode 100644
+index 0000000..300296b
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/FsAclPermission.java
+@@ -0,0 +1,63 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.protocol;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.fs.permission.FsPermission;
++
++/**
++ * HDFS permission subclass used to indicate an ACL is present.  The ACL bit is
++ * not visible directly to users of {@link FsPermission} serialization.  This is
++ * done for backwards compatibility in case any existing clients assume the
++ * value of FsPermission is in a particular range.
++ */
++@InterfaceAudience.Private
++public class FsAclPermission extends FsPermission {
++  private final static short ACL_BIT = 1 << 12;
++  private final boolean aclBit;
++
++  /**
++   * Constructs a new FsAclPermission based on the given FsPermission.
++   *
++   * @param perm FsPermission containing permission bits
++   */
++  public FsAclPermission(FsPermission perm) {
++    super(perm.toShort());
++    aclBit = true;
++  }
++
++  /**
++   * Creates a new FsAclPermission by calling the base class constructor.
++   *
++   * @param perm short containing permission bits
++   */
++  public FsAclPermission(short perm) {
++    super(perm);
++    aclBit = (perm & ACL_BIT) != 0;
++  }
++
++  @Override
++  public short toExtendedShort() {
++    return (short)(toShort() | (aclBit ? ACL_BIT : 0));
++  }
++
++  @Override
++  public boolean getAclBit() {
++    return aclBit;
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+index c196b50..483e4ac 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+@@ -59,6 +59,7 @@
+ import org.apache.hadoop.hdfs.protocol.DatanodeLocalInfo;
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
++import org.apache.hadoop.hdfs.protocol.FsAclPermission;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.RollingUpgradeAction;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+@@ -1187,13 +1188,11 @@ public static FsServerDefaultsProto convert(FsServerDefaults fs) {
+   }
+   
+   public static FsPermissionProto convert(FsPermission p) {
+-    if (p == null) return null;
+-    return FsPermissionProto.newBuilder().setPerm(p.toShort()).build();
++    return FsPermissionProto.newBuilder().setPerm(p.toExtendedShort()).build();
+   }
+   
+   public static FsPermission convert(FsPermissionProto p) {
+-    if (p == null) return null;
+-    return new FsPermission((short)p.getPerm());
++    return new FsAclPermission((short)p.getPerm());
+   }
+   
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index ae792ed..7dc909b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -53,6 +53,7 @@
+ import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+ import org.apache.hadoop.hdfs.protocol.FSLimitException.MaxDirectoryItemsExceededException;
+ import org.apache.hadoop.hdfs.protocol.FSLimitException.PathComponentTooLongException;
++import org.apache.hadoop.hdfs.protocol.FsAclPermission;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+ import org.apache.hadoop.hdfs.protocol.HdfsLocatedFileStatus;
+@@ -2603,7 +2604,7 @@ HdfsFileStatus createFileStatus(byte[] path, INode node,
+         blocksize,
+         node.getModificationTime(snapshot),
+         node.getAccessTime(snapshot),
+-        node.getFsPermission(snapshot),
++        getPermissionForFileStatus(node, snapshot),
+         node.getUserName(snapshot),
+         node.getGroupName(snapshot),
+         node.isSymlink() ? node.asSymlink().getSymlink() : null,
+@@ -2645,7 +2646,8 @@ private HdfsLocatedFileStatus createLocatedFileStatus(byte[] path,
+     HdfsLocatedFileStatus status =
+         new HdfsLocatedFileStatus(size, node.isDirectory(), replication,
+           blocksize, node.getModificationTime(snapshot),
+-          node.getAccessTime(snapshot), node.getFsPermission(snapshot),
++          node.getAccessTime(snapshot),
++          getPermissionForFileStatus(node, snapshot),
+           node.getUserName(snapshot), node.getGroupName(snapshot),
+           node.isSymlink() ? node.asSymlink().getSymlink() : null, path,
+           node.getId(), loc, childrenNum);
+@@ -2659,6 +2661,22 @@ private HdfsLocatedFileStatus createLocatedFileStatus(byte[] path,
+     return status;
+   }
+ 
++  /**
++   * Returns an inode's FsPermission for use in an outbound FileStatus.  If the
++   * inode has an ACL, then this method will convert to a FsAclPermission.
++   *
++   * @param node INode to check
++   * @param snapshot int snapshot ID
++   * @return FsPermission from inode, with ACL bit on if the inode has an ACL
++   */
++  private static FsPermission getPermissionForFileStatus(INode node,
++      int snapshot) {
++    FsPermission perm = node.getFsPermission(snapshot);
++    if (node.getAclFeature(snapshot) != null) {
++      perm = new FsAclPermission(perm);
++    }
++    return perm;
++  }
+     
+   /**
+    * Add the given symbolic link to the fs. Record it in the edits log.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/JsonUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/JsonUtil.java
+index afae1a3..50a7f21 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/JsonUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/JsonUtil.java
+@@ -176,8 +176,9 @@ private static String toString(final FsPermission permission) {
+   }
+ 
+   /** Convert a string to a FsPermission object. */
+-  private static FsPermission toFsPermission(final String s) {
+-    return new FsPermission(Short.parseShort(s, 8));
++  private static FsPermission toFsPermission(final String s, Boolean aclBit) {
++    FsPermission perm = new FsPermission(Short.parseShort(s, 8));
++    return (aclBit != null && aclBit) ? new FsAclPermission(perm) : perm;
+   }
+ 
+   static enum PathType {
+@@ -204,7 +205,11 @@ public static String toJsonString(final HdfsFileStatus status,
+     m.put("length", status.getLen());
+     m.put("owner", status.getOwner());
+     m.put("group", status.getGroup());
+-    m.put("permission", toString(status.getPermission()));
++    FsPermission perm = status.getPermission();
++    m.put("permission", toString(perm));
++    if (perm.getAclBit()) {
++      m.put("aclBit", true);
++    }
+     m.put("accessTime", status.getAccessTime());
+     m.put("modificationTime", status.getModificationTime());
+     m.put("blockSize", status.getBlockSize());
+@@ -230,7 +235,8 @@ public static HdfsFileStatus toFileStatus(final Map<?, ?> json, boolean includes
+     final long len = (Long) m.get("length");
+     final String owner = (String) m.get("owner");
+     final String group = (String) m.get("group");
+-    final FsPermission permission = toFsPermission((String) m.get("permission"));
++    final FsPermission permission = toFsPermission((String) m.get("permission"),
++      (Boolean)m.get("aclBit"));
+     final long aTime = (Long) m.get("accessTime");
+     final long mTime = (Long) m.get("modificationTime");
+     final long blockSize = (Long) m.get("blockSize");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfs-dust.js b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfs-dust.js
+index c029407..3c8efd9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfs-dust.js
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfs-dust.js
+@@ -63,7 +63,8 @@
+ 
+     'helper_to_permission': function (v) {
+       var symbols = [ '---', '--x', '-w-', '-wx', 'r--', 'r-x', 'rw-', 'rwx' ];
+-      var sticky = v > 1000;
++      var vInt = parseInt(v, 8);
++      var sticky = (vInt & (1 << 9)) != 0;
+ 
+       var res = "";
+       for (var i = 0; i < 3; ++i) {
+@@ -72,7 +73,7 @@
+       }
+ 
+       if (sticky) {
+-        var otherExec = ((v % 10) & 1) == 1;
++        var otherExec = (vInt & 1) == 1;
+         res = res.substr(0, res.length - 1) + (otherExec ? 't' : 'T');
+       }
+ 
+@@ -81,6 +82,10 @@
+ 
+     'helper_to_directory' : function (v) {
+       return v === 'DIRECTORY' ? 'd' : '-';
++    },
++
++    'helper_to_acl_bit': function (v) {
++      return v ? '+' : "";
+     }
+   };
+   $.extend(dust.filters, filters);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.html b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.html
+index 26f2bd9..9110214 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.html
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.html
+@@ -90,7 +90,7 @@ <h4 class="modal-title" id="file-info-title">File information</h4>
+         <tbody>
+           {#FileStatus}
+           <tr>
+-            <td>{type|helper_to_directory}{permission|helper_to_permission}</td>
++            <td>{type|helper_to_directory}{permission|helper_to_permission}{aclBit|helper_to_acl_bit}</td>
+             <td>{owner}</td>
+             <td>{group}</td>
+             <td>{length|fmt_bytes}</td>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/AclTestHelpers.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/AclTestHelpers.java
+index 08af1bb..52a6858 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/AclTestHelpers.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/AclTestHelpers.java
+@@ -27,6 +27,7 @@
+ import org.apache.hadoop.fs.permission.AclEntryScope;
+ import org.apache.hadoop.fs.permission.AclEntryType;
+ import org.apache.hadoop.fs.permission.FsAction;
++import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.DFSTestUtil;
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -150,6 +151,9 @@ public static void assertFilePermissionGranted(FileSystem fs,
+    */
+   public static void assertPermission(FileSystem fs, Path pathToCheck,
+       short perm) throws IOException {
+-    assertEquals(perm, fs.getFileStatus(pathToCheck).getPermission().toShort());
++    short filteredPerm = (short)(perm & 01777);
++    FsPermission fsPermission = fs.getFileStatus(pathToCheck).getPermission();
++    assertEquals(filteredPerm, fsPermission.toShort());
++    assertEquals(((perm & (1 << 12)) != 0), fsPermission.getAclBit());
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
+index a3e9496..f36483e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
+@@ -38,6 +38,7 @@
+ import org.apache.hadoop.hdfs.DFSTestUtil;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.protocol.AclException;
++import org.apache.hadoop.hdfs.protocol.FsAclPermission;
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -118,7 +119,7 @@ public void testModifyAclEntries() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -140,7 +141,7 @@ public void testModifyAclEntriesOnlyAccess() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", READ_EXECUTE),
+       aclEntry(ACCESS, GROUP, READ_EXECUTE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -161,7 +162,7 @@ public void testModifyAclEntriesOnlyDefault() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -177,7 +178,7 @@ public void testModifyAclEntriesMinimal() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", READ_WRITE),
+       aclEntry(ACCESS, GROUP, READ) }, returned);
+-    assertPermission((short)0660);
++    assertPermission((short)010660);
+     assertAclFeature(true);
+   }
+ 
+@@ -195,7 +196,7 @@ public void testModifyAclEntriesMinimalDefault() throws IOException {
+       aclEntry(DEFAULT, USER, ALL),
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -212,7 +213,7 @@ public void testModifyAclEntriesCustomMask() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", ALL),
+       aclEntry(ACCESS, GROUP, READ) }, returned);
+-    assertPermission((short)0600);
++    assertPermission((short)010600);
+     assertAclFeature(true);
+   }
+ 
+@@ -240,7 +241,7 @@ public void testModifyAclEntriesStickyBit() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)01750);
++    assertPermission((short)011750);
+     assertAclFeature(true);
+   }
+ 
+@@ -286,7 +287,7 @@ public void testRemoveAclEntries() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -309,7 +310,7 @@ public void testRemoveAclEntriesOnlyAccess() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bar", READ_WRITE),
+       aclEntry(ACCESS, GROUP, READ_WRITE) }, returned);
+-    assertPermission((short)0760);
++    assertPermission((short)010760);
+     assertAclFeature(true);
+   }
+ 
+@@ -334,7 +335,7 @@ public void testRemoveAclEntriesOnlyDefault() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -382,7 +383,7 @@ public void testRemoveAclEntriesMinimalDefault() throws IOException {
+       aclEntry(DEFAULT, USER, ALL),
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -408,7 +409,7 @@ public void testRemoveAclEntriesStickyBit() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)01750);
++    assertPermission((short)011750);
+     assertAclFeature(true);
+   }
+ 
+@@ -436,7 +437,7 @@ public void testRemoveDefaultAcl() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", ALL),
+       aclEntry(ACCESS, GROUP, READ_EXECUTE) }, returned);
+-    assertPermission((short)0770);
++    assertPermission((short)010770);
+     assertAclFeature(true);
+   }
+ 
+@@ -456,7 +457,7 @@ public void testRemoveDefaultAclOnlyAccess() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", ALL),
+       aclEntry(ACCESS, GROUP, READ_EXECUTE) }, returned);
+-    assertPermission((short)0770);
++    assertPermission((short)010770);
+     assertAclFeature(true);
+   }
+ 
+@@ -501,7 +502,7 @@ public void testRemoveDefaultAclStickyBit() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", ALL),
+       aclEntry(ACCESS, GROUP, READ_EXECUTE) }, returned);
+-    assertPermission((short)01770);
++    assertPermission((short)011770);
+     assertAclFeature(true);
+   }
+ 
+@@ -602,7 +603,7 @@ public void testSetAcl() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, ALL),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0770);
++    assertPermission((short)010770);
+     assertAclFeature(true);
+   }
+ 
+@@ -621,7 +622,7 @@ public void testSetAclOnlyAccess() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", READ),
+       aclEntry(ACCESS, GROUP, READ) }, returned);
+-    assertPermission((short)0640);
++    assertPermission((short)010640);
+     assertAclFeature(true);
+   }
+ 
+@@ -639,7 +640,7 @@ public void testSetAclOnlyDefault() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, ALL),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -679,7 +680,7 @@ public void testSetAclMinimalDefault() throws IOException {
+       aclEntry(DEFAULT, USER, ALL),
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0750);
++    assertPermission((short)010750);
+     assertAclFeature(true);
+   }
+ 
+@@ -699,7 +700,7 @@ public void testSetAclCustomMask() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", READ),
+       aclEntry(ACCESS, GROUP, READ) }, returned);
+-    assertPermission((short)0670);
++    assertPermission((short)010670);
+     assertAclFeature(true);
+   }
+ 
+@@ -723,7 +724,7 @@ public void testSetAclStickyBit() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, ALL),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)01770);
++    assertPermission((short)011770);
+     assertAclFeature(true);
+   }
+ 
+@@ -768,7 +769,7 @@ public void testSetPermission() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, ALL),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0700);
++    assertPermission((short)010700);
+     assertAclFeature(true);
+   }
+ 
+@@ -788,7 +789,7 @@ public void testSetPermissionOnlyAccess() throws IOException {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", READ),
+       aclEntry(ACCESS, GROUP, READ) }, returned);
+-    assertPermission((short)0600);
++    assertPermission((short)010600);
+     assertAclFeature(true);
+   }
+ 
+@@ -810,11 +811,28 @@ public void testSetPermissionOnlyDefault() throws IOException {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, ALL),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0700);
++    assertPermission((short)010700);
+     assertAclFeature(true);
+   }
+ 
+   @Test
++  public void testSetPermissionCannotSetAclBit() throws IOException {
++    FileSystem.mkdirs(fs, path, FsPermission.createImmutable((short)0750));
++    fs.setPermission(path, FsPermission.createImmutable((short)0700));
++    assertPermission((short)0700);
++    fs.setPermission(path,
++      new FsAclPermission(FsPermission.createImmutable((short)0755)));
++    INode inode = cluster.getNamesystem().getFSDirectory().getNode(
++      path.toUri().getPath(), false);
++    assertNotNull(inode);
++    FsPermission perm = inode.getFsPermission();
++    assertNotNull(perm);
++    assertEquals(0755, perm.toShort());
++    assertEquals(0755, perm.toExtendedShort());
++    assertAclFeature(false);
++  }
++
++  @Test
+   public void testDefaultAclNewFile() throws Exception {
+     FileSystem.mkdirs(fs, path, FsPermission.createImmutable((short)0750));
+     List<AclEntry> aclSpec = Lists.newArrayList(
+@@ -827,7 +845,7 @@ public void testDefaultAclNewFile() throws Exception {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", ALL),
+       aclEntry(ACCESS, GROUP, READ_EXECUTE) }, returned);
+-    assertPermission(filePath, (short)0640);
++    assertPermission(filePath, (short)010640);
+     assertAclFeature(filePath, true);
+   }
+ 
+@@ -881,7 +899,7 @@ public void testDefaultAclNewDir() throws Exception {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, ALL),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission(dirPath, (short)0750);
++    assertPermission(dirPath, (short)010750);
+     assertAclFeature(dirPath, true);
+   }
+ 
+@@ -916,7 +934,7 @@ public void testDefaultMinimalAclNewDir() throws Exception {
+       aclEntry(DEFAULT, USER, ALL),
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission(dirPath, (short)0750);
++    assertPermission(dirPath, (short)010750);
+     assertAclFeature(dirPath, true);
+   }
+ 
+@@ -940,7 +958,7 @@ public void testDefaultAclNewFileIntermediate() throws Exception {
+     AclStatus s = fs.getAclStatus(dirPath);
+     AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission(dirPath, (short)0750);
++    assertPermission(dirPath, (short)010750);
+     assertAclFeature(dirPath, true);
+     expected = new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", ALL),
+@@ -948,7 +966,7 @@ public void testDefaultAclNewFileIntermediate() throws Exception {
+     s = fs.getAclStatus(filePath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission(filePath, (short)0640);
++    assertPermission(filePath, (short)010640);
+     assertAclFeature(filePath, true);
+   }
+ 
+@@ -972,12 +990,12 @@ public void testDefaultAclNewDirIntermediate() throws Exception {
+     AclStatus s = fs.getAclStatus(dirPath);
+     AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission(dirPath, (short)0750);
++    assertPermission(dirPath, (short)010750);
+     assertAclFeature(dirPath, true);
+     s = fs.getAclStatus(subdirPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission(subdirPath, (short)0750);
++    assertPermission(subdirPath, (short)010750);
+     assertAclFeature(subdirPath, true);
+   }
+ 
+@@ -1004,7 +1022,7 @@ public void testDefaultAclNewSymlinkIntermediate() throws Exception {
+     AclStatus s = fs.getAclStatus(dirPath);
+     AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission(dirPath, (short)0750);
++    assertPermission(dirPath, (short)010750);
+     assertAclFeature(dirPath, true);
+     expected = new AclEntry[] { };
+     s = fs.getAclStatus(linkPath);
+@@ -1037,7 +1055,7 @@ public void testDefaultAclNewFileWithMode() throws Exception {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "foo", ALL),
+       aclEntry(ACCESS, GROUP, READ_EXECUTE) }, returned);
+-    assertPermission(filePath, (short)0740);
++    assertPermission(filePath, (short)010740);
+     assertAclFeature(filePath, true);
+   }
+ 
+@@ -1059,7 +1077,7 @@ public void testDefaultAclNewDirWithMode() throws Exception {
+       aclEntry(DEFAULT, GROUP, READ_EXECUTE),
+       aclEntry(DEFAULT, MASK, ALL),
+       aclEntry(DEFAULT, OTHER, READ_EXECUTE) }, returned);
+-    assertPermission(dirPath, (short)0740);
++    assertPermission(dirPath, (short)010740);
+     assertAclFeature(dirPath, true);
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithAcl.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithAcl.java
+index 03889ea..bd88478 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithAcl.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithAcl.java
+@@ -142,7 +142,7 @@ private void doTestDefaultAclNewChildren(boolean persistNamespace)
+     AclEntry[] subdirReturned = fs.getAclStatus(subdirPath).getEntries()
+       .toArray(new AclEntry[0]);
+     Assert.assertArrayEquals(subdirExpected, subdirReturned);
+-    assertPermission(fs, subdirPath, (short)0755);
++    assertPermission(fs, subdirPath, (short)010755);
+ 
+     restart(fs, persistNamespace);
+ 
+@@ -152,7 +152,7 @@ private void doTestDefaultAclNewChildren(boolean persistNamespace)
+     subdirReturned = fs.getAclStatus(subdirPath).getEntries()
+       .toArray(new AclEntry[0]);
+     Assert.assertArrayEquals(subdirExpected, subdirReturned);
+-    assertPermission(fs, subdirPath, (short)0755);
++    assertPermission(fs, subdirPath, (short)010755);
+ 
+     aclSpec = Lists.newArrayList(aclEntry(DEFAULT, USER, "foo", READ_WRITE));
+     fs.modifyAclEntries(dirPath, aclSpec);
+@@ -163,7 +163,7 @@ private void doTestDefaultAclNewChildren(boolean persistNamespace)
+     subdirReturned = fs.getAclStatus(subdirPath).getEntries()
+       .toArray(new AclEntry[0]);
+     Assert.assertArrayEquals(subdirExpected, subdirReturned);
+-    assertPermission(fs, subdirPath, (short)0755);
++    assertPermission(fs, subdirPath, (short)010755);
+ 
+     restart(fs, persistNamespace);
+ 
+@@ -173,7 +173,7 @@ private void doTestDefaultAclNewChildren(boolean persistNamespace)
+     subdirReturned = fs.getAclStatus(subdirPath).getEntries()
+       .toArray(new AclEntry[0]);
+     Assert.assertArrayEquals(subdirExpected, subdirReturned);
+-    assertPermission(fs, subdirPath, (short)0755);
++    assertPermission(fs, subdirPath, (short)010755);
+ 
+     fs.removeAcl(dirPath);
+ 
+@@ -183,7 +183,7 @@ private void doTestDefaultAclNewChildren(boolean persistNamespace)
+     subdirReturned = fs.getAclStatus(subdirPath).getEntries()
+       .toArray(new AclEntry[0]);
+     Assert.assertArrayEquals(subdirExpected, subdirReturned);
+-    assertPermission(fs, subdirPath, (short)0755);
++    assertPermission(fs, subdirPath, (short)010755);
+ 
+     restart(fs, persistNamespace);
+ 
+@@ -193,7 +193,7 @@ private void doTestDefaultAclNewChildren(boolean persistNamespace)
+     subdirReturned = fs.getAclStatus(subdirPath).getEntries()
+       .toArray(new AclEntry[0]);
+     Assert.assertArrayEquals(subdirExpected, subdirReturned);
+-    assertPermission(fs, subdirPath, (short)0755);
++    assertPermission(fs, subdirPath, (short)010755);
+   }
+ 
+   @Test
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestAclWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestAclWithSnapshot.java
+index 0c80841..3deb47f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestAclWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestAclWithSnapshot.java
+@@ -119,14 +119,14 @@ public void testOriginalAclEnforcedForSnapshotRootAfterChange()
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_EXECUTE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0750, path);
++    assertPermission((short)010750, path);
+ 
+     s = hdfs.getAclStatus(snapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_EXECUTE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0750, snapshotPath);
++    assertPermission((short)010750, snapshotPath);
+ 
+     assertDirPermissionGranted(fsAsBruce, BRUCE, snapshotPath);
+     assertDirPermissionDenied(fsAsDiana, DIANA, snapshotPath);
+@@ -153,14 +153,14 @@ private static void doSnapshotRootChangeAssertions(Path path,
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "diana", READ_EXECUTE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0550, path);
++    assertPermission((short)010550, path);
+ 
+     s = hdfs.getAclStatus(snapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_EXECUTE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0750, snapshotPath);
++    assertPermission((short)010750, snapshotPath);
+ 
+     assertDirPermissionDenied(fsAsBruce, BRUCE, path);
+     assertDirPermissionGranted(fsAsDiana, DIANA, path);
+@@ -202,24 +202,24 @@ public void testOriginalAclEnforcedForSnapshotContentsAfterChange()
+     AclStatus s = hdfs.getAclStatus(filePath);
+     AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, filePath);
++    assertPermission((short)010550, filePath);
+ 
+     s = hdfs.getAclStatus(subdirPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, subdirPath);
++    assertPermission((short)010550, subdirPath);
+ 
+     s = hdfs.getAclStatus(fileSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, fileSnapshotPath);
++    assertPermission((short)010550, fileSnapshotPath);
+     assertFilePermissionGranted(fsAsBruce, BRUCE, fileSnapshotPath);
+     assertFilePermissionDenied(fsAsDiana, DIANA, fileSnapshotPath);
+ 
+     s = hdfs.getAclStatus(subdirSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, subdirSnapshotPath);
++    assertPermission((short)010550, subdirSnapshotPath);
+     assertDirPermissionGranted(fsAsBruce, BRUCE, subdirSnapshotPath);
+     assertDirPermissionDenied(fsAsDiana, DIANA, subdirSnapshotPath);
+ 
+@@ -251,14 +251,14 @@ private static void doSnapshotContentsChangeAssertions(Path filePath,
+     AclStatus s = hdfs.getAclStatus(filePath);
+     AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0570, filePath);
++    assertPermission((short)010570, filePath);
+     assertFilePermissionDenied(fsAsBruce, BRUCE, filePath);
+     assertFilePermissionGranted(fsAsDiana, DIANA, filePath);
+ 
+     s = hdfs.getAclStatus(subdirPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0570, subdirPath);
++    assertPermission((short)010570, subdirPath);
+     assertDirPermissionDenied(fsAsBruce, BRUCE, subdirPath);
+     assertDirPermissionGranted(fsAsDiana, DIANA, subdirPath);
+ 
+@@ -268,14 +268,14 @@ private static void doSnapshotContentsChangeAssertions(Path filePath,
+     s = hdfs.getAclStatus(fileSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, fileSnapshotPath);
++    assertPermission((short)010550, fileSnapshotPath);
+     assertFilePermissionGranted(fsAsBruce, BRUCE, fileSnapshotPath);
+     assertFilePermissionDenied(fsAsDiana, DIANA, fileSnapshotPath);
+ 
+     s = hdfs.getAclStatus(subdirSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, subdirSnapshotPath);
++    assertPermission((short)010550, subdirSnapshotPath);
+     assertDirPermissionGranted(fsAsBruce, BRUCE, subdirSnapshotPath);
+     assertDirPermissionDenied(fsAsDiana, DIANA, subdirSnapshotPath);
+   }
+@@ -302,14 +302,14 @@ public void testOriginalAclEnforcedForSnapshotRootAfterRemoval()
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_EXECUTE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0750, path);
++    assertPermission((short)010750, path);
+ 
+     s = hdfs.getAclStatus(snapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_EXECUTE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0750, snapshotPath);
++    assertPermission((short)010750, snapshotPath);
+ 
+     assertDirPermissionGranted(fsAsBruce, BRUCE, snapshotPath);
+     assertDirPermissionDenied(fsAsDiana, DIANA, snapshotPath);
+@@ -336,7 +336,7 @@ private static void doSnapshotRootRemovalAssertions(Path path,
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_EXECUTE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0750, snapshotPath);
++    assertPermission((short)010750, snapshotPath);
+ 
+     assertDirPermissionDenied(fsAsBruce, BRUCE, path);
+     assertDirPermissionDenied(fsAsDiana, DIANA, path);
+@@ -378,24 +378,24 @@ public void testOriginalAclEnforcedForSnapshotContentsAfterRemoval()
+     AclStatus s = hdfs.getAclStatus(filePath);
+     AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, filePath);
++    assertPermission((short)010550, filePath);
+ 
+     s = hdfs.getAclStatus(subdirPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, subdirPath);
++    assertPermission((short)010550, subdirPath);
+ 
+     s = hdfs.getAclStatus(fileSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, fileSnapshotPath);
++    assertPermission((short)010550, fileSnapshotPath);
+     assertFilePermissionGranted(fsAsBruce, BRUCE, fileSnapshotPath);
+     assertFilePermissionDenied(fsAsDiana, DIANA, fileSnapshotPath);
+ 
+     s = hdfs.getAclStatus(subdirSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, subdirSnapshotPath);
++    assertPermission((short)010550, subdirSnapshotPath);
+     assertDirPermissionGranted(fsAsBruce, BRUCE, subdirSnapshotPath);
+     assertDirPermissionDenied(fsAsDiana, DIANA, subdirSnapshotPath);
+ 
+@@ -437,14 +437,14 @@ private static void doSnapshotContentsRemovalAssertions(Path filePath,
+     s = hdfs.getAclStatus(fileSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, fileSnapshotPath);
++    assertPermission((short)010550, fileSnapshotPath);
+     assertFilePermissionGranted(fsAsBruce, BRUCE, fileSnapshotPath);
+     assertFilePermissionDenied(fsAsDiana, DIANA, fileSnapshotPath);
+ 
+     s = hdfs.getAclStatus(subdirSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0550, subdirSnapshotPath);
++    assertPermission((short)010550, subdirSnapshotPath);
+     assertDirPermissionGranted(fsAsBruce, BRUCE, subdirSnapshotPath);
+     assertDirPermissionDenied(fsAsDiana, DIANA, subdirSnapshotPath);
+   }
+@@ -470,7 +470,7 @@ public void testModifyReadsCurrentState() throws Exception {
+     AclStatus s = hdfs.getAclStatus(path);
+     AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(expected, returned);
+-    assertPermission((short)0770, path);
++    assertPermission((short)010770, path);
+     assertDirPermissionGranted(fsAsBruce, BRUCE, path);
+     assertDirPermissionGranted(fsAsDiana, DIANA, path);
+   }
+@@ -514,7 +514,7 @@ public void testDefaultAclNotCopiedToAccessAclOfNewSnapshot()
+       aclEntry(DEFAULT, GROUP, NONE),
+       aclEntry(DEFAULT, MASK, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0700, path);
++    assertPermission((short)010700, path);
+ 
+     s = hdfs.getAclStatus(snapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+@@ -524,7 +524,7 @@ public void testDefaultAclNotCopiedToAccessAclOfNewSnapshot()
+       aclEntry(DEFAULT, GROUP, NONE),
+       aclEntry(DEFAULT, MASK, READ_EXECUTE),
+       aclEntry(DEFAULT, OTHER, NONE) }, returned);
+-    assertPermission((short)0700, snapshotPath);
++    assertPermission((short)010700, snapshotPath);
+ 
+     assertDirPermissionDenied(fsAsBruce, BRUCE, snapshotPath);
+   }
+@@ -596,14 +596,14 @@ public void testChangeAclExceedsQuota() throws Exception {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_WRITE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0660, filePath);
++    assertPermission((short)010660, filePath);
+ 
+     s = hdfs.getAclStatus(fileSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_WRITE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0660, filePath);
++    assertPermission((short)010660, filePath);
+ 
+     aclSpec = Lists.newArrayList(
+       aclEntry(ACCESS, USER, "bruce", READ));
+@@ -632,14 +632,14 @@ public void testRemoveAclExceedsQuota() throws Exception {
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_WRITE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0660, filePath);
++    assertPermission((short)010660, filePath);
+ 
+     s = hdfs.getAclStatus(fileSnapshotPath);
+     returned = s.getEntries().toArray(new AclEntry[0]);
+     assertArrayEquals(new AclEntry[] {
+       aclEntry(ACCESS, USER, "bruce", READ_WRITE),
+       aclEntry(ACCESS, GROUP, NONE) }, returned);
+-    assertPermission((short)0660, filePath);
++    assertPermission((short)010660, filePath);
+ 
+     aclSpec = Lists.newArrayList(
+       aclEntry(ACCESS, USER, "bruce", READ));
+-- 
+1.7.0.4
+

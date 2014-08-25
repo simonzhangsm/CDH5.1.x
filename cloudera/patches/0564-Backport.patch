@@ -1,0 +1,34 @@
+From b8e190bfe31bfe2cb7ffbd1f721a6b3796d81189 Mon Sep 17 00:00:00 2001
+From: Nishkam Ravi <nishkamravi@gmail.com>
+Date: Tue, 8 Apr 2014 18:37:40 -0700
+Subject: [PATCH 564/795] Backport
+ HADOOP-10456. Bug in Configuration.java exposed by Spark (ConcurrentModificationException). Contributed by Nishkam Ravi.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1584575 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 661958ac0c19b808bd76f63ec3fd8396a2d31497)
+
+Conflicts:
+
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../java/org/apache/hadoop/conf/Configuration.java |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/Configuration.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/Configuration.java
+index 5ae6f21..a29f842 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/Configuration.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/conf/Configuration.java
+@@ -666,9 +666,9 @@ public Configuration(Configuration other) {
+      }
+ 
+      this.updatingResource = new HashMap<String, String[]>(other.updatingResource);
++     this.finalParameters = new HashSet<String>(other.finalParameters);
+    }
+    
+-    this.finalParameters = new HashSet<String>(other.finalParameters);
+     synchronized(Configuration.class) {
+       REGISTRY.put(this, null);
+     }
+-- 
+1.7.0.4
+

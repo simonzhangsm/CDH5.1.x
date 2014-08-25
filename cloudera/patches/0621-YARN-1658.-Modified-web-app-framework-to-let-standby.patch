@@ -1,0 +1,358 @@
+From d18fac9221c93263a24c6f3cfb64bc69b627cf29 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Fri, 14 Mar 2014 02:40:28 +0000
+Subject: [PATCH 621/795] YARN-1658. Modified web-app framework to let standby RMs redirect web-service calls to the active RM. Contributed by Cindy Li.
+ svn merge --ignore-ancestry -c 1577408 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1577409 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a63b5a8908817661d484872a05f745777712808e)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../apache/hadoop/yarn/client/TestRMFailover.java  |    7 ++
+ .../org/apache/hadoop/yarn/webapp/Dispatcher.java  |    4 +-
+ .../java/org/apache/hadoop/yarn/webapp/Router.java |    2 +-
+ .../java/org/apache/hadoop/yarn/webapp/WebApp.java |   16 +++-
+ .../resourcemanager/webapp/RMDispatcher.java       |   79 -------------------
+ .../server/resourcemanager/webapp/RMWebApp.java    |   18 ++---
+ .../resourcemanager/webapp/RMWebAppFilter.java     |   83 ++++++++++++++++++++
+ 7 files changed, 111 insertions(+), 98 deletions(-)
+ delete mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMDispatcher.java
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebAppFilter.java
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+index 3515a53..1269f89 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+@@ -271,6 +271,12 @@ public void testRMWebAppRedirect() throws YarnException,
+     header = getHeader("Refresh", rm2Url + "/cluster/cluster");
+     assertEquals(null, header);
+ 
++    header = getHeader("Refresh", rm2Url + "/ws/v1/cluster/info");
++    assertEquals(null, header);
++
++    header = getHeader("Refresh", rm2Url + "/ws/v1/cluster/apps");
++    assertTrue(header.contains("; url=" + rm1Url));
++
+     // Due to the limitation of MiniYARNCluster and dispatcher is a singleton,
+     // we couldn't add the test case after explicitFailover();
+   }
+@@ -286,4 +292,5 @@ static String getHeader(String field, String url) {
+     }
+     return fieldHeader;
+   }
++
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/Dispatcher.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/Dispatcher.java
+index a050003..66dd21b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/Dispatcher.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/Dispatcher.java
+@@ -57,11 +57,11 @@
+ 
+   private transient final Injector injector;
+   private transient final Router router;
+-  protected transient final WebApp webApp;
++  private transient final WebApp webApp;
+   private volatile boolean devMode = false;
+ 
+   @Inject
+-  protected Dispatcher(WebApp webApp, Injector injector, Router router) {
++  Dispatcher(WebApp webApp, Injector injector, Router router) {
+     this.webApp = webApp;
+     this.injector = injector;
+     this.router = router;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/Router.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/Router.java
+index 9d54659..cf78818 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/Router.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/Router.java
+@@ -44,7 +44,7 @@
+  * Manages path info to controller#action routing.
+  */
+ @InterfaceAudience.LimitedPrivate({"YARN", "MapReduce"})
+-public class Router {
++class Router {
+   static final Logger LOG = LoggerFactory.getLogger(Router.class);
+   static final ImmutableList<String> EMPTY_LIST = ImmutableList.of();
+   static final CharMatcher SLASH = CharMatcher.is('/');
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApp.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApp.java
+index 171b36a..2c21d1b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApp.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApp.java
+@@ -122,6 +122,10 @@ public void joinThread() {
+ 
+   public String name() { return this.name; }
+ 
++  public String wsName() {
++    return this.wsName;
++  }
++
+   void addServePathSpec(String path) { this.servePathSpecs.add(path); }
+ 
+   public String[] getServePathSpecs() {
+@@ -134,7 +138,7 @@ public void joinThread() {
+    * more easily differentiate the different webapps.
+    * @param path  the path to redirect to
+    */
+-  protected void setRedirectPath(String path) {
++  void setRedirectPath(String path) {
+     this.redirectPath = path;
+   }
+ 
+@@ -160,10 +164,10 @@ public void configureServlets() {
+       serve(path).with(Dispatcher.class);
+     }
+ 
+-    configureRSServlets();
++    configureWebAppServlets();
+   }
+ 
+-  protected void configureRSServlets() {
++  protected void configureWebAppServlets() {
+     // Add in the web services filters/serves if app has them.
+     // Using Jersey/guice integration module. If user has web services
+     // they must have also bound a default one in their webapp code.
+@@ -182,9 +186,12 @@ protected void configureRSServlets() {
+       params.put(FeaturesAndProperties.FEATURE_XMLROOTELEMENT_PROCESSING, "true");
+       params.put(ResourceConfig.PROPERTY_CONTAINER_REQUEST_FILTERS, GZIPContentEncodingFilter.class.getName());
+       params.put(ResourceConfig.PROPERTY_CONTAINER_RESPONSE_FILTERS, GZIPContentEncodingFilter.class.getName());
+-      filter("/*").through(GuiceContainer.class, params);
++      filter("/*").through(getWebAppFilterClass(), params);
+     }
++  }
+ 
++  protected Class<? extends GuiceContainer> getWebAppFilterClass() {
++    return GuiceContainer.class;
+   }
+ 
+   /**
+@@ -274,4 +281,5 @@ static String getPrefix(String pathSpec) {
+   }
+ 
+   public abstract void setup();
++
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMDispatcher.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMDispatcher.java
+deleted file mode 100644
+index 5691a11..0000000
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMDispatcher.java
++++ /dev/null
+@@ -1,79 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.yarn.server.resourcemanager.webapp;
+-
+-import java.io.IOException;
+-import java.io.PrintWriter;
+-
+-import javax.servlet.ServletException;
+-import javax.servlet.http.HttpServletRequest;
+-import javax.servlet.http.HttpServletResponse;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.http.HtmlQuoting;
+-import org.apache.hadoop.yarn.webapp.Dispatcher;
+-import org.apache.hadoop.yarn.webapp.Router;
+-import org.apache.hadoop.yarn.webapp.WebApp;
+-
+-import com.google.inject.Inject;
+-import com.google.inject.Injector;
+-import com.google.inject.Singleton;
+-
+-@InterfaceAudience.LimitedPrivate({ "YARN", "MapReduce" })
+-@Singleton
+-public class RMDispatcher extends Dispatcher {
+-
+-  /**
+-   *
+-   */
+-  private static final long serialVersionUID = 1L;
+-
+-  @Inject
+-  RMDispatcher(WebApp webApp, Injector injector, Router router) {
+-    super(webApp, injector, router);
+-  }
+-
+-  @Override
+-  public void service(HttpServletRequest req, HttpServletResponse res)
+-      throws ServletException, IOException {
+-    res.setCharacterEncoding("UTF-8");
+-    String uri = HtmlQuoting.quoteHtmlChars(req.getRequestURI());
+-
+-    if (uri == null) {
+-      uri = "/";
+-    }
+-
+-    RMWebApp rmWebApp = (RMWebApp) webApp;
+-    rmWebApp.checkIfStandbyRM();
+-    if (rmWebApp.isStandby()
+-        && !uri.equals("/" + rmWebApp.name() + "/cluster")) {
+-      String redirectPath = rmWebApp.getRedirectPath() + uri;
+-      if (redirectPath != null && !redirectPath.isEmpty()) {
+-        String redirectMsg =
+-            "This is standby RM. Redirecting to the current active RM: "
+-                + redirectPath;
+-        res.addHeader("Refresh", "3; url=" + redirectPath);
+-        PrintWriter out = res.getWriter();
+-        out.println(redirectMsg);
+-        return;
+-      }
+-    }
+-    super.service(req, res);
+-  }
+-}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebApp.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebApp.java
+index ffb693e..98ea209 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebApp.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebApp.java
+@@ -29,11 +29,12 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.QueueACLsManager;
+ import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
+-import org.apache.hadoop.yarn.webapp.Dispatcher;
+ import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
+ import org.apache.hadoop.yarn.webapp.WebApp;
+ import org.apache.hadoop.yarn.webapp.YarnWebParams;
+ 
++import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
++
+ /**
+  * The RM webapp
+  */
+@@ -51,6 +52,8 @@ public void setup() {
+     bind(JAXBContextResolver.class);
+     bind(RMWebServices.class);
+     bind(GenericExceptionHandler.class);
++    bind(RMWebApp.class).toInstance(this);
++
+     if (rm != null) {
+       bind(ResourceManager.class).toInstance(rm);
+       bind(RMContext.class).toInstance(rm.getRMContext());
+@@ -68,17 +71,8 @@ public void setup() {
+   }
+ 
+   @Override
+-  public void configureServlets() {
+-    setup();
+-
+-    serve("/").with(RMDispatcher.class);
+-    serve("/__stop").with(Dispatcher.class);
+-
+-    for (String path : super.getServePathSpecs()) {
+-      serve(path).with(RMDispatcher.class);
+-    }
+-
+-    configureRSServlets();
++  protected Class<? extends GuiceContainer> getWebAppFilterClass() {
++    return RMWebAppFilter.class;
+   }
+ 
+   public void checkIfStandbyRM() {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebAppFilter.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebAppFilter.java
+new file mode 100644
+index 0000000..fd472dd
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebAppFilter.java
+@@ -0,0 +1,83 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.yarn.server.resourcemanager.webapp;
++
++import java.io.IOException;
++import java.io.PrintWriter;
++
++import javax.inject.Inject;
++import javax.inject.Singleton;
++import javax.servlet.FilterChain;
++import javax.servlet.ServletException;
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.http.HttpServletResponse;
++
++import org.apache.hadoop.http.HtmlQuoting;
++
++import com.google.inject.Injector;
++import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
++
++@Singleton
++public class RMWebAppFilter extends GuiceContainer {
++
++  private Injector injector;
++  /**
++   * 
++   */
++  private static final long serialVersionUID = 1L;
++
++  @Inject
++  public RMWebAppFilter(Injector injector) {
++    super(injector);
++    this.injector=injector;
++  }
++
++  @Override
++  public void doFilter(HttpServletRequest request,
++      HttpServletResponse response, FilterChain chain) throws IOException,
++      ServletException {
++    response.setCharacterEncoding("UTF-8");
++    String uri = HtmlQuoting.quoteHtmlChars(request.getRequestURI());
++
++    if (uri == null) {
++      uri = "/";
++    }
++    RMWebApp rmWebApp = injector.getInstance(RMWebApp.class);
++    rmWebApp.checkIfStandbyRM();
++    if (rmWebApp.isStandby()
++        && !uri.equals("/" + rmWebApp.wsName() + "/v1/cluster/info")
++        && !uri.equals("/" + rmWebApp.name() + "/cluster")) {
++      String redirectPath = rmWebApp.getRedirectPath() + uri;
++
++      if (redirectPath != null && !redirectPath.isEmpty()) {
++        String redirectMsg =
++            "This is standby RM. Redirecting to the current active RM: "
++                + redirectPath;
++        response.addHeader("Refresh", "3; url=" + redirectPath);
++        PrintWriter out = response.getWriter();
++        out.println(redirectMsg);
++        return;
++      }
++    }
++
++    super.doFilter(request, response, chain);
++
++  }
++
++}
+-- 
+1.7.0.4
+

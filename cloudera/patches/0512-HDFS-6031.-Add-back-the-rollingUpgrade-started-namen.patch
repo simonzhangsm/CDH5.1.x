@@ -1,0 +1,158 @@
+From 4d74bdb4fed3f54865fc6cdff1d8dc47391d6a08 Mon Sep 17 00:00:00 2001
+From: Tsz-wo Sze <szetszwo@apache.org>
+Date: Fri, 28 Feb 2014 19:33:08 +0000
+Subject: [PATCH 512/795] HDFS-6031. Add back the "-rollingUpgrade started" namenode startup option; otherwise, namenode cannot start when the layout version is changed.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1573040 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b8e84d2b97fd9f447a020a7f4061d9a9b6bdf206)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    6 +++-
+ .../hdfs/server/common/HdfsServerConstants.java    |   10 +++++-
+ .../hadoop/hdfs/server/namenode/FSImage.java       |    1 +
+ .../src/site/xdoc/HdfsRollingUpgrade.xml           |   29 ++++++++++++++-----
+ 4 files changed, 35 insertions(+), 11 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index 002afcd..93388dd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -33,7 +33,7 @@ HDFS-5535 subtasks:
+     so that the standby namenode can create checkpoints during upgrade.
+     (szetszwo & jing9)
+ 
+-    HDFS-5535. Add BlockPoolSliceStorage 'trash' to handle block deletions
++    HDFS-5907. Add BlockPoolSliceStorage 'trash' to handle block deletions
+     during rolling upgrades. (Arpit Agarwal)
+ 
+     HDFS-5494. Merge Protobuf-based-FSImage code from trunk - fix build
+@@ -123,3 +123,7 @@ HDFS-5535 subtasks:
+ 
+     HDFS-6032. -rollingUpgrade query hits NPE after the NN restarts. (Haohui Mai
+     via jing9)
++
++    HDFS-6031. Add back the "-rollingUpgrade started" namenode startup option;
++    otherwise, namenode cannot start when the layout version is changed.
++    (szetszwo)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+index f12e8bd..950b83b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/HdfsServerConstants.java
+@@ -49,7 +49,7 @@ private HdfsServerConstants() { }
+ 
+   /** Startup options for rolling upgrade. */
+   public static enum RollingUpgradeStartupOption{
+-    ROLLBACK, DOWNGRADE;
++    ROLLBACK, DOWNGRADE, STARTED;
+     
+     private static final RollingUpgradeStartupOption[] VALUES = values();
+ 
+@@ -95,10 +95,16 @@ public static boolean isRollingUpgradeRollback(StartupOption option) {
+ 
+     public static boolean isRollingUpgradeDowngrade(StartupOption option) {
+       return option == ROLLINGUPGRADE
+-          && option.getRollingUpgradeStartupOption() 
++          && option.getRollingUpgradeStartupOption()
+                == RollingUpgradeStartupOption.DOWNGRADE;
+     }
+ 
++    public static boolean isRollingUpgradeStarted(StartupOption option) {
++      return option == ROLLINGUPGRADE
++          && option.getRollingUpgradeStartupOption() 
++               == RollingUpgradeStartupOption.STARTED;
++    }
++
+     private final String name;
+     
+     // Used only with format and upgrade options
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index bed1860..33464a7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -221,6 +221,7 @@ boolean recoverTransitionRead(StartupOption startOpt, FSNamesystem target,
+       NNStorage.checkVersionUpgradable(storage.getLayoutVersion());
+     }
+     if (startOpt != StartupOption.UPGRADE
++        && !StartupOption.isRollingUpgradeStarted(startOpt)
+         && layoutVersion < Storage.LAST_PRE_UPGRADE_LAYOUT_VERSION
+         && layoutVersion != HdfsConstants.NAMENODE_LAYOUT_VERSION) {
+       throw new IOException(
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml b/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
+index b7d5894..e90b710 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/xdoc/HdfsRollingUpgrade.xml
+@@ -75,10 +75,14 @@
+       </li>
+     </ul></li>
+     <li>Upgrade Active and Standby <em>NNs</em><ol>
+-      <li>Shutdown, upgrade and restart <em>NN2</em> as standby.</li>
++      <li>Shutdown and upgrade <em>NN2</em>.</li>
++      <li>Start <em>NN2</em> as standby with the
++        "<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade started</code></a>" option.</li>
+       <li>Failover from <em>NN1</em> to <em>NN2</em>
+-       	so that <em>NN2</em> becomes active and <em>NN1</em> becomes standby.</li>
+-      <li>Shutdown, upgrade and restart <em>NN1</em> as standby.</li>
++               so that <em>NN2</em> becomes active and <em>NN1</em> becomes standby.</li>
++      <li>Shutdown and upgrade <em>NN1</em>.</li>
++      <li>Start <em>NN1</em> as standby with the
++        "<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade started</code></a>" option.</li>
+     </ol></li>
+     <li>Upgrade <em>DNs</em><ol>
+       <li>Choose a small subset of datanodes (e.g. all datanodes under a particular rack).</li>
+@@ -132,7 +136,9 @@
+   <ul>
+     <li>Upgrade <em>NN</em> and <em>SNN</em><ol>
+       <li>Shutdown <em>SNN</em></li>
+-      <li>Shutdown, upgrade and restart <em>NN</em></li>
++      <li>Shutdown and upgrade <em>NN</em>.</li>
++      <li>Start <em>NN</em> as standby with the
++        "<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade started</code></a>" option.</li>
+       <li>Upgrade and restart <em>SNN</em></li>
+     </ol></li>
+   </ul>
+@@ -174,7 +180,7 @@
+       <li>Shutdown all <em>NNs</em> and <em>DNs</em>.</li>
+       <li>Restore the pre-upgrade release in all machines.</li>
+       <li>Start <em>NNs</em> with the 
+-	"<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade downgrade</code></a>" option.</li>
++        "<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade downgrade</code></a>" option.</li>
+       <li>Start <em>DNs</em> normally.</li>
+     </ol></li>
+   </ul>
+@@ -198,7 +204,7 @@
+       <li>Shutdown all <em>NNs</em> and <em>DNs</em>.</li>
+       <li>Restore the pre-upgrade release in all machines.</li>
+       <li>Start <em>NNs</em> with the
+-	"<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade rollback</code></a>" option.</li>
++        "<a href="#namenode_-rollingUpgrade"><code>-rollingUpgrade rollback</code></a>" option.</li>
+       <li>Start <em>DNs</em> normally.</li>
+     </ol></li>
+   </ul>
+@@ -248,9 +254,11 @@
+   <subsection name="NameNode Startup Options" id="dfsadminCommands">
+ 
+   <h4><code>namenode -rollingUpgrade</code></h4>
+-  <source>hdfs namenode -rollingUpgrade &lt;downgrade|rollback&gt;</source>
++  <source>hdfs namenode -rollingUpgrade &lt;downgrade|rollback|started&gt;</source>
+   <p>
+-    Downgrade or rollback an ongoing rolling upgrade.
++    When a rolling upgrade is in progress,
++    the <code>-rollingUpgrade</code> namenode startup option is used to specify
++    various rolling upgrade options.
+   </p>
+     <ul><li>Options:<table>
+       <tr><td><code>downgrade</code></td>
+@@ -261,6 +269,11 @@
+         <td>Restores the namenode back to the pre-upgrade release
+             but also reverts the user data back to the pre-upgrade state.</td>
+       </tr>
++      <tr><td><code>started</code></td>
++        <td>Specifies a rolling upgrade already started
++          so that the namenode should allow image directories
++          with different layout versions during startup.</td>
++      </tr>
+     </table></li></ul>
+ 
+   </subsection>
+-- 
+1.7.0.4
+

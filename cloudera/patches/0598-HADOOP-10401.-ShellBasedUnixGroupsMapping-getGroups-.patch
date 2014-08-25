@@ -1,0 +1,79 @@
+From c6880e5f237d541fa326833707a367ea84e4ad8c Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Wed, 14 May 2014 21:01:03 +0000
+Subject: [PATCH 598/795] HADOOP-10401. ShellBasedUnixGroupsMapping#getGroups does not always return primary group first (ajisakaa via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1594714 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fde90afbc4b08514ed1fb9212c8c000f915941a4)
+---
+ .../security/ShellBasedUnixGroupsMapping.java      |   15 ++++++++++++++-
+ .../main/java/org/apache/hadoop/util/Shell.java    |   10 ++++++++--
+ 2 files changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedUnixGroupsMapping.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedUnixGroupsMapping.java
+index 3689eba..11056eb 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedUnixGroupsMapping.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/ShellBasedUnixGroupsMapping.java
+@@ -74,7 +74,8 @@ public void cacheGroupsAdd(List<String> groups) throws IOException {
+    * Get the current user's group list from Unix by running the command 'groups'
+    * NOTE. For non-existing user it will return EMPTY list
+    * @param user user name
+-   * @return the groups list that the <code>user</code> belongs to
++   * @return the groups list that the <code>user</code> belongs to. The primary
++   *         group is returned first.
+    * @throws IOException if encounter any error when running the command
+    */
+   private static List<String> getUnixGroups(final String user) throws IOException {
+@@ -84,6 +85,7 @@ public void cacheGroupsAdd(List<String> groups) throws IOException {
+     } catch (ExitCodeException e) {
+       // if we didn't get the group - just return empty list;
+       LOG.warn("got exception trying to get groups for user " + user, e);
++      return new LinkedList<String>();
+     }
+     
+     StringTokenizer tokenizer =
+@@ -92,6 +94,17 @@ public void cacheGroupsAdd(List<String> groups) throws IOException {
+     while (tokenizer.hasMoreTokens()) {
+       groups.add(tokenizer.nextToken());
+     }
++
++    // remove duplicated primary group
++    if (!Shell.WINDOWS) {
++      for (int i = 1; i < groups.size(); i++) {
++        if (groups.get(i).equals(groups.get(0))) {
++          groups.remove(i);
++          break;
++        }
++      }
++    }
++
+     return groups;
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Shell.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Shell.java
+index 59c64c6..927621a 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Shell.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/Shell.java
+@@ -104,11 +104,17 @@ static private OSType getOSType() {
+                     : new String[]{"bash", "-c", "groups"};
+   }
+ 
+-  /** a Unix command to get a given user's groups list */
++  /**
++   * a Unix command to get a given user's groups list.
++   * If the OS is not WINDOWS, the command will get the user's primary group
++   * first and finally get the groups list which includes the primary group.
++   * i.e. the user's primary group will be included twice.
++   */
+   public static String[] getGroupsForUserCommand(final String user) {
+     //'groups username' command return is non-consistent across different unixes
+     return (WINDOWS)? new String[] { WINUTILS, "groups", "-F", "\"" + user + "\""}
+-                    : new String [] {"bash", "-c", "id -Gn " + user};
++                    : new String [] {"bash", "-c", "id -gn " + user
++                                     + "&& id -Gn " + user};
+   }
+ 
+   /** a Unix command to get a given netgroup's user list */
+-- 
+1.7.0.4
+

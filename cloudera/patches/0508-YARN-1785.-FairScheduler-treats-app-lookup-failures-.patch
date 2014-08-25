@@ -1,0 +1,40 @@
+From e62160621a055e86fb5cf2c9c81a8d60669122f0 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Wed, 5 Mar 2014 18:22:25 +0000
+Subject: [PATCH 508/795] YARN-1785. FairScheduler treats app lookup failures as ERRORs. (bc Wong via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1574604 13f79535-47bb-0310-9956-ffa450edef68
+(cherry-picked from commit 3703dc8931e9f76a6435ff7936510f701c52e943)
+---
+ .../scheduler/fair/FairScheduler.java              |    8 ++++++--
+ 1 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index a27a86d..ecddd74 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -1094,7 +1094,9 @@ public SchedulerAppReport getSchedulerAppInfo(
+       ApplicationAttemptId appAttemptId) {
+     FSSchedulerApp attempt = getSchedulerApp(appAttemptId);
+     if (attempt == null) {
+-      LOG.error("Request for appInfo of unknown attempt" + appAttemptId);
++      if (LOG.isDebugEnabled()) {
++        LOG.debug("Request for appInfo of unknown attempt " + appAttemptId);
++      }
+       return null;
+     }
+     return new SchedulerAppReport(attempt);
+@@ -1105,7 +1107,9 @@ public ApplicationResourceUsageReport getAppResourceUsageReport(
+       ApplicationAttemptId appAttemptId) {
+     FSSchedulerApp attempt = getSchedulerApp(appAttemptId);
+     if (attempt == null) {
+-      LOG.error("Request for appInfo of unknown attempt" + appAttemptId);
++      if (LOG.isDebugEnabled()) {
++        LOG.debug("Request for appInfo of unknown attempt " + appAttemptId);
++      }
+       return null;
+     }
+     return attempt.getResourceUsageReport();
+-- 
+1.7.0.4
+

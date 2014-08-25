@@ -1,0 +1,29 @@
+From df7db68c27c3c9641fcbd0a7c87cec429d30679d Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 3 Jun 2014 00:05:37 -0700
+Subject: [PATCH 724/795] HADOOP-10414. Incorrect property name for RefreshUserMappingProtocol in hadoop-policy.xml. Contributed by Joey Echeverria.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1583730 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop-common/src/main/conf/hadoop-policy.xml  |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/conf/hadoop-policy.xml b/hadoop-common-project/hadoop-common/src/main/conf/hadoop-policy.xml
+index 491dbe7..ee9d70f 100644
+--- a/hadoop-common-project/hadoop-common/src/main/conf/hadoop-policy.xml
++++ b/hadoop-common-project/hadoop-common/src/main/conf/hadoop-policy.xml
+@@ -85,7 +85,7 @@
+   </property>
+ 
+   <property>
+-    <name>security.refresh.usertogroups.mappings.protocol.acl</name>
++    <name>security.refresh.user.mappings.protocol.acl</name>
+     <value>*</value>
+     <description>ACL for RefreshUserMappingsProtocol. Used to refresh
+     users mappings. The ACL is a comma-separated list of user and
+-- 
+1.7.0.4
+

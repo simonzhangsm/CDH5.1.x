@@ -1,0 +1,26 @@
+From 979be84decf4454206dc1a2070465ff2323829f9 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 17 Jun 2014 00:25:24 -0700
+Subject: [PATCH 759/795] Revert "Fix unit test failure, with fix for HADOOP-10301 AuthenticationFilter return Forbidden for failed authentication now"
+
+This reverts commit a809b04f1b2b3a331b24c3518b76c5af8d44013e.
+---
+ .../hadoop/fs/http/server/TestHttpFSServer.java    |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSServer.java b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSServer.java
+index 72fd82e..6c888f6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-httpfs/src/test/java/org/apache/hadoop/fs/http/server/TestHttpFSServer.java
+@@ -652,7 +652,7 @@ public void testDelegationTokenOperations() throws Exception {
+     url = new URL(TestJettyHelper.getJettyURL(),
+                   "/webhdfs/v1/?op=GETHOMEDIRECTORY&delegation=" + tokenStr);
+     conn = (HttpURLConnection) url.openConnection();
+-    Assert.assertEquals(HttpURLConnection.HTTP_FORBIDDEN,
++    Assert.assertEquals(HttpURLConnection.HTTP_UNAUTHORIZED,
+                         conn.getResponseCode());
+   }
+ 
+-- 
+1.7.0.4
+

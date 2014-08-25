@@ -1,0 +1,51 @@
+From d0375e60e418bdd3120219bae590f697cac147d8 Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Fri, 14 Mar 2014 00:58:54 +0000
+Subject: [PATCH 701/795] HDFS-6084. Namenode UI - Hadoop logo link shouldn't go to hadoop homepage. Contributed by Travis Thompson.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1577401 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../src/main/webapps/hdfs/dfshealth.html           |    4 ++--
+ .../src/main/webapps/hdfs/explorer.html            |    2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
+index bbf6ce6..7a6fbe1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
+@@ -27,7 +27,7 @@
+ <header class="navbar navbar-inverse bs-docs-nav" role="banner">
+ <div class="container">
+   <div class="navbar-header">
+-    <a href="http://hadoop.apache.org/core" class="navbar-brand">Hadoop</a>
++    <div class="navbar-brand">Hadoop</div>
+   </div>
+ 
+   <ul class="nav navbar-nav" id="ui-tabs">
+@@ -64,7 +64,7 @@
+ 
+ <div class="row">
+   <hr />
+-  <div class="col-xs-2"><p><a href="http://hadoop.apache.org/core">Hadoop</a>, 2014.</p></div>
++  <div class="col-xs-2"><p>Hadoop, 2014.</p></div>
+   <div class="col-xs-1 pull-right"><a style="color: #ddd" href="dfshealth.jsp">Legacy UI</a></div>
+ </div>
+ </div>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.html b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.html
+index 9110214..62b7d38 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.html
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.html
+@@ -126,6 +126,6 @@ <h4 class="modal-title" id="file-info-title">File information</h4>
+     </script><script type="text/javascript" src="explorer.js">
+     </script>
+     <hr />
+-    <p><a href="http://hadoop.apache.org/core">Hadoop</a>, 2013.</p>
++    <p>Hadoop, 2014.</p>
+   </body>
+ </html>
+-- 
+1.7.0.4
+

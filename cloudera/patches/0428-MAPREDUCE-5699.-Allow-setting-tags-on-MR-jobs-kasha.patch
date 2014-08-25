@@ -1,0 +1,95 @@
+From 9fcfe5ba19e1b4eeb62b8666c07875e40254c250 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Thu, 6 Feb 2014 18:30:43 +0000
+Subject: [PATCH 428/795] MAPREDUCE-5699. Allow setting tags on MR jobs (kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1565385 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 99b1ab17d940f3eccb68a6634e7cafcef6850371)
+---
+ .../org/apache/hadoop/mapreduce/MRJobConfig.java   |    2 ++
+ .../src/main/resources/mapred-default.xml          |   10 +++++++++-
+ .../java/org/apache/hadoop/mapred/YARNRunner.java  |    7 +++++++
+ 3 files changed, 18 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/MRJobConfig.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/MRJobConfig.java
+index f7437f7..8a1d4ab 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/MRJobConfig.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/MRJobConfig.java
+@@ -60,6 +60,8 @@
+ 
+   public static final String QUEUE_NAME = "mapreduce.job.queuename";
+ 
++  public static final String JOB_TAGS = "mapreduce.job.tags";
++
+   public static final String JVM_NUMTASKS_TORUN = "mapreduce.job.jvm.numtasks";
+ 
+   public static final String SPLIT_FILE = "mapreduce.job.splitfile";
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/resources/mapred-default.xml b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/resources/mapred-default.xml
+index 3599c1e..77f800c 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/resources/mapred-default.xml
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/resources/mapred-default.xml
+@@ -1,4 +1,5 @@
+ <?xml version="1.0"?>
++<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+ <!--
+    Licensed to the Apache Software Foundation (ASF) under one or more
+    contributor license agreements.  See the NOTICE file distributed with
+@@ -15,7 +16,6 @@
+    See the License for the specific language governing permissions and
+    limitations under the License.
+ -->
+-<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+ 
+ <!-- Do not modify this file directly.  Instead, copy entries that you -->
+ <!-- wish to modify from this file into mapred-site.xml and change them -->
+@@ -1112,6 +1112,14 @@
+   </description>
+ </property>
+ 
++  <property>
++    <name>mapreduce.job.tags</name>
++    <value></value>
++    <description> Tags for the job that will be passed to YARN at submission 
++      time. Queries to YARN for applications can filter on these tags.
++    </description>
++  </property>
++
+ <property>
+   <name>mapreduce.cluster.acls.enabled</name>
+   <value>false</value>
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/main/java/org/apache/hadoop/mapred/YARNRunner.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/main/java/org/apache/hadoop/mapred/YARNRunner.java
+index fc23c65..ce475c1 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/main/java/org/apache/hadoop/mapred/YARNRunner.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/main/java/org/apache/hadoop/mapred/YARNRunner.java
+@@ -21,7 +21,9 @@
+ import java.io.IOException;
+ import java.nio.ByteBuffer;
+ import java.util.ArrayList;
++import java.util.Collection;
+ import java.util.HashMap;
++import java.util.HashSet;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Vector;
+@@ -467,6 +469,8 @@ public ApplicationSubmissionContext createApplicationSubmissionContext(
+         ContainerLaunchContext.newInstance(localResources, environment,
+           vargsFinal, null, securityTokens, acls);
+ 
++    Collection<String> tagsFromConf =
++        jobConf.getTrimmedStringCollection(MRJobConfig.JOB_TAGS);
+ 
+     // Set up the ApplicationSubmissionContext
+     ApplicationSubmissionContext appContext =
+@@ -486,6 +490,9 @@ public ApplicationSubmissionContext createApplicationSubmissionContext(
+             MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS));
+     appContext.setResource(capability);
+     appContext.setApplicationType(MRJobConfig.MR_APPLICATION_TYPE);
++    if (tagsFromConf != null && !tagsFromConf.isEmpty()) {
++      appContext.setApplicationTags(new HashSet<String>(tagsFromConf));
++    }
+     return appContext;
+   }
+ 
+-- 
+1.7.0.4
+

@@ -1,0 +1,167 @@
+From a6279d49c3312421da4ae6632ef7ca449d75d12a Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Fri, 14 Mar 2014 04:52:03 +0000
+Subject: [PATCH 551/795] HDFS-6102. Lower the default maximum items per directory to fix PB fsimage loading. Contributed by Andrew Wang.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1577426 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c0089e7681c9ce904719bfb3c81cc178177e37a1)
+---
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    4 +-
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   11 +++++--
+ .../hadoop-hdfs/src/main/proto/fsimage.proto       |    4 ++
+ .../hadoop-hdfs/src/main/proto/hdfs.proto          |    6 +++
+ .../src/main/resources/hdfs-default.xml            |    2 +-
+ .../hadoop/hdfs/server/namenode/TestFsLimits.java  |   33 ++++++++++---------
+ 6 files changed, 38 insertions(+), 22 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index afafb75..630462d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -284,9 +284,9 @@
+ 
+   //Filesystem limit keys
+   public static final String  DFS_NAMENODE_MAX_COMPONENT_LENGTH_KEY = "dfs.namenode.fs-limits.max-component-length";
+-  public static final int     DFS_NAMENODE_MAX_COMPONENT_LENGTH_DEFAULT = 0; // no limit
++  public static final int     DFS_NAMENODE_MAX_COMPONENT_LENGTH_DEFAULT = 255;
+   public static final String  DFS_NAMENODE_MAX_DIRECTORY_ITEMS_KEY = "dfs.namenode.fs-limits.max-directory-items";
+-  public static final int     DFS_NAMENODE_MAX_DIRECTORY_ITEMS_DEFAULT = 0; // no limit
++  public static final int     DFS_NAMENODE_MAX_DIRECTORY_ITEMS_DEFAULT = 1024*1024;
+   public static final String  DFS_NAMENODE_MIN_BLOCK_SIZE_KEY = "dfs.namenode.fs-limits.min-block-size";
+   public static final long    DFS_NAMENODE_MIN_BLOCK_SIZE_DEFAULT = 1024*1024;
+   public static final String  DFS_NAMENODE_MAX_BLOCKS_PER_FILE_KEY = "dfs.namenode.fs-limits.max-blocks-per-file";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index d143075..bd954b3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -188,6 +188,14 @@ public int getWriteHoldCount() {
+     this.maxDirItems = conf.getInt(
+         DFSConfigKeys.DFS_NAMENODE_MAX_DIRECTORY_ITEMS_KEY,
+         DFSConfigKeys.DFS_NAMENODE_MAX_DIRECTORY_ITEMS_DEFAULT);
++    // We need a maximum maximum because by default, PB limits message sizes
++    // to 64MB. This means we can only store approximately 6.7 million entries
++    // per directory, but let's use 6.4 million for some safety.
++    final int MAX_DIR_ITEMS = 64 * 100 * 1000;
++    Preconditions.checkArgument(
++        maxDirItems > 0 && maxDirItems <= MAX_DIR_ITEMS, "Cannot set "
++            + DFSConfigKeys.DFS_NAMENODE_MAX_DIRECTORY_ITEMS_KEY
++            + " to a value less than 0 or greater than " + MAX_DIR_ITEMS);
+ 
+     int threshold = conf.getInt(
+         DFSConfigKeys.DFS_NAMENODE_NAME_CACHE_THRESHOLD_KEY,
+@@ -2180,9 +2188,6 @@ void verifyMaxComponentLength(byte[] childName, Object parentPath, int pos)
+    */
+   void verifyMaxDirItems(INode[] pathComponents, int pos)
+       throws MaxDirectoryItemsExceededException {
+-    if (maxDirItems == 0) {
+-      return;
+-    }
+ 
+     final INodeDirectory parent = pathComponents[pos-1].asDirectory();
+     final int count = parent.getChildrenList(Snapshot.CURRENT_STATE_ID).size();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
+index bb71619..b6bf100 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
+@@ -173,6 +173,10 @@ message FilesUnderConstructionSection {
+  * NAME: INODE_DIR
+  */
+ message INodeDirectorySection {
++  /**
++   * A single DirEntry needs to fit in the default PB max message size of
++   * 64MB. Please be careful when adding more fields to a DirEntry!
++   */
+   message DirEntry {
+     optional uint64 parent = 1;
+     // children that are not reference nodes
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
+index 3841827..2d7ca24 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/hdfs.proto
+@@ -352,6 +352,12 @@ message CheckpointCommandProto {
+ 
+ /**
+  * Block information
++ *
++ * Please be wary of adding additional fields here, since INodeFiles
++ * need to fit in PB's default max message size of 64MB.
++ * We restrict the max # of blocks per file
++ * (dfs.namenode.fs-limits.max-blocks-per-file), but it's better
++ * to avoid changing this.
+  */
+ message BlockProto {
+   required uint64 blockId = 1;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index ca5e4b8..ef9cd0f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -288,7 +288,7 @@
+ 
+ <property>
+   <name>dfs.namenode.fs-limits.max-directory-items</name>
+-  <value>0</value>
++  <value>1048576</value>
+   <description>Defines the maximum number of items that a directory may
+       contain.  A value of 0 will disable the check.</description>
+ </property>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsLimits.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsLimits.java
+index 0cb6c7d..3e93aa1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsLimits.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsLimits.java
+@@ -37,6 +37,7 @@
+ import org.apache.hadoop.hdfs.protocol.FSLimitException.MaxDirectoryItemsExceededException;
+ import org.apache.hadoop.hdfs.protocol.FSLimitException.PathComponentTooLongException;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
++import org.apache.hadoop.test.GenericTestUtils;
+ import org.junit.Before;
+ import org.junit.Test;
+ 
+@@ -83,22 +84,6 @@ public void setUp() throws IOException {
+   }
+ 
+   @Test
+-  public void testDefaultMaxComponentLength() {
+-    int maxComponentLength = conf.getInt(
+-        DFSConfigKeys.DFS_NAMENODE_MAX_COMPONENT_LENGTH_KEY,
+-        DFSConfigKeys.DFS_NAMENODE_MAX_COMPONENT_LENGTH_DEFAULT);
+-    assertEquals(0, maxComponentLength);
+-  }
+-  
+-  @Test
+-  public void testDefaultMaxDirItems() {
+-    int maxDirItems = conf.getInt(
+-        DFSConfigKeys.DFS_NAMENODE_MAX_DIRECTORY_ITEMS_KEY,
+-        DFSConfigKeys.DFS_NAMENODE_MAX_DIRECTORY_ITEMS_DEFAULT);
+-    assertEquals(0, maxDirItems);
+-  }
+-
+-  @Test
+   public void testNoLimits() throws Exception {
+     addChildWithName("1", null);
+     addChildWithName("22", null);
+@@ -130,6 +115,22 @@ public void testMaxDirItems() throws Exception {
+   }
+ 
+   @Test
++  public void testMaxDirItemsLimits() throws Exception {
++    conf.setInt(DFSConfigKeys.DFS_NAMENODE_MAX_DIRECTORY_ITEMS_KEY, 0);
++    try {
++      addChildWithName("1", null);
++    } catch (IllegalArgumentException e) {
++      GenericTestUtils.assertExceptionContains("Cannot set dfs", e);
++    }
++    conf.setInt(DFSConfigKeys.DFS_NAMENODE_MAX_DIRECTORY_ITEMS_KEY, 64*100*1024);
++    try {
++      addChildWithName("1", null);
++    } catch (IllegalArgumentException e) {
++      GenericTestUtils.assertExceptionContains("Cannot set dfs", e);
++    }
++  }
++
++  @Test
+   public void testMaxComponentsAndMaxDirItems() throws Exception {
+     conf.setInt(DFSConfigKeys.DFS_NAMENODE_MAX_COMPONENT_LENGTH_KEY, 3);
+     conf.setInt(DFSConfigKeys.DFS_NAMENODE_MAX_DIRECTORY_ITEMS_KEY, 2);
+-- 
+1.7.0.4
+

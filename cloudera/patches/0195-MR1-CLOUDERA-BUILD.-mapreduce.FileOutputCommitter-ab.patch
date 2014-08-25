@@ -1,0 +1,27 @@
+From 5ec7ee6d1e109cee85dd6aee58e8a53a71df84b7 Mon Sep 17 00:00:00 2001
+From: Robert Kanter <rkanter@cloudera.com>
+Date: Mon, 14 Jan 2013 11:55:19 -0800
+Subject: [PATCH 195/795] MR1: CLOUDERA-BUILD. mapreduce.FileOutputCommitter#abortTask should throw IOException (CDH-9238)
+ (cherry picked from commit 76f2ca9318a5eb8157cec187246762407287afab)
+
+(cherry picked from commit 239db05a094ffc987975ac26ba1dd774b7f70157)
+---
+ .../mapreduce/lib/output/FileOutputCommitter.java  |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/src/mapred/org/apache/hadoop/mapreduce/lib/output/FileOutputCommitter.java b/src/mapred/org/apache/hadoop/mapreduce/lib/output/FileOutputCommitter.java
+index f3334f1..5ac1cec 100644
+--- a/src/mapred/org/apache/hadoop/mapreduce/lib/output/FileOutputCommitter.java
++++ b/src/mapred/org/apache/hadoop/mapreduce/lib/output/FileOutputCommitter.java
+@@ -221,7 +221,7 @@ private void moveTaskOutputs(TaskAttemptContext context,
+    * Delete the work directory
+    */
+   @Override
+-  public void abortTask(TaskAttemptContext context) {
++  public void abortTask(TaskAttemptContext context) throws IOException{
+     try {
+       if (workPath != null) { 
+         context.progress();
+-- 
+1.7.0.4
+

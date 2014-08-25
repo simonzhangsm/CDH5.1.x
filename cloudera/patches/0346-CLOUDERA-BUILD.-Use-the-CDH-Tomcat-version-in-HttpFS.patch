@@ -1,0 +1,26 @@
+From d23ae5cc8462bec859f6cc14ddf70b67eb7a3906 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <andrew.wang@cloudera.com>
+Date: Mon, 20 Jan 2014 12:00:17 -0800
+Subject: [PATCH 346/795] CLOUDERA-BUILD. Use the CDH Tomcat version in HttpFS pom.xml.
+
+(cherry picked from commit a079ed5a9acb70b29f666d936ec1b660e51758d6)
+---
+ hadoop-hdfs-project/hadoop-hdfs-httpfs/pom.xml |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-httpfs/pom.xml b/hadoop-hdfs-project/hadoop-hdfs-httpfs/pom.xml
+index 69049c4..0d84a57 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-httpfs/pom.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs-httpfs/pom.xml
+@@ -34,7 +34,7 @@
+   <description>Apache Hadoop HttpFS</description>
+ 
+   <properties>
+-    <tomcat.version>6.0.36</tomcat.version>
++    <tomcat.version>${cdh.tomcat.version}</tomcat.version>
+     <httpfs.source.repository>REPO NOT AVAIL</httpfs.source.repository>
+     <httpfs.source.repository>REPO NOT AVAIL</httpfs.source.repository>
+     <httpfs.source.revision>REVISION NOT AVAIL</httpfs.source.revision>
+-- 
+1.7.0.4
+

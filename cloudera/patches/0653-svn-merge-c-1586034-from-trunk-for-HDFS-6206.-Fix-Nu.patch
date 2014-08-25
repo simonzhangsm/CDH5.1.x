@@ -1,0 +1,36 @@
+From db7260d217d4b1576511fa0edbf98031ee110381 Mon Sep 17 00:00:00 2001
+From: Tsz-wo Sze <szetszwo@apache.org>
+Date: Wed, 9 Apr 2014 16:55:48 +0000
+Subject: [PATCH 653/795] svn merge -c 1586034 from trunk for HDFS-6206. Fix NullPointerException in DFSUtil.substituteForWildcardAddress.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1586037 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 543cfddfce81115c6b880c75486d1c8d42754793)
+---
+ .../main/java/org/apache/hadoop/hdfs/DFSUtil.java  |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+index d351dbb..5aa8651 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+@@ -37,6 +37,7 @@
+ import java.io.IOException;
+ import java.io.PrintStream;
+ import java.io.UnsupportedEncodingException;
++import java.net.InetAddress;
+ import java.net.InetSocketAddress;
+ import java.net.URI;
+ import java.net.URISyntaxException;
+@@ -1144,7 +1145,8 @@ static String substituteForWildcardAddress(String configuredAddress,
+     InetSocketAddress sockAddr = NetUtils.createSocketAddr(configuredAddress);
+     InetSocketAddress defaultSockAddr = NetUtils.createSocketAddr(defaultHost
+         + ":0");
+-    if (sockAddr.getAddress().isAnyLocalAddress()) {
++    final InetAddress addr = sockAddr.getAddress();
++    if (addr != null && addr.isAnyLocalAddress()) {
+       if (UserGroupInformation.isSecurityEnabled() &&
+           defaultSockAddr.getAddress().isAnyLocalAddress()) {
+         throw new IOException("Cannot use a wildcard address with security. " +
+-- 
+1.7.0.4
+

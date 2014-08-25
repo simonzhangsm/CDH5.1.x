@@ -1,0 +1,27 @@
+From 54f6120c4828c8eb89ed5e58d1b325ec8b78cb3a Mon Sep 17 00:00:00 2001
+From: Konstantin Shvachko <shv@apache.org>
+Date: Sun, 9 Feb 2014 21:08:06 +0000
+Subject: [PATCH 374/795] HDFS-4370. Fix typo Blanacer in DataNode. Contributed by Chu Tong.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1566425 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 99f5a83c3ca3aada454912b18f93bf36256651ba)
+---
+ .../hadoop/hdfs/server/datanode/DataNode.java      |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index adf6923..e59a13b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -2478,7 +2478,7 @@ public void clearAllBlockSecretKeys() {
+   /**
+    * Get current value of the max balancer bandwidth in bytes per second.
+    *
+-   * @return bandwidth Blanacer bandwidth in bytes per second for this datanode.
++   * @return Balancer bandwidth in bytes per second for this datanode.
+    */
+   public Long getBalancerBandwidth() {
+     DataXceiverServer dxcs =
+-- 
+1.7.0.4
+

@@ -1,0 +1,28 @@
+From 74b09e4b1bac90253538e14a680a90b180768421 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <andrew.wang@cloudera.com>
+Date: Thu, 16 Jan 2014 16:36:32 -0800
+Subject: [PATCH 348/795] CLOUDERA-BUILD. Restore .gitattributes file after rebase.
+
+(cherry picked from commit 07222bf2967bb09b112407e651d1c16c457615e2)
+
+Conflicts:
+	.gitattributes
+---
+ .gitattributes |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/.gitattributes b/.gitattributes
+index 851d236..9a4ca70 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -14,5 +14,7 @@
+ *.sh     text eol=lf
+ 
+ *.bat    text eol=crlf
++*.cmd    text eol=crlf
++*.vcxproj text merge=union eol=crlf
+ *.csproj text merge=union eol=crlf
+ *.sln    text merge=union eol=crlf
+-- 
+1.7.0.4
+

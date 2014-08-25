@@ -1,0 +1,34 @@
+From cb1d49d654765cda762cfe36e4dd43fe904acd0b Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Wed, 12 Feb 2014 18:05:15 +0000
+Subject: [PATCH 445/795] HDFS-5879. Some TestHftpFileSystem tests do not close streams. Contributed by Gera Shegalov.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1567705 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1b52d7f9d6310753a9341f29748bea7d6bba5927)
+---
+ .../apache/hadoop/hdfs/web/TestHftpFileSystem.java |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHftpFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHftpFileSystem.java
+index 06ac50a..db0fda5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHftpFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHftpFileSystem.java
+@@ -136,6 +136,7 @@ public void testFileNameEncoding() throws IOException, URISyntaxException {
+       out.close();
+       FSDataInputStream in = hftpFs.open(p);
+       assertEquals('0', in.read());
++      in.close();
+ 
+       // Check the file status matches the path. Hftp returns a FileStatus
+       // with the entire URI, extract the path part.
+@@ -250,6 +251,7 @@ public void testSeek() throws IOException {
+     FSDataInputStream in = hftpFs.open(testFile);
+     in.seek(7);
+     assertEquals('7', in.read());
++    in.close();
+   }
+ 
+   @Test
+-- 
+1.7.0.4
+

@@ -1,0 +1,25 @@
+From c6d15c0a4df92c06fc45ef7c581e82b6bcc3cfa9 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Thu, 13 Feb 2014 15:07:34 +0000
+Subject: [PATCH 376/795] svn merge -c 1567946 merging from trunk to branch-2 to fix:HDFS-5904. TestFileStatus fails intermittently.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1567947 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 415148c9f623ef48977da332ba77657964e6a391)
+---
+ .../org/apache/hadoop/hdfs/TestFileStatus.java     |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileStatus.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileStatus.java
+index e70e4a6..1c9aff0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileStatus.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileStatus.java
+@@ -314,5 +314,6 @@ public void testGetFileStatusOnDir() throws Exception {
+         FileSystem.LOG.info("GOOD: getting an exception", ioe);
+       }
+     }
++    fs.delete(dir, true);
+   }
+ }
+-- 
+1.7.0.4
+

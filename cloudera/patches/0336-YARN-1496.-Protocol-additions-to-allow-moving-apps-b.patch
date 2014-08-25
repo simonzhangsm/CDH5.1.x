@@ -1,0 +1,623 @@
+From be5cbb3140b45392581c41b934dae392407dfb9d Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Wed, 12 Feb 2014 01:00:08 +0000
+Subject: [PATCH 336/795] YARN-1496. Protocol additions to allow moving apps between queues (Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1567479 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 78fa274fc0f95cd257538b02d97b4f5205a2b38b)
+
+Conflicts:
+
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/yarn_service_protos.proto
+
+(cherry picked from commit 6a81a7f56b83abb180f57319c2cd3e1a167ff4b6)
+---
+ .../apache/hadoop/mapred/TestClientRedirect.java   |    9 +
+ .../hadoop/yarn/api/ApplicationClientProtocol.java |   15 ++
+ .../MoveApplicationAcrossQueuesRequest.java        |   69 +++++++++
+ .../MoveApplicationAcrossQueuesResponse.java       |   47 ++++++
+ .../main/proto/applicationclient_protocol.proto    |    1 +
+ .../src/main/proto/yarn_service_protos.proto       |    8 +
+ .../ApplicationClientProtocolPBClientImpl.java     |   21 +++
+ .../ApplicationClientProtocolPBServiceImpl.java    |   21 +++
+ .../MoveApplicationAcrossQueuesRequestPBImpl.java  |  158 ++++++++++++++++++++
+ .../MoveApplicationAcrossQueuesResponsePBImpl.java |   68 +++++++++
+ .../server/resourcemanager/ClientRMService.java    |    8 +
+ 11 files changed, 425 insertions(+), 0 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/MoveApplicationAcrossQueuesRequest.java
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/MoveApplicationAcrossQueuesResponse.java
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/impl/pb/MoveApplicationAcrossQueuesRequestPBImpl.java
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/impl/pb/MoveApplicationAcrossQueuesResponsePBImpl.java
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapred/TestClientRedirect.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapred/TestClientRedirect.java
+index d85a23d..5eb3df1 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapred/TestClientRedirect.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapred/TestClientRedirect.java
+@@ -90,6 +90,8 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueUserAclsInfoResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
+@@ -99,6 +101,7 @@
+ import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
+ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.exceptions.YarnException;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.factories.RecordFactory;
+ import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
+@@ -354,6 +357,12 @@ public CancelDelegationTokenResponse cancelDelegationToken(
+         CancelDelegationTokenRequest request) throws IOException {
+       return null;
+     }
++
++    @Override
++    public MoveApplicationAcrossQueuesResponse moveApplicationAcrossQueues(
++        MoveApplicationAcrossQueuesRequest request) throws YarnException, IOException {
++      return null;
++    }
+   }
+ 
+   class HistoryService extends AMService implements HSClientProtocol {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/ApplicationClientProtocol.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/ApplicationClientProtocol.java
+index 864980b..0abaafb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/ApplicationClientProtocol.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/ApplicationClientProtocol.java
+@@ -44,6 +44,8 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueUserAclsInfoResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
+@@ -339,4 +341,17 @@ public RenewDelegationTokenResponse renewDelegationToken(
+   public CancelDelegationTokenResponse cancelDelegationToken(
+       CancelDelegationTokenRequest request) throws YarnException,
+       IOException;
++  
++  /**
++   * Move an application to a new queue.
++   * 
++   * @param request the application ID and the target queue
++   * @return an empty response
++   * @throws YarnException
++   * @throws IOException
++   */
++  @Public
++  @Unstable
++  public MoveApplicationAcrossQueuesResponse moveApplicationAcrossQueues(
++      MoveApplicationAcrossQueuesRequest request) throws YarnException, IOException;
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/MoveApplicationAcrossQueuesRequest.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/MoveApplicationAcrossQueuesRequest.java
+new file mode 100644
+index 0000000..528996f
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/MoveApplicationAcrossQueuesRequest.java
+@@ -0,0 +1,69 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.yarn.api.protocolrecords;
++
++import org.apache.hadoop.classification.InterfaceAudience.Public;
++import org.apache.hadoop.classification.InterfaceStability.Unstable;
++import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
++import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.util.Records;
++
++/**
++ * <p>The request sent by the client to the <code>ResourceManager</code>
++ * to move a submitted application to a different queue.</p>
++ * 
++ * <p>The request includes the {@link ApplicationId} of the application to be
++ * moved and the queue to place it in.</p>
++ * 
++ * @see ApplicationClientProtocol#moveApplicationAcrossQueues(MoveApplicationAcrossQueuesRequest)
++ */
++@Public
++@Unstable
++public abstract class MoveApplicationAcrossQueuesRequest {
++  public static MoveApplicationAcrossQueuesRequest newInstance(ApplicationId appId, String queue) {
++    MoveApplicationAcrossQueuesRequest request =
++        Records.newRecord(MoveApplicationAcrossQueuesRequest.class);
++    request.setApplicationId(appId);
++    request.setTargetQueue(queue);
++    return request;
++  }
++  
++  /**
++   * Get the <code>ApplicationId</code> of the application to be moved.
++   * @return <code>ApplicationId</code> of the application to be moved
++   */
++  public abstract ApplicationId getApplicationId();
++  
++  /**
++   * Set the <code>ApplicationId</code> of the application to be moved.
++   * @param appId <code>ApplicationId</code> of the application to be moved
++   */
++  public abstract void setApplicationId(ApplicationId appId);
++  
++  /**
++   * Get the queue to place the application in.
++   * @return the name of the queue to place the application in
++   */
++  public abstract String getTargetQueue();
++
++  /**
++   * Get the queue to place the application in.
++   * @param queue the name of the queue to place the application in
++   */
++  public abstract void setTargetQueue(String queue);
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/MoveApplicationAcrossQueuesResponse.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/MoveApplicationAcrossQueuesResponse.java
+new file mode 100644
+index 0000000..109e7c4
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/MoveApplicationAcrossQueuesResponse.java
+@@ -0,0 +1,47 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.yarn.api.protocolrecords;
++
++import org.apache.hadoop.classification.InterfaceAudience.Private;
++import org.apache.hadoop.classification.InterfaceAudience.Public;
++import org.apache.hadoop.classification.InterfaceStability.Unstable;
++import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
++import org.apache.hadoop.yarn.util.Records;
++
++/**
++ * <p>
++ * The response sent by the <code>ResourceManager</code> to the client moving
++ * a submitted application to a different queue.
++ * </p>
++ * <p>
++ * A response without exception means that the move has completed successfully.
++ * </p>
++ * 
++ * @see ApplicationClientProtocol#moveApplicationAcrossQueues(MoveApplicationAcrossQueuesRequest)
++ */
++@Public
++@Unstable
++public class MoveApplicationAcrossQueuesResponse {
++  @Private
++  @Unstable
++  public MoveApplicationAcrossQueuesResponse newInstance() {
++    MoveApplicationAcrossQueuesResponse response =
++        Records.newRecord(MoveApplicationAcrossQueuesResponse.class);
++    return response;
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/applicationclient_protocol.proto b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/applicationclient_protocol.proto
+index af18c87..eda2641 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/applicationclient_protocol.proto
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/applicationclient_protocol.proto
+@@ -44,5 +44,6 @@ service ApplicationClientProtocolService {
+   rpc getDelegationToken(hadoop.common.GetDelegationTokenRequestProto) returns (hadoop.common.GetDelegationTokenResponseProto);
+   rpc renewDelegationToken(hadoop.common.RenewDelegationTokenRequestProto) returns (hadoop.common.RenewDelegationTokenResponseProto);
+   rpc cancelDelegationToken(hadoop.common.CancelDelegationTokenRequestProto) returns (hadoop.common.CancelDelegationTokenResponseProto);
++  rpc moveApplicationAcrossQueues(MoveApplicationAcrossQueuesRequestProto) returns (MoveApplicationAcrossQueuesResponseProto);
+ }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/yarn_service_protos.proto b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/yarn_service_protos.proto
+index 202dc71..acdac36 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/yarn_service_protos.proto
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/proto/yarn_service_protos.proto
+@@ -127,6 +127,14 @@ message GetClusterMetricsResponseProto {
+   optional YarnClusterMetricsProto cluster_metrics = 1;
+ }
+ 
++message MoveApplicationAcrossQueuesRequestProto {
++  required ApplicationIdProto application_id = 1;
++  required string target_queue = 2;
++}
++
++message MoveApplicationAcrossQueuesResponseProto {
++}
++
+ message GetApplicationsRequestProto {
+   repeated string application_types = 1;
+   repeated YarnApplicationStateProto application_states = 2;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/impl/pb/client/ApplicationClientProtocolPBClientImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/impl/pb/client/ApplicationClientProtocolPBClientImpl.java
+index 88352ea..d5243dc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/impl/pb/client/ApplicationClientProtocolPBClientImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/impl/pb/client/ApplicationClientProtocolPBClientImpl.java
+@@ -51,6 +51,8 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueUserAclsInfoResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
+@@ -75,6 +77,8 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.GetQueueUserAclsInfoResponsePBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.KillApplicationRequestPBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.KillApplicationResponsePBImpl;
++import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.MoveApplicationAcrossQueuesRequestPBImpl;
++import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.MoveApplicationAcrossQueuesResponsePBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.RenewDelegationTokenRequestPBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.RenewDelegationTokenResponsePBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.SubmitApplicationRequestPBImpl;
+@@ -89,6 +93,7 @@
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetQueueInfoRequestProto;
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetQueueUserAclsInfoRequestProto;
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.KillApplicationRequestProto;
++import org.apache.hadoop.yarn.proto.YarnServiceProtos.MoveApplicationAcrossQueuesRequestProto;
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.SubmitApplicationRequestProto;
+ 
+ import com.google.protobuf.ServiceException;
+@@ -291,4 +296,20 @@ public CancelDelegationTokenResponse cancelDelegationToken(
+       return null;
+     }
+   }
++  
++  @Override
++  public MoveApplicationAcrossQueuesResponse moveApplicationAcrossQueues(
++      MoveApplicationAcrossQueuesRequest request) throws YarnException,
++      IOException {
++    MoveApplicationAcrossQueuesRequestProto requestProto =
++        ((MoveApplicationAcrossQueuesRequestPBImpl) request).getProto();
++    try {
++      return new MoveApplicationAcrossQueuesResponsePBImpl(
++          proxy.moveApplicationAcrossQueues(null, requestProto));
++
++    } catch (ServiceException e) {
++      RPCUtil.unwrapAndThrowException(e);
++      return null;
++    }
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/impl/pb/service/ApplicationClientProtocolPBServiceImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/impl/pb/service/ApplicationClientProtocolPBServiceImpl.java
+index b38819d..61068e8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/impl/pb/service/ApplicationClientProtocolPBServiceImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/impl/pb/service/ApplicationClientProtocolPBServiceImpl.java
+@@ -39,6 +39,7 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueUserAclsInfoResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.CancelDelegationTokenRequestPBImpl;
+@@ -61,6 +62,8 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.GetQueueUserAclsInfoResponsePBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.KillApplicationRequestPBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.KillApplicationResponsePBImpl;
++import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.MoveApplicationAcrossQueuesRequestPBImpl;
++import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.MoveApplicationAcrossQueuesResponsePBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.RenewDelegationTokenRequestPBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.RenewDelegationTokenResponsePBImpl;
+ import org.apache.hadoop.yarn.api.protocolrecords.impl.pb.SubmitApplicationRequestPBImpl;
+@@ -82,6 +85,8 @@
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.GetQueueUserAclsInfoResponseProto;
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.KillApplicationRequestProto;
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.KillApplicationResponseProto;
++import org.apache.hadoop.yarn.proto.YarnServiceProtos.MoveApplicationAcrossQueuesRequestProto;
++import org.apache.hadoop.yarn.proto.YarnServiceProtos.MoveApplicationAcrossQueuesResponseProto;
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.SubmitApplicationRequestProto;
+ import org.apache.hadoop.yarn.proto.YarnServiceProtos.SubmitApplicationResponseProto;
+ 
+@@ -278,4 +283,20 @@ public CancelDelegationTokenResponseProto cancelDelegationToken(
+         throw new ServiceException(e);
+       }
+   }
++  
++  @Override
++  public MoveApplicationAcrossQueuesResponseProto moveApplicationAcrossQueues(
++      RpcController controller, MoveApplicationAcrossQueuesRequestProto proto)
++      throws ServiceException {
++    MoveApplicationAcrossQueuesRequestPBImpl request =
++        new MoveApplicationAcrossQueuesRequestPBImpl(proto);
++    try {
++      MoveApplicationAcrossQueuesResponse response = real.moveApplicationAcrossQueues(request);
++      return ((MoveApplicationAcrossQueuesResponsePBImpl)response).getProto();
++    } catch (YarnException e) {
++      throw new ServiceException(e);
++    } catch (IOException e) {
++      throw new ServiceException(e);
++    }
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/impl/pb/MoveApplicationAcrossQueuesRequestPBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/impl/pb/MoveApplicationAcrossQueuesRequestPBImpl.java
+new file mode 100644
+index 0000000..1aaefb3
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/impl/pb/MoveApplicationAcrossQueuesRequestPBImpl.java
+@@ -0,0 +1,158 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.yarn.api.protocolrecords.impl.pb;
++
++import org.apache.hadoop.classification.InterfaceAudience.Private;
++import org.apache.hadoop.classification.InterfaceStability.Unstable;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
++import org.apache.hadoop.yarn.api.records.ApplicationId;
++import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationIdPBImpl;
++import org.apache.hadoop.yarn.proto.YarnProtos.ApplicationIdProto;
++import org.apache.hadoop.yarn.proto.YarnServiceProtos.MoveApplicationAcrossQueuesRequestProto;
++import org.apache.hadoop.yarn.proto.YarnServiceProtos.MoveApplicationAcrossQueuesRequestProtoOrBuilder;
++
++import com.google.protobuf.TextFormat;
++
++@Private
++@Unstable
++public class MoveApplicationAcrossQueuesRequestPBImpl extends MoveApplicationAcrossQueuesRequest {
++  MoveApplicationAcrossQueuesRequestProto proto = MoveApplicationAcrossQueuesRequestProto.getDefaultInstance();
++  MoveApplicationAcrossQueuesRequestProto.Builder builder = null;
++  boolean viaProto = false;
++  
++  private ApplicationId applicationId;
++  private String targetQueue;
++  
++  public MoveApplicationAcrossQueuesRequestPBImpl() {
++    builder = MoveApplicationAcrossQueuesRequestProto.newBuilder();
++  }
++
++  public MoveApplicationAcrossQueuesRequestPBImpl(MoveApplicationAcrossQueuesRequestProto proto) {
++    this.proto = proto;
++    viaProto = true;
++  }
++  
++  public MoveApplicationAcrossQueuesRequestProto getProto() {
++    mergeLocalToProto();
++    proto = viaProto ? proto : builder.build();
++    viaProto = true;
++    return proto;
++  }
++  
++  @Override
++  public ApplicationId getApplicationId() {
++    if (this.applicationId != null) {
++      return this.applicationId;
++    }
++    
++    MoveApplicationAcrossQueuesRequestProtoOrBuilder p = viaProto ? proto : builder;
++    if (!p.hasApplicationId()) {
++      return null;
++    }
++    
++    this.applicationId = convertFromProtoFormat(p.getApplicationId());
++    return this.applicationId;
++  }
++  
++  @Override
++  public void setApplicationId(ApplicationId appId) {
++    maybeInitBuilder();
++    if (applicationId == null) {
++      builder.clearApplicationId();
++    }
++    applicationId = appId;
++  }
++  
++  @Override
++  public String getTargetQueue() {
++    if (this.targetQueue != null) {
++      return this.targetQueue;
++    }
++    
++    MoveApplicationAcrossQueuesRequestProtoOrBuilder p = viaProto ? proto : builder;
++    if (!p.hasApplicationId()) {
++      return null;
++    }
++    
++    this.targetQueue = p.getTargetQueue();
++    return this.targetQueue;
++  }
++  
++  @Override
++  public void setTargetQueue(String queue) {
++    maybeInitBuilder();
++    if (applicationId == null) {
++      builder.clearTargetQueue();
++    }
++    targetQueue = queue;
++  }
++  
++  private void mergeLocalToBuilder() {
++    if (applicationId != null) {
++      builder.setApplicationId(convertToProtoFormat(this.applicationId));
++    }
++    if (targetQueue != null) {
++      builder.setTargetQueue(this.targetQueue);
++    }
++  }
++
++  private void mergeLocalToProto() {
++    if (viaProto) {
++      maybeInitBuilder();
++    }
++    mergeLocalToBuilder();
++    proto = builder.build();
++    viaProto = true;
++  }
++
++  private void maybeInitBuilder() {
++    if (viaProto || builder == null) {
++      builder = MoveApplicationAcrossQueuesRequestProto.newBuilder(proto);
++    }
++    viaProto = false;
++  }
++  
++  @Override
++  public int hashCode() {
++    return getProto().hashCode();
++  }
++
++  @Override
++  public boolean equals(Object other) {
++    if (other == null) {
++      return false;
++    }
++    if (other.getClass().isAssignableFrom(this.getClass())) {
++      return this.getProto().equals(this.getClass().cast(other).getProto());
++    }
++    return false;
++  }
++
++  @Override
++  public String toString() {
++    return TextFormat.shortDebugString(getProto());
++  }
++  
++  private ApplicationIdPBImpl convertFromProtoFormat(ApplicationIdProto p) {
++    return new ApplicationIdPBImpl(p);
++  }
++
++  private ApplicationIdProto convertToProtoFormat(ApplicationId t) {
++    return ((ApplicationIdPBImpl)t).getProto();
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/impl/pb/MoveApplicationAcrossQueuesResponsePBImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/impl/pb/MoveApplicationAcrossQueuesResponsePBImpl.java
+new file mode 100644
+index 0000000..ab1d2ae
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/api/protocolrecords/impl/pb/MoveApplicationAcrossQueuesResponsePBImpl.java
+@@ -0,0 +1,68 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.yarn.api.protocolrecords.impl.pb;
++
++import org.apache.hadoop.classification.InterfaceAudience.Private;
++import org.apache.hadoop.classification.InterfaceStability.Unstable;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesResponse;
++import org.apache.hadoop.yarn.proto.YarnServiceProtos.MoveApplicationAcrossQueuesResponseProto;
++
++import com.google.protobuf.TextFormat;
++
++@Private
++@Unstable
++public class MoveApplicationAcrossQueuesResponsePBImpl extends MoveApplicationAcrossQueuesResponse {
++  MoveApplicationAcrossQueuesResponseProto proto = MoveApplicationAcrossQueuesResponseProto.getDefaultInstance();
++  MoveApplicationAcrossQueuesResponseProto.Builder builder = null;
++  boolean viaProto = false;
++  
++  public MoveApplicationAcrossQueuesResponsePBImpl() {
++    builder = MoveApplicationAcrossQueuesResponseProto.newBuilder();
++  }
++
++  public MoveApplicationAcrossQueuesResponsePBImpl(MoveApplicationAcrossQueuesResponseProto proto) {
++    this.proto = proto;
++    viaProto = true;
++  }
++  
++  public MoveApplicationAcrossQueuesResponseProto getProto() {
++    proto = viaProto ? proto : builder.build();
++    viaProto = true;
++    return proto;
++  }
++
++  @Override
++  public int hashCode() {
++    return getProto().hashCode();
++  }
++
++  @Override
++  public boolean equals(Object other) {
++    if (other == null)
++      return false;
++    if (other.getClass().isAssignableFrom(this.getClass())) {
++      return this.getProto().equals(this.getClass().cast(other).getProto());
++    }
++    return false;
++  }
++
++  @Override
++  public String toString() {
++    return TextFormat.shortDebugString(getProto());
++  }
++}
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
+index cd2226f..1df67f8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
+@@ -64,6 +64,8 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueUserAclsInfoResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
++import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
+@@ -683,6 +685,12 @@ public CancelDelegationTokenResponse cancelDelegationToken(
+       throw RPCUtil.getRemoteException(e);
+     }
+   }
++  
++  @Override
++  public MoveApplicationAcrossQueuesResponse moveApplicationAcrossQueues(
++      MoveApplicationAcrossQueuesRequest request) throws YarnException {
++    throw new UnsupportedOperationException("Move not yet supported");
++  }
+ 
+   private String getRenewerForToken(Token<RMDelegationTokenIdentifier> token)
+       throws IOException {
+-- 
+1.7.0.4
+

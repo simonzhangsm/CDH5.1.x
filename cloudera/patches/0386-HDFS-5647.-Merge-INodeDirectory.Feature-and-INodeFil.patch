@@ -1,0 +1,357 @@
+From bae48e3dfbef5901072059a4504e201011a90d06 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 14 Feb 2014 07:38:34 +0000
+Subject: [PATCH 386/795] HDFS-5647. Merge INodeDirectory.Feature and INodeFile.Feature. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568207 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e1759a28b414ff321e8545e5414f0eeacc4ff8ec)
+---
+ .../server/namenode/DirectoryWithQuotaFeature.java |    2 +-
+ .../namenode/FileUnderConstructionFeature.java     |    2 +-
+ .../apache/hadoop/hdfs/server/namenode/INode.java  |   43 +-------------------
+ .../hdfs/server/namenode/INodeDirectory.java       |   29 +------------
+ .../hadoop/hdfs/server/namenode/INodeFile.java     |   33 +-------------
+ .../server/namenode/INodeWithAdditionalFields.java |   44 ++++++++++++++++++++
+ .../namenode/snapshot/FileWithSnapshotFeature.java |    2 +-
+ .../hadoop/hdfs/server/namenode/TestINodeFile.java |    5 ++-
+ 8 files changed, 57 insertions(+), 103 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DirectoryWithQuotaFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DirectoryWithQuotaFeature.java
+index c03a797..511b5fd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DirectoryWithQuotaFeature.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DirectoryWithQuotaFeature.java
+@@ -25,7 +25,7 @@
+ /**
+  * Quota feature for {@link INodeDirectory}. 
+  */
+-public final class DirectoryWithQuotaFeature extends INodeDirectory.Feature {
++public final class DirectoryWithQuotaFeature implements INode.Feature {
+   public static final long DEFAULT_NAMESPACE_QUOTA = Long.MAX_VALUE;
+   public static final long DEFAULT_DISKSPACE_QUOTA = HdfsConstants.QUOTA_RESET;
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
+index 0a7371d..782a859 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
+@@ -29,7 +29,7 @@
+  * Feature for under-construction file.
+  */
+ @InterfaceAudience.Private
+-public class FileUnderConstructionFeature extends INodeFile.Feature {
++public class FileUnderConstructionFeature implements INode.Feature {
+   private String clientName; // lease holder
+   private final String clientMachine;
+   // if client is a cluster node too.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+index 1ba48a0..c90369e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+@@ -756,47 +756,6 @@ public void clear() {
+   /** INode feature such as {@link FileUnderConstructionFeature}
+    *  and {@link DirectoryWithQuotaFeature}.
+    */
+-  interface Feature<F extends Feature<F>> {
+-    /** @return the next feature. */
+-    public F getNextFeature();
+-
+-    /** Set the next feature. */
+-    public void setNextFeature(F next);
+-
+-    /** Utility methods such as addFeature and removeFeature. */
+-    static class Util {
+-      /**
+-       * Add a feature to the linked list.
+-       * @return the new head.
+-       */
+-      static <F extends Feature<F>> F addFeature(F feature, F head) {
+-        feature.setNextFeature(head);
+-        return feature;
+-      }
+-
+-      /**
+-       * Remove a feature from the linked list.
+-       * @return the new head.
+-       */
+-      static <F extends Feature<F>> F removeFeature(F feature, F head) {
+-        if (feature == head) {
+-          final F newHead = head.getNextFeature();
+-          head.setNextFeature(null);
+-          return newHead;
+-        } else if (head != null) {
+-          F prev = head;
+-          F curr = head.getNextFeature();
+-          for (; curr != null && curr != feature;
+-              prev = curr, curr = curr.getNextFeature())
+-            ;
+-          if (curr != null) {
+-            prev.setNextFeature(curr.getNextFeature());
+-            curr.setNextFeature(null);
+-            return head;
+-          }
+-        }
+-        throw new IllegalStateException("Feature " + feature + " not found.");
+-      }
+-    }
++  public interface Feature {
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+index 05e9867..71fdc28 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+@@ -45,20 +45,6 @@
+  */
+ public class INodeDirectory extends INodeWithAdditionalFields
+     implements INodeDirectoryAttributes {
+-  /** Directory related features such as quota and snapshots. */
+-  public static abstract class Feature implements INode.Feature<Feature> {
+-    private Feature nextFeature;
+-
+-    @Override
+-    public Feature getNextFeature() {
+-      return nextFeature;
+-    }
+-
+-    @Override
+-    public void setNextFeature(Feature next) {
+-      this.nextFeature = next;
+-    }
+-  }
+ 
+   /** Cast INode to INodeDirectory. */
+   public static INodeDirectory valueOf(INode inode, Object path
+@@ -78,9 +64,6 @@ public static INodeDirectory valueOf(INode inode, Object path
+ 
+   private List<INode> children = null;
+   
+-  /** A linked list of {@link Feature}s. */
+-  private Feature headFeature = null;
+-
+   /** constructor */
+   public INodeDirectory(long id, byte[] name, PermissionStatus permissions,
+       long mtime) {
+@@ -102,7 +85,7 @@ public INodeDirectory(INodeDirectory other, boolean adopt, boolean copyFeatures)
+       }
+     }
+     if (copyFeatures) {
+-      this.headFeature = other.headFeature;
++      this.features = other.features;
+     }
+   }
+ 
+@@ -160,7 +143,7 @@ public void addSpaceConsumed(long nsDelta, long dsDelta, boolean verify)
+    * otherwise, return null.
+    */
+   public final DirectoryWithQuotaFeature getDirectoryWithQuotaFeature() {
+-    for(Feature f = headFeature; f != null; f = f.nextFeature) {
++    for (Feature f : features) {
+       if (f instanceof DirectoryWithQuotaFeature) {
+         return (DirectoryWithQuotaFeature)f;
+       }
+@@ -182,14 +165,6 @@ DirectoryWithQuotaFeature addDirectoryWithQuotaFeature(
+     return quota;
+   }
+ 
+-  private void addFeature(Feature f) {
+-    headFeature = INode.Feature.Util.addFeature(f, headFeature);
+-  }
+-
+-  private void removeFeature(Feature f) {
+-    headFeature = INode.Feature.Util.removeFeature(f, headFeature);
+-  }
+-
+   private int searchChildren(byte[] name) {
+     return children == null? -1: Collections.binarySearch(children, name);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+index f5450e3..472d37c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+@@ -45,23 +45,6 @@
+ @InterfaceAudience.Private
+ public class INodeFile extends INodeWithAdditionalFields
+     implements INodeFileAttributes, BlockCollection {
+-  /**
+-   * A feature contains specific information for a type of INodeFile. E.g.,
+-   * we can have separate features for Under-Construction and Snapshot.
+-   */
+-  public static abstract class Feature implements INode.Feature<Feature> {
+-    private Feature nextFeature;
+-
+-    @Override
+-    public Feature getNextFeature() {
+-      return nextFeature;
+-    }
+-
+-    @Override
+-    public void setNextFeature(Feature next) {
+-      this.nextFeature = next;
+-    }
+-  }
+ 
+   /** The same as valueOf(inode, path, false). */
+   public static INodeFile valueOf(INode inode, String path
+@@ -124,8 +107,6 @@ static long combinePreferredBlockSize(long header, long blockSize) {
+ 
+   private BlockInfo[] blocks;
+ 
+-  private Feature headFeature;
+-
+   INodeFile(long id, byte[] name, PermissionStatus permissions, long mtime,
+       long atime, BlockInfo[] blklist, short replication,
+       long preferredBlockSize) {
+@@ -139,7 +120,7 @@ public INodeFile(INodeFile that) {
+     super(that);
+     this.header = that.header;
+     this.blocks = that.blocks;
+-    this.headFeature = that.headFeature;
++    this.features = that.features;
+   }
+   
+   public INodeFile(INodeFile that, FileDiffList diffs) {
+@@ -148,14 +129,6 @@ public INodeFile(INodeFile that, FileDiffList diffs) {
+     this.addSnapshotFeature(diffs);
+   }
+ 
+-  private void addFeature(Feature f) {
+-    headFeature = INode.Feature.Util.addFeature(f, headFeature);
+-  }
+-
+-  private void removeFeature(Feature f) {
+-    headFeature = INode.Feature.Util.removeFeature(f, headFeature);
+-  }
+-
+   /** @return true unconditionally. */
+   @Override
+   public final boolean isFile() {
+@@ -175,7 +148,7 @@ public final INodeFile asFile() {
+    * otherwise, return null.
+    */
+   public final FileUnderConstructionFeature getFileUnderConstructionFeature() {
+-    for (Feature f = this.headFeature; f != null; f = f.nextFeature) {
++    for (Feature f : features) {
+       if (f instanceof FileUnderConstructionFeature) {
+         return (FileUnderConstructionFeature) f;
+       }
+@@ -287,7 +260,7 @@ private FileWithSnapshotFeature addSnapshotFeature(FileDiffList diffs) {
+    * otherwise, return null.
+    */
+   public final FileWithSnapshotFeature getFileWithSnapshotFeature() {
+-    for (Feature f = headFeature; f != null; f = f.nextFeature) {
++    for (Feature f: features) {
+       if (f instanceof FileWithSnapshotFeature) {
+         return (FileWithSnapshotFeature) f;
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
+index f8b63ec..bc74ad2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeWithAdditionalFields.java
+@@ -95,6 +95,9 @@ static long toLong(PermissionStatus ps) {
+ 
+   /** For implementing {@link LinkedElement}. */
+   private LinkedElement next = null;
++  /** An array {@link Feature}s. */
++  private static final Feature[] EMPTY_FEATURE = new Feature[0];
++  protected Feature[] features = EMPTY_FEATURE;
+ 
+   private INodeWithAdditionalFields(INode parent, long id, byte[] name,
+       long permission, long modificationTime, long accessTime) {
+@@ -262,4 +265,45 @@ final long getAccessTime(Snapshot snapshot) {
+   public final void setAccessTime(long accessTime) {
+     this.accessTime = accessTime;
+   }
++
++  protected void addFeature(Feature f) {
++    int size = features.length;
++    Feature[] arr = new Feature[size + 1];
++    if (size != 0) {
++      System.arraycopy(features, 0, arr, 0, size);
++    }
++    arr[size] = f;
++    features = arr;
++  }
++
++  protected void removeFeature(Feature f) {
++    int size = features.length;
++    Preconditions.checkState(size > 0, "Feature "
++        + f.getClass().getSimpleName() + " not found.");
++
++    if (size == 1) {
++      Preconditions.checkState(features[0] == f, "Feature "
++          + f.getClass().getSimpleName() + " not found.");
++      features = EMPTY_FEATURE;
++      return;
++    }
++
++    Feature[] arr = new Feature[size - 1];
++    int j = 0;
++    boolean overflow = false;
++    for (Feature f1 : features) {
++      if (f1 != f) {
++        if (j == size - 1) {
++          overflow = true;
++          break;
++        } else {
++          arr[j++] = f1;
++        }
++      }
++    }
++
++    Preconditions.checkState(!overflow && j == size - 1, "Feature "
++        + f.getClass().getSimpleName() + " not found.");
++    features = arr;
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshotFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshotFeature.java
+index 737603a..b74d269 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshotFeature.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshotFeature.java
+@@ -32,7 +32,7 @@
+  * Feature for file with snapshot-related information.
+  */
+ @InterfaceAudience.Private
+-public class FileWithSnapshotFeature extends INodeFile.Feature {
++public class FileWithSnapshotFeature implements INode.Feature {
+   private final FileDiffList diffs;
+   private boolean isCurrentFileDeleted = false;
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+index 1d98bfe..4bf422d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+@@ -61,6 +61,7 @@
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
++import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.util.Time;
+ import org.junit.Test;
+ import org.mockito.Mockito;
+@@ -885,6 +886,7 @@ private static INodeDirectory getDir(final FSDirectory fsdir, final Path dir)
+   public void testDotdotInodePath() throws Exception {
+     final Configuration conf = new Configuration();
+     MiniDFSCluster cluster = null;
++    DFSClient client = null;
+     try {
+       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+       cluster.waitActive();
+@@ -897,7 +899,7 @@ public void testDotdotInodePath() throws Exception {
+       long parentId = fsdir.getINode("/").getId();
+       String testPath = "/.reserved/.inodes/" + dirId + "/..";
+ 
+-      DFSClient client = new DFSClient(NameNode.getAddress(conf), conf);
++      client = new DFSClient(NameNode.getAddress(conf), conf);
+       HdfsFileStatus status = client.getFileInfo(testPath);
+       assertTrue(parentId == status.getFileId());
+       
+@@ -907,6 +909,7 @@ public void testDotdotInodePath() throws Exception {
+       assertTrue(parentId == status.getFileId());
+       
+     } finally {
++      IOUtils.cleanup(LOG, client);
+       if (cluster != null) {
+         cluster.shutdown();
+       }
+-- 
+1.7.0.4
+

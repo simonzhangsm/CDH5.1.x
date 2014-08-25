@@ -1,0 +1,64 @@
+From 3fc18bf7dc07268b63c2b2c3c271a4c531bc27d9 Mon Sep 17 00:00:00 2001
+From: Stephen Chu <schu@cloudera.com>
+Date: Mon, 21 Apr 2014 10:58:16 -0700
+Subject: [PATCH 572/795] Merge r1588258 from trunk, HDFS-6153. Document "fileId" and "childrenNum" fields in the FileStatus Json schema
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1588262 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fd5b375597538021a3693728371ca0d0d178a623)
+---
+ .../hadoop-hdfs/src/site/apt/WebHDFS.apt.vm        |   18 ++++++++++++++++++
+ 1 files changed, 18 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/WebHDFS.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/WebHDFS.apt.vm
+index fbfd880..46f59cb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/WebHDFS.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/WebHDFS.apt.vm
+@@ -482,6 +482,8 @@ Transfer-Encoding: chunked
+   {
+     "accessTime"      : 0,
+     "blockSize"       : 0,
++    "childrenNum"     : 1,
++    "fileId"          : 16386,
+     "group"           : "supergroup",
+     "length"          : 0,             //in bytes, zero for directories
+     "modificationTime": 1320173277227,
+@@ -523,6 +525,8 @@ Content-Length: 427
+       {
+         "accessTime"      : 1320171722771,
+         "blockSize"       : 33554432,
++        "childrenNum"     : 0,
++        "fileId"          : 16387,
+         "group"           : "supergroup",
+         "length"          : 24930,
+         "modificationTime": 1320171722771,
+@@ -535,6 +539,8 @@ Content-Length: 427
+       {
+         "accessTime"      : 0,
+         "blockSize"       : 0,
++        "childrenNum"     : 2,
++        "fileId"          : 16388,
+         "group"           : "supergroup",
+         "length"          : 0,
+         "modificationTime": 1320895981256,
+@@ -1331,6 +1337,18 @@ var fileStatusProperties =
+       "type"       : "integer",
+       "required"   : true
+     },
++    "childrenNum":
++    {
++      "description": "The number of children.",
++      "type"       : "integer",
++      "required"   : true
++    },
++    "fileId":
++    {
++      "description": "The inode ID.",
++      "type"       : "integer",
++      "required"   : true
++    },
+     "group":
+     {
+       "description": "The group owner.",
+-- 
+1.7.0.4
+

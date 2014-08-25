@@ -1,0 +1,109 @@
+From d123b088c213bebb1824521b972e28454fc98f11 Mon Sep 17 00:00:00 2001
+From: Arun Murthy <acmurthy@apache.org>
+Date: Sat, 29 Mar 2014 19:16:03 +0000
+Subject: [PATCH 643/795] Merge -c 1583050 from trunk to branch-2 to fix MAPREDUCE-5813. Fix YarnChild to explicitly load job.xml from the local-filesystem, rather than rely on the classpath. Contributed by Gera Shegalov.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1583051 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 432f5c6ac10c894758d8d5333437787c790aeb80)
+---
+ .../java/org/apache/hadoop/mapred/YarnChild.java   |    3 +-
+ .../org/apache/hadoop/mapreduce/v2/TestMRJobs.java |   48 ++++++++++++++++++++
+ 2 files changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapred/YarnChild.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapred/YarnChild.java
+index 2c5ded1..21f5c10 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapred/YarnChild.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapred/YarnChild.java
+@@ -76,10 +76,9 @@ public static void main(String[] args) throws Throwable {
+     Thread.setDefaultUncaughtExceptionHandler(new YarnUncaughtExceptionHandler());
+     LOG.debug("Child starting");
+ 
+-    final JobConf job = new JobConf();
++    final JobConf job = new JobConf(MRJobConfig.JOB_CONF_FILE);
+     // Initing with our JobConf allows us to avoid loading confs twice
+     Limits.init(job);
+-    job.addResource(MRJobConfig.JOB_CONF_FILE);
+     UserGroupInformation.setConfiguration(job);
+ 
+     String host = args[0];
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/TestMRJobs.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/TestMRJobs.java
+index 2d8972b..2027d37 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/TestMRJobs.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/TestMRJobs.java
+@@ -41,6 +41,7 @@
+ import org.apache.hadoop.RandomTextWriterJob;
+ import org.apache.hadoop.RandomTextWriterJob.RandomInputFormat;
+ import org.apache.hadoop.SleepJob;
++import org.apache.hadoop.SleepJob.SleepMapper;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+@@ -98,6 +99,7 @@
+   private static final EnumSet<RMAppState> TERMINAL_RM_APP_STATES =
+       EnumSet.of(RMAppState.FINISHED, RMAppState.FAILED, RMAppState.KILLED);
+   private static final int NUM_NODE_MGRS = 3;
++  private static final String TEST_IO_SORT_MB = "11";
+ 
+   protected static MiniMRYarnCluster mrCluster;
+   protected static MiniDFSCluster dfsCluster;
+@@ -205,6 +207,38 @@ public void testSleepJob() throws IOException, InterruptedException,
+     // JobStatus?)--compare against MRJobConfig.JOB_UBERTASK_ENABLE value
+   }
+ 
++  @Test(timeout = 300000)
++  public void testJobClassloader() throws IOException, InterruptedException,
++      ClassNotFoundException {
++    LOG.info("\n\n\nStarting testJobClassloader().");
++
++    if (!(new File(MiniMRYarnCluster.APPJAR)).exists()) {
++      LOG.info("MRAppJar " + MiniMRYarnCluster.APPJAR
++               + " not found. Not running test.");
++      return;
++    }
++    final Configuration sleepConf = new Configuration(mrCluster.getConfig());
++    // set master address to local to test that local mode applied iff framework == local
++    sleepConf.set(MRConfig.MASTER_ADDRESS, "local");
++    sleepConf.setBoolean(MRJobConfig.MAPREDUCE_JOB_CLASSLOADER, true);
++    sleepConf.set(MRJobConfig.IO_SORT_MB, TEST_IO_SORT_MB);
++    sleepConf.set(MRJobConfig.MR_AM_LOG_LEVEL, Level.ALL.toString());
++    sleepConf.set(MRJobConfig.MAP_LOG_LEVEL, Level.ALL.toString());
++    sleepConf.set(MRJobConfig.REDUCE_LOG_LEVEL, Level.ALL.toString());
++    sleepConf.set(MRJobConfig.MAP_JAVA_OPTS, "-verbose:class");
++    final SleepJob sleepJob = new SleepJob();
++    sleepJob.setConf(sleepConf);
++    final Job job = sleepJob.createJob(1, 1, 10, 1, 10, 1);
++    job.setMapperClass(ConfVerificationMapper.class);
++    job.addFileToClassPath(APP_JAR); // The AppMaster jar itself.
++    job.setJarByClass(SleepJob.class);
++    job.setMaxMapAttempts(1); // speed up failures
++    job.submit();
++    boolean succeeded = job.waitForCompletion(true);
++    Assert.assertTrue("Job status: " + job.getStatus().getFailureInfo(),
++        succeeded);
++  }
++
+   protected void verifySleepJobCounters(Job job) throws InterruptedException,
+       IOException {
+     Counters counters = job.getCounters();
+@@ -795,4 +829,18 @@ private void createAndAddJarToJar(JarOutputStream jos, File jarFile)
+     jos.closeEntry();
+     jarFile.delete();
+   }
++
++  public static class ConfVerificationMapper extends SleepMapper {
++    @Override
++    protected void setup(Context context)
++        throws IOException, InterruptedException {
++      super.setup(context);
++      final Configuration conf = context.getConfiguration();
++      final String ioSortMb = conf.get(MRJobConfig.IO_SORT_MB);
++      if (!TEST_IO_SORT_MB.equals(ioSortMb)) {
++        throw new IOException("io.sort.mb expected: " + TEST_IO_SORT_MB
++            + ", actual: "  + ioSortMb);
++      }
++    }
++  }
+ }
+-- 
+1.7.0.4
+

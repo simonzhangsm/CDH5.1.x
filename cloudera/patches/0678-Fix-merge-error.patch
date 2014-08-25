@@ -1,0 +1,110 @@
+From 58607c6e3e387cd17ca8c457db0e79a7bf14b9cf Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Sat, 31 May 2014 14:33:01 +0000
+Subject: [PATCH 678/795] Fix merge error.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2.4@1598875 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 848a00a1a2b4a3f558d49dc586e25cdc4e73f7ad)
+---
+ .../hadoop/hdfs/server/datanode/DataNode.java      |   43 ++++++++++++++++++++
+ 1 files changed, 43 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index 89c386d..d124b9c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -229,6 +229,9 @@ public static InetSocketAddress createSocketAddr(String target) {
+   ReadaheadPool readaheadPool;
+   private final boolean getHdfsBlockLocationsEnabled;
+   private ObjectName dataNodeInfoBeanName;
++  private String supergroup;
++  private boolean isPermissionEnabled;
++  private String dnUserName = null;
+ 
+   /**
+    * Create the DataNode given a configuration, an array of dataDirs,
+@@ -249,6 +252,11 @@ public static InetSocketAddress createSocketAddr(String target) {
+     this.getHdfsBlockLocationsEnabled = conf.getBoolean(
+         DFSConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED, 
+         DFSConfigKeys.DFS_HDFS_BLOCKS_METADATA_ENABLED_DEFAULT);
++    this.supergroup = conf.get(DFSConfigKeys.DFS_PERMISSIONS_SUPERUSERGROUP_KEY,
++        DFSConfigKeys.DFS_PERMISSIONS_SUPERUSERGROUP_DEFAULT);
++    this.isPermissionEnabled = conf.getBoolean(
++        DFSConfigKeys.DFS_PERMISSIONS_ENABLED_KEY,
++        DFSConfigKeys.DFS_PERMISSIONS_ENABLED_DEFAULT);
+ 
+     confVersion = "core-" +
+         conf.get("hadoop.common.configuration.version", "UNSPECIFIED") +
+@@ -433,6 +441,33 @@ private void initIpcServer(Configuration conf) throws IOException {
+       ipcServer.refreshServiceAcl(conf, new HDFSPolicyProvider());
+     }
+   }
++
++  /** Check whether the current user is in the superuser group. */
++  private void checkSuperuserPrivilege() throws IOException, AccessControlException {
++    if (!isPermissionEnabled) {
++      return;
++    }
++    // Try to get the ugi in the RPC call.
++    UserGroupInformation callerUgi = ipcServer.getRemoteUser();
++    if (callerUgi == null) {
++      // This is not from RPC.
++      callerUgi = UserGroupInformation.getCurrentUser();
++    }
++
++    // Is this by the DN user itself?
++    assert dnUserName != null;
++    if (callerUgi.getShortUserName().equals(dnUserName)) {
++      return;
++    }
++
++    // Is the user a member of the super group?
++    List<String> groups = Arrays.asList(callerUgi.getGroupNames());
++    if (groups.contains(supergroup)) {
++      return;
++    }
++    // Not a superuser.
++    throw new AccessControlException();
++  }
+   
+ /**
+  * Initialize the datanode's periodic scanners:
+@@ -737,6 +772,11 @@ void startDataNode(Configuration conf,
+   
+     // BlockPoolTokenSecretManager is required to create ipc server.
+     this.blockPoolTokenSecretManager = new BlockPoolTokenSecretManager();
++
++    // Login is done by now. Set the DN user name.
++    dnUserName = UserGroupInformation.getCurrentUser().getShortUserName();
++    LOG.info("dnUserName = " + dnUserName);
++    LOG.info("supergroup = " + supergroup);
+     initIpcServer(conf);
+ 
+     metrics = DataNodeMetrics.create(conf, getDisplayName());
+@@ -2438,6 +2478,7 @@ public void refreshNamenodes(Configuration conf) throws IOException {
+ 
+   @Override // ClientDatanodeProtocol
+   public void refreshNamenodes() throws IOException {
++    checkSuperuserPrivilege();
+     conf = new Configuration();
+     refreshNamenodes(conf);
+   }
+@@ -2445,6 +2486,7 @@ public void refreshNamenodes() throws IOException {
+   @Override // ClientDatanodeProtocol
+   public void deleteBlockPool(String blockPoolId, boolean force)
+       throws IOException {
++    checkSuperuserPrivilege();
+     LOG.info("deleteBlockPool command received for block pool " + blockPoolId
+         + ", force=" + force);
+     if (blockPoolManager.get(blockPoolId) != null) {
+@@ -2460,6 +2502,7 @@ public void deleteBlockPool(String blockPoolId, boolean force)
+ 
+   @Override // ClientDatanodeProtocol
+   public synchronized void shutdownDatanode(boolean forUpgrade) throws IOException {
++    checkSuperuserPrivilege();
+     LOG.info("shutdownDatanode command received (upgrade=" + forUpgrade +
+         "). Shutting down Datanode...");
+ 
+-- 
+1.7.0.4
+

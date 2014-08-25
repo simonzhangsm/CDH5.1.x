@@ -1,0 +1,47 @@
+From bbb88e336360990efb1b05285991fe78560676a5 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 24 Jun 2014 17:30:53 +0000
+Subject: [PATCH 788/795] YARN-2109. Fix TestRM to work with both schedulers. (Anubhav Dhoot via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1605142 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 2fd3d38ba52f19cb8ab5bafb443334af1149003a)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../hadoop/yarn/server/resourcemanager/TestRM.java |   12 +++++++++++-
+ 1 files changed, 11 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
+index 4aec467..23fe82b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
+@@ -28,6 +28,9 @@
+ import java.util.List;
+ import java.util.Map;
+ 
++import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
++import org.junit.After;
+ import org.junit.Assert;
+ 
+ import org.apache.commons.logging.Log;
+@@ -77,7 +80,14 @@
+ 
+   // Milliseconds to sleep for when waiting for something to happen
+   private final static int WAIT_SLEEP_MS = 100;
+-  
++
++  @After
++  public void tearDown() {
++    ClusterMetrics.destroy();
++    QueueMetrics.clearQueueMetrics();
++    DefaultMetricsSystem.shutdown();
++  }
++
+   @Test
+   public void testGetNewAppId() throws Exception {
+     Logger rootLogger = LogManager.getRootLogger();
+-- 
+1.7.0.4
+

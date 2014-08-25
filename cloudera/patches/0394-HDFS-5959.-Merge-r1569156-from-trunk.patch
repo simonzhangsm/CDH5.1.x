@@ -1,0 +1,78 @@
+From d4b64861ed5419b23cd18f13aed0d4128aab57ae Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Tue, 18 Feb 2014 01:54:48 +0000
+Subject: [PATCH 394/795] HDFS-5959. Merge r1569156 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1569162 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 5869eaa7d4c274ef004ea8208a24d6263b8f2a99)
+---
+ .../server/namenode/FSImageFormatProtobuf.java     |    4 ++--
+ .../namenode/snapshot/FSImageFormatPBSnapshot.java |    2 +-
+ .../hdfs/tools/offlineImageViewer/LsrPBImage.java  |    2 +-
+ .../tools/offlineImageViewer/PBImageXmlWriter.java |    2 +-
+ 4 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatProtobuf.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatProtobuf.java
+index 9224543..284f39d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatProtobuf.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatProtobuf.java
+@@ -235,7 +235,7 @@ public int compare(FileSummary.Section s1, FileSummary.Section s2) {
+           inodeLoader.loadINodeSection(in);
+         }
+           break;
+-        case INODE_REFRENCE:
++        case INODE_REFERENCE:
+           snapshotLoader.loadINodeReferenceSection(in);
+           break;
+         case INODE_DIR:
+@@ -548,7 +548,7 @@ private void saveStringTableSection(FileSummary.Builder summary)
+     NS_INFO("NS_INFO"),
+     STRING_TABLE("STRING_TABLE"),
+     INODE("INODE"),
+-    INODE_REFRENCE("INODE_REFRENCE"),
++    INODE_REFERENCE("INODE_REFERENCE"),
+     SNAPSHOT("SNAPSHOT"),
+     INODE_DIR("INODE_DIR"),
+     FILES_UNDERCONSTRUCTION("FILES_UNDERCONSTRUCTION"),
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
+index 660b0dc..86f2daa 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java
+@@ -383,7 +383,7 @@ public void serializeINodeReferenceSection(OutputStream out)
+         INodeReferenceSection.INodeReference.Builder rb = buildINodeReference(ref);
+         rb.build().writeDelimitedTo(out);
+       }
+-      parent.commitSection(headers, SectionName.INODE_REFRENCE);
++      parent.commitSection(headers, SectionName.INODE_REFERENCE);
+     }
+ 
+     private INodeReferenceSection.INodeReference.Builder buildINodeReference(
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
+index 8260b3f..f176c26 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
+@@ -127,7 +127,7 @@ public int compare(FileSummary.Section s1, FileSummary.Section s2) {
+         case INODE:
+           loadINodeSection(is);
+           break;
+-        case INODE_REFRENCE:
++        case INODE_REFERENCE:
+           loadINodeReferenceSection(is);
+           break;
+         case INODE_DIR:
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+index d70f637..a02a495 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+@@ -133,7 +133,7 @@ public int compare(FileSummary.Section s1, FileSummary.Section s2) {
+         case INODE:
+           dumpINodeSection(is);
+           break;
+-        case INODE_REFRENCE:
++        case INODE_REFERENCE:
+           dumpINodeReferenceSection(is);
+           break;
+         case INODE_DIR:
+-- 
+1.7.0.4
+

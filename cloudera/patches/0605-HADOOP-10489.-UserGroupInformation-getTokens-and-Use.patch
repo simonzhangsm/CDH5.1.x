@@ -1,0 +1,179 @@
+From 73a8ed39875d3b3ffacb3cc14169db2869fcbf3f Mon Sep 17 00:00:00 2001
+From: Aaron Myers <atm@apache.org>
+Date: Mon, 19 May 2014 19:59:08 +0000
+Subject: [PATCH 605/795] HADOOP-10489. UserGroupInformation#getTokens and UserGroupInformation#addToken can lead to ConcurrentModificationException. Contributed by Robert Kanter.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1596027 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1e0dd38ed9eefe2389ede8e74a3c3c53005b17e7)
+---
+ .../hadoop/security/UserGroupInformation.java      |   42 +++++++-----
+ .../hadoop/security/TestUserGroupInformation.java  |   66 ++++++++++++++++++++
+ 2 files changed, 90 insertions(+), 18 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+index 629d7ad..011ef0b 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+@@ -1334,7 +1334,7 @@ public synchronized boolean addTokenIdentifier(TokenIdentifier tokenId) {
+    * @param token Token to be added
+    * @return true on successful add of new token
+    */
+-  public synchronized boolean addToken(Token<? extends TokenIdentifier> token) {
++  public boolean addToken(Token<? extends TokenIdentifier> token) {
+     return (token != null) ? addToken(token.getService(), token) : false;
+   }
+ 
+@@ -1345,10 +1345,11 @@ public synchronized boolean addToken(Token<? extends TokenIdentifier> token) {
+    * @param token Token to be added
+    * @return true on successful add of new token
+    */
+-  public synchronized boolean addToken(Text alias,
+-                                       Token<? extends TokenIdentifier> token) {
+-    getCredentialsInternal().addToken(alias, token);
+-    return true;
++  public boolean addToken(Text alias, Token<? extends TokenIdentifier> token) {
++    synchronized (subject) {
++      getCredentialsInternal().addToken(alias, token);
++      return true;
++    }
+   }
+   
+   /**
+@@ -1356,10 +1357,11 @@ public synchronized boolean addToken(Text alias,
+    * 
+    * @return an unmodifiable collection of tokens associated with user
+    */
+-  public synchronized
+-  Collection<Token<? extends TokenIdentifier>> getTokens() {
+-    return Collections.unmodifiableCollection(
+-        new ArrayList<Token<?>>(getCredentialsInternal().getAllTokens()));
++  public Collection<Token<? extends TokenIdentifier>> getTokens() {
++    synchronized (subject) {
++      return Collections.unmodifiableCollection(
++          new ArrayList<Token<?>>(getCredentialsInternal().getAllTokens()));
++    }
+   }
+ 
+   /**
+@@ -1367,23 +1369,27 @@ public synchronized boolean addToken(Text alias,
+    * 
+    * @return Credentials of tokens associated with this user
+    */
+-  public synchronized Credentials getCredentials() {
+-    Credentials creds = new Credentials(getCredentialsInternal());
+-    Iterator<Token<?>> iter = creds.getAllTokens().iterator();
+-    while (iter.hasNext()) {
+-      if (iter.next() instanceof Token.PrivateToken) {
+-        iter.remove();
++  public Credentials getCredentials() {
++    synchronized (subject) {
++      Credentials creds = new Credentials(getCredentialsInternal());
++      Iterator<Token<?>> iter = creds.getAllTokens().iterator();
++      while (iter.hasNext()) {
++        if (iter.next() instanceof Token.PrivateToken) {
++          iter.remove();
++        }
+       }
++      return creds;
+     }
+-    return creds;
+   }
+   
+   /**
+    * Add the given Credentials to this user.
+    * @param credentials of tokens and secrets
+    */
+-  public synchronized void addCredentials(Credentials credentials) {
+-    getCredentialsInternal().addAll(credentials);
++  public void addCredentials(Credentials credentials) {
++    synchronized (subject) {
++      getCredentialsInternal().addAll(credentials);
++    }
+   }
+ 
+   private synchronized Credentials getCredentialsInternal() {
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestUserGroupInformation.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestUserGroupInformation.java
+index 31a660e..3832875 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestUserGroupInformation.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestUserGroupInformation.java
+@@ -35,6 +35,7 @@
+ import java.io.InputStreamReader;
+ import java.security.PrivilegedExceptionAction;
+ import java.util.Collection;
++import java.util.ConcurrentModificationException;
+ import java.util.LinkedHashSet;
+ import java.util.Set;
+ 
+@@ -798,4 +799,69 @@ public void testPrivateTokenExclusion() throws Exception  {
+     Collection<Token<? extends TokenIdentifier>> tokens = ugi.getCredentials().getAllTokens();
+     assertEquals(1, tokens.size());
+   }
++
++  /**
++   * This test checks a race condition between getting and adding tokens for
++   * the current user.  Calling UserGroupInformation.getCurrentUser() returns
++   * a new object each time, so simply making these methods synchronized was not
++   * enough to prevent race conditions and causing a
++   * ConcurrentModificationException.  These methods are synchronized on the
++   * Subject, which is the same object between UserGroupInformation instances.
++   * This test tries to cause a CME, by exposing the race condition.  Previously
++   * this test would fail every time; now it does not.
++   */
++  @Test
++  public void testTokenRaceCondition() throws Exception {
++    UserGroupInformation userGroupInfo =
++      UserGroupInformation.createUserForTesting(USER_NAME, GROUP_NAMES);
++    userGroupInfo.doAs(new PrivilegedExceptionAction<Void>(){
++      @Override
++      public Void run() throws Exception {
++        // make sure it is not the same as the login user because we use the
++        // same UGI object for every instantiation of the login user and you
++        // won't run into the race condition otherwise
++        assertNotEquals(UserGroupInformation.getLoginUser(),
++                        UserGroupInformation.getCurrentUser());
++
++        GetTokenThread thread = new GetTokenThread();
++        try {
++          thread.start();
++          for (int i = 0; i < 100; i++) {
++            @SuppressWarnings("unchecked")
++            Token<? extends TokenIdentifier> t = mock(Token.class);
++            when(t.getService()).thenReturn(new Text("t" + i));
++            UserGroupInformation.getCurrentUser().addToken(t);
++            assertNull("ConcurrentModificationException encountered",
++                thread.cme);
++          }
++        } catch (ConcurrentModificationException cme) {
++          cme.printStackTrace();
++          fail("ConcurrentModificationException encountered");
++        } finally {
++          thread.runThread = false;
++          thread.join(5 * 1000);
++        }
++        return null;
++      }});
++  }
++
++  static class GetTokenThread extends Thread {
++    boolean runThread = true;
++    volatile ConcurrentModificationException cme = null;
++
++    @Override
++    public void run() {
++      while(runThread) {
++        try {
++          UserGroupInformation.getCurrentUser().getCredentials();
++        } catch (ConcurrentModificationException cme) {
++          this.cme = cme;
++          cme.printStackTrace();
++          runThread = false;
++        } catch (IOException ex) {
++          ex.printStackTrace();
++        }
++      }
++    }
++  }
+ }
+-- 
+1.7.0.4
+

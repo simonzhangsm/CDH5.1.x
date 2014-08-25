@@ -1,0 +1,130 @@
+From f5c3e76f5938e76a0b539232f418ffe1879325cd Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 3 Jun 2014 00:44:30 -0700
+Subject: [PATCH 733/795] svn merge -c 1587962 from trunk to branch-2 to fix:HDFS-6219. Proxy superuser configuration should use true client IP for address checks. Contributed by Daryn Sharp.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1587964 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
+---
+ .../hadoop/hdfs/server/common/JspHelper.java       |   18 ++++++-
+ .../hadoop/hdfs/server/common/TestJspHelper.java   |   52 ++++++++++++++++++++
+ 2 files changed, 69 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
+index f554207..42c2727 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
+@@ -644,7 +644,7 @@ public static UserGroupInformation getUGI(ServletContext context,
+       if (doAsUserFromQuery != null) {
+         // create and attempt to authorize a proxy user
+         ugi = UserGroupInformation.createProxyUser(doAsUserFromQuery, ugi);
+-        ProxyUsers.authorize(ugi, request.getRemoteAddr(), conf);
++        ProxyUsers.authorize(ugi, getRemoteAddr(request), conf);
+       }
+     }
+     
+@@ -684,6 +684,22 @@ private static UserGroupInformation getTokenUGI(ServletContext context,
+     return ugi;
+   }
+ 
++  // honor the X-Forwarded-For header set by a configured set of trusted
++  // proxy servers.  allows audit logging and proxy user checks to work
++  // via an http proxy
++  static String getRemoteAddr(HttpServletRequest request) {
++    String remoteAddr = request.getRemoteAddr();
++    String proxyHeader = request.getHeader("X-Forwarded-For");
++    if (proxyHeader != null && ProxyUsers.isProxyServer(remoteAddr)) {
++      final String clientAddr = proxyHeader.split(",")[0].trim();
++      if (!clientAddr.isEmpty()) {
++        remoteAddr = clientAddr;
++      }
++    }
++    return remoteAddr;
++  }
++
++
+   /**
+    * Expected user name should be a short name.
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
+index 5bb388e..de56373 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
+@@ -63,6 +63,7 @@
+ import org.apache.hadoop.security.token.Token;
+ import org.apache.hadoop.security.token.TokenIdentifier;
+ import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager;
++import org.junit.BeforeClass;
+ import org.junit.Test;
+ import org.mockito.ArgumentCaptor;
+ import org.mockito.Mockito;
+@@ -76,6 +77,13 @@
+   private Configuration conf = new HdfsConfiguration();
+   private String jspWriterOutput = "";
+ 
++  // allow user with TGT to run tests
++  @BeforeClass
++  public static void setupKerb() {
++    System.setProperty("java.security.krb5.kdc", "");
++    System.setProperty("java.security.krb5.realm", "NONE");
++  }
++
+   public static class DummySecretManager extends
+       AbstractDelegationTokenSecretManager<DelegationTokenIdentifier> {
+ 
+@@ -627,5 +635,49 @@ public void testAuthority(){
+         50020, 50075, 50076, 50010);
+     assertNotNull(JspHelper.Url.authority("http", dnWithEmptyIp));
+   }
++
++  private static String clientAddr = "1.1.1.1";
++  private static String chainedClientAddr = clientAddr+", 2.2.2.2";
++  private static String proxyAddr = "3.3.3.3";
++
++  @Test
++  public void testRemoteAddr() {
++    assertEquals(clientAddr, getRemoteAddr(clientAddr, null, false));
++  }
++
++  @Test
++  public void testRemoteAddrWithUntrustedProxy() {
++    assertEquals(proxyAddr, getRemoteAddr(clientAddr, proxyAddr, false));
++  }
++
++  @Test
++  public void testRemoteAddrWithTrustedProxy() {
++    assertEquals(clientAddr, getRemoteAddr(clientAddr, proxyAddr, true));
++    assertEquals(clientAddr, getRemoteAddr(chainedClientAddr, proxyAddr, true));
++  }
++
++  @Test
++  public void testRemoteAddrWithTrustedProxyAndEmptyClient() {
++    assertEquals(proxyAddr, getRemoteAddr(null, proxyAddr, true));
++    assertEquals(proxyAddr, getRemoteAddr("", proxyAddr, true));
++  }
++
++  private String getRemoteAddr(String clientAddr, String proxyAddr, boolean trusted) {
++    HttpServletRequest req = mock(HttpServletRequest.class);
++    when(req.getRemoteAddr()).thenReturn("1.2.3.4");
++
++    Configuration conf = new Configuration();
++    if (proxyAddr == null) {
++      when(req.getRemoteAddr()).thenReturn(clientAddr);
++    } else {
++      when(req.getRemoteAddr()).thenReturn(proxyAddr);
++      when(req.getHeader("X-Forwarded-For")).thenReturn(clientAddr);
++      if (trusted) {
++        conf.set(ProxyUsers.CONF_HADOOP_PROXYSERVERS, proxyAddr);
++      }
++    }
++    ProxyUsers.refreshSuperUserGroupsConfiguration(conf);
++    return JspHelper.getRemoteAddr(req);
++  }
+ }
+ 
+-- 
+1.7.0.4
+

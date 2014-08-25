@@ -1,0 +1,321 @@
+From ddfd6edc48f8747a17dcb985942f10f70fb6532f Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Thu, 20 Feb 2014 03:21:26 +0000
+Subject: [PATCH 458/795] HDFS-5742. Merging r1570067 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570068 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 85b0c116ffb5b632139749da4a3971cf99305e94)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/FSImage.java       |    1 +
+ .../org/apache/hadoop/hdfs/DataNodeCluster.java    |   36 ++++++++++++++-----
+ .../org/apache/hadoop/hdfs/MiniDFSCluster.java     |   39 +++++++-------------
+ .../hdfs/TestInjectionForSimulatedStorage.java     |    2 +-
+ .../hadoop/hdfs/server/balancer/TestBalancer.java  |    2 +-
+ .../server/datanode/TestReadOnlySharedStorage.java |    2 +-
+ .../hdfs/server/namenode/CreateEditsLog.java       |   14 +++++--
+ 7 files changed, 54 insertions(+), 42 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index bf6dd45..2252653 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -143,6 +143,7 @@ void format(FSNamesystem fsn, String clusterId) throws IOException {
+         "FSImage.format should be called with an uninitialized namesystem, has " +
+         fileCount + " files");
+     NamespaceInfo ns = NNStorage.newNamespaceInfo();
++    LOG.info("Allocated new BlockPoolId: " + ns.getBlockPoolID());
+     ns.clusterID = clusterId;
+     
+     storage.format(ns);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DataNodeCluster.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DataNodeCluster.java
+index f3b3ad2..01d2c85 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DataNodeCluster.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DataNodeCluster.java
+@@ -68,9 +68,10 @@
+   static String dataNodeDirs = DATANODE_DIRS;
+   static final String USAGE =
+     "Usage: datanodecluster " +
+-    " -n <numDataNodes> " + 
++    " -n <numDataNodes> " +
++    " -bpid <bpid>" +
+     " [-racks <numRacks>] " +
+-    " [-simulated] " +
++    " [-simulated [<simulatedCapacityPerDn>]] " +
+     " [-inject startingBlockId numBlocksPerDN]" +
+     " [-r replicationFactorForInjectedBlocks]" +
+     " [-d dataNodeDirs]\n" + 
+@@ -91,7 +92,7 @@ static void printUsageExit(String err) {
+     printUsageExit();
+   }
+   
+-  public static void main(String[] args) {
++  public static void main(String[] args) throws InterruptedException {
+     int numDataNodes = 0;
+     int numRacks = 0;
+     boolean inject = false;
+@@ -99,6 +100,8 @@ public static void main(String[] args) {
+     int numBlocksPerDNtoInject = 0;
+     int replication = 1;
+     boolean checkDataNodeAddrConfig = false;
++    long simulatedCapacityPerDn = SimulatedFSDataset.DEFAULT_CAPACITY;
++    String bpid = null;
+     
+     Configuration conf = new HdfsConfiguration();
+ 
+@@ -115,7 +118,7 @@ public static void main(String[] args) {
+         numRacks = Integer.parseInt(args[i]);
+       } else if (args[i].equals("-r")) {
+         if (++i >= args.length || args[i].startsWith("-")) {
+-          printUsageExit("Missing replicaiton factor");
++          printUsageExit("Missing replication factor");
+         }
+         replication = Integer.parseInt(args[i]);
+       } else if (args[i].equals("-d")) {
+@@ -125,6 +128,14 @@ public static void main(String[] args) {
+         dataNodeDirs = args[i];
+       } else if (args[i].equals("-simulated")) {
+         SimulatedFSDataset.setFactory(conf);
++        if ((i+1) < args.length && !args[i+1].startsWith("-")) {
++          simulatedCapacityPerDn = Long.parseLong(args[++i]);
++        }
++      } else if (args[i].equals("-bpid")) {
++        if (++i >= args.length || args[i].startsWith("-")) {
++          printUsageExit("Missing blockpoolid parameter");
++        }
++        bpid = args[i];
+       } else if (args[i].equals("-inject")) {
+         if (!FsDatasetSpi.Factory.getFactory(conf).isSimulated()) {
+           System.out.print("-inject is valid only for simulated");
+@@ -153,6 +164,9 @@ public static void main(String[] args) {
+       printUsageExit("Replication must be less than or equal to numDataNodes");
+       
+     }
++    if (bpid == null) {
++      printUsageExit("BlockPoolId must be provided");
++    }
+     String nameNodeAdr = FileSystem.getDefaultUri(conf).getAuthority();
+     if (nameNodeAdr == null) {
+       System.out.println("No name node address and port in config");
+@@ -162,9 +176,14 @@ public static void main(String[] args) {
+     System.out.println("Starting " + numDataNodes + 
+           (simulated ? " Simulated " : " ") +
+           " Data Nodes that will connect to Name Node at " + nameNodeAdr);
+-  
++
+     System.setProperty("test.build.data", dataNodeDirs);
+ 
++    long simulatedCapacities[] = new long[numDataNodes];
++    for (int i = 0; i < numDataNodes; ++i) {
++      simulatedCapacities[i] = simulatedCapacityPerDn;
++    }
++
+     MiniDFSCluster mc = new MiniDFSCluster();
+     try {
+       mc.formatDataNodeDirs();
+@@ -182,13 +201,12 @@ public static void main(String[] args) {
+         //rack4DataNode[i] = racks[i%numRacks];
+         rack4DataNode[i] = rackPrefix + "-" + i%numRacks;
+         System.out.println("Data Node " + i + " using " + rack4DataNode[i]);
+-        
+-        
+       }
+     }
+     try {
+       mc.startDataNodes(conf, numDataNodes, true, StartupOption.REGULAR,
+-          rack4DataNode, null, null, false, checkDataNodeAddrConfig);
++          rack4DataNode, null, simulatedCapacities, false, checkDataNodeAddrConfig);
++      Thread.sleep(10*1000);   // Give the DN some time to connect to NN and init storage directories.
+       if (inject) {
+         long blockSize = 10;
+         System.out.println("Injecting " + numBlocksPerDNtoInject +
+@@ -203,7 +221,7 @@ public static void main(String[] args) {
+           }
+           for (int i = 1; i <= replication; ++i) { 
+             // inject blocks for dn_i into dn_i and replica in dn_i's neighbors 
+-            mc.injectBlocks((i_dn + i- 1)% numDataNodes, Arrays.asList(blocks));
++            mc.injectBlocks((i_dn + i- 1)% numDataNodes, Arrays.asList(blocks), bpid);
+             System.out.println("Injecting blocks of dn " + i_dn  + " into dn" + 
+                 ((i_dn + i- 1)% numDataNodes));
+           }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
+index a3e3d31..fb66e64 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
+@@ -2072,17 +2072,19 @@ public void formatDataNodeDirs() throws IOException {
+     return result;
+   }
+   
+-  
+   /**
+    * This method is valid only if the data nodes have simulated data
+    * @param dataNodeIndex - data node i which to inject - the index is same as for getDataNodes()
+    * @param blocksToInject - the blocks
++   * @param bpid - (optional) the block pool id to use for injecting blocks.
++   *             If not supplied then it is queried from the in-process NameNode.
+    * @throws IOException
+    *              if not simulatedFSDataset
+    *             if any of blocks already exist in the data node
+    *   
+    */
+-  public void injectBlocks(int dataNodeIndex, Iterable<Block> blocksToInject) throws IOException {
++  public void injectBlocks(int dataNodeIndex,
++      Iterable<Block> blocksToInject, String bpid) throws IOException {
+     if (dataNodeIndex < 0 || dataNodeIndex > dataNodes.size()) {
+       throw new IndexOutOfBoundsException();
+     }
+@@ -2091,7 +2093,9 @@ public void injectBlocks(int dataNodeIndex, Iterable<Block> blocksToInject) thro
+     if (!(dataSet instanceof SimulatedFSDataset)) {
+       throw new IOException("injectBlocks is valid only for SimilatedFSDataset");
+     }
+-    String bpid = getNamesystem().getBlockPoolId();
++    if (bpid == null) {
++      bpid = getNamesystem().getBlockPoolId();
++    }
+     SimulatedFSDataset sdataset = (SimulatedFSDataset) dataSet;
+     sdataset.injectBlocks(bpid, blocksToInject);
+     dataNodes.get(dataNodeIndex).datanode.scheduleAllBlockReport(0);
+@@ -2117,25 +2121,6 @@ public void injectBlocks(int nameNodeIndex, int dataNodeIndex,
+   }
+ 
+   /**
+-   * This method is valid only if the data nodes have simulated data
+-   * @param blocksToInject - blocksToInject[] is indexed in the same order as the list 
+-   *             of datanodes returned by getDataNodes()
+-   * @throws IOException
+-   *             if not simulatedFSDataset
+-   *             if any of blocks already exist in the data nodes
+-   *             Note the rest of the blocks are not injected.
+-   */
+-  public void injectBlocks(Iterable<Block>[] blocksToInject)
+-      throws IOException {
+-    if (blocksToInject.length >  dataNodes.size()) {
+-      throw new IndexOutOfBoundsException();
+-    }
+-    for (int i = 0; i < blocksToInject.length; ++i) {
+-     injectBlocks(i, blocksToInject[i]);
+-    }
+-  }
+-
+-  /**
+    * Set the softLimit and hardLimit of client lease periods
+    */
+   public void setLeasePeriod(long soft, long hard) {
+@@ -2181,11 +2166,13 @@ public String getDataDirectory() {
+    * @return the base directory for this instance.
+    */
+   protected String determineDfsBaseDir() {
+-    String dfsdir = conf.get(HDFS_MINIDFS_BASEDIR, null);
+-    if (dfsdir == null) {
+-      dfsdir = getBaseDirectory();
++    if (conf != null) {
++      final String dfsdir = conf.get(HDFS_MINIDFS_BASEDIR, null);
++      if (dfsdir != null) {
++        return dfsdir;
++      }
+     }
+-    return dfsdir;
++    return getBaseDirectory();
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestInjectionForSimulatedStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestInjectionForSimulatedStorage.java
+index bda6b51..15b2e60 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestInjectionForSimulatedStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestInjectionForSimulatedStorage.java
+@@ -186,7 +186,7 @@ public void testInjection() throws IOException {
+       // Insert all the blocks in the first data node
+       
+       LOG.info("Inserting " + uniqueBlocks.size() + " blocks");
+-      cluster.injectBlocks(0, uniqueBlocks);
++      cluster.injectBlocks(0, uniqueBlocks, null);
+       
+       dfsClient = new DFSClient(new InetSocketAddress("localhost",
+                                   cluster.getNameNodePort()),
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+index 2342b37..a463101 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+@@ -209,7 +209,7 @@ private void testUnevenDistribution(Configuration conf,
+         ClientProtocol.class).getProxy();
+ 
+     for(int i = 0; i < blocksDN.length; i++)
+-      cluster.injectBlocks(i, Arrays.asList(blocksDN[i]));
++      cluster.injectBlocks(i, Arrays.asList(blocksDN[i]), null);
+ 
+     final long totalCapacity = sum(capacities);
+     runBalancer(conf, totalUsedSpace, totalCapacity);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestReadOnlySharedStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestReadOnlySharedStorage.java
+index 4c2b479..3815af5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestReadOnlySharedStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestReadOnlySharedStorage.java
+@@ -141,7 +141,7 @@ public void setup() throws IOException, InterruptedException {
+     validateNumberReplicas(1);
+     
+     // Inject the block into the datanode with READ_ONLY_SHARED storage 
+-    cluster.injectBlocks(RO_NODE_INDEX, Collections.singleton(block));
++    cluster.injectBlocks(0, RO_NODE_INDEX, Collections.singleton(block));
+     
+     // There should now be 2 *locations* for the block
+     // Must wait until the NameNode has processed the block report for the injected blocks
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
+index 3358c1a..db18e27 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
+@@ -57,7 +57,7 @@
+       GenerationStamp.LAST_RESERVED_STAMP;
+   
+   static void addFiles(FSEditLog editLog, int numFiles, short replication, 
+-                         int blocksPerFile, long startingBlockId,
++                         int blocksPerFile, long startingBlockId, long blockSize,
+                          FileNameGenerator nameGenerator) {
+     
+     PermissionStatus p = new PermissionStatus("joeDoe", "people",
+@@ -66,7 +66,6 @@ static void addFiles(FSEditLog editLog, int numFiles, short replication,
+     INodeDirectory dirInode = new INodeDirectory(inodeId.nextValue(), null, p,
+       0L);
+     editLog.logMkDir(BASE_PATH, dirInode);
+-    long blockSize = 10;
+     BlockInfo[] blocks = new BlockInfo[blocksPerFile];
+     for (int iB = 0; iB < blocksPerFile; ++iB) {
+       blocks[iB] = 
+@@ -144,6 +143,7 @@ public static void main(String[] args)
+     int numFiles = 0;
+     short replication = 1;
+     int numBlocksPerFile = 0;
++    long blockSize = 10;
+ 
+     if (args.length == 0) {
+       printUsageExit();
+@@ -164,10 +164,16 @@ public static void main(String[] args)
+        if (numFiles <=0 || numBlocksPerFile <= 0) {
+          printUsageExit("numFiles and numBlocksPerFile most be greater than 0");
+        }
++      } else if (args[i].equals("-l")) {
++        if (i + 1 >= args.length) {
++          printUsageExit(
++              "Missing block length");
++        }
++        blockSize = Long.parseLong(args[++i]);
+       } else if (args[i].equals("-r") || args[i+1].startsWith("-")) {
+         if (i + 1 >= args.length) {
+           printUsageExit(
+-              "Missing num files, starting block and/or number of blocks");
++              "Missing replication factor");
+         }
+         replication = Short.parseShort(args[++i]);
+       } else if (args[i].equals("-d")) {
+@@ -202,7 +208,7 @@ public static void main(String[] args)
+     FSEditLog editLog = FSImageTestUtil.createStandaloneEditLog(editsLogDir);
+     editLog.openForWrite();
+     addFiles(editLog, numFiles, replication, numBlocksPerFile, startingBlockId,
+-             nameGenerator);
++             blockSize, nameGenerator);
+     editLog.logSync();
+     editLog.close();
+   }
+-- 
+1.7.0.4
+

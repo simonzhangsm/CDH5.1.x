@@ -1,0 +1,37 @@
+From 2e72b9955d2b6c7b023dc6b6bc30f1648d4f145d Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Fri, 30 May 2014 15:32:53 +0000
+Subject: [PATCH 638/795] YARN-2010. Document yarn.resourcemanager.zk-auth and its scope. (Robert Kanter via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1598637 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fdbbcd0e7d2a4615af296339de493c2488a7fb11)
+---
+ .../src/main/resources/yarn-default.xml            |   12 ++++++++++++
+ 1 files changed, 12 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+index b524e1c..211593c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+@@ -370,6 +370,18 @@
+   </property>
+ 
+   <property>
++    <description>
++        Specify the auths to be used for the ACL's specified in both the
++        yarn.resourcemanager.zk-acl and
++        yarn.resourcemanager.zk-state-store.root-node.acl properties.  This
++        takes a comma-separated list of authentication mechanisms, each of the
++        form 'scheme:auth' (the same syntax used for the 'addAuth' command in
++        the ZK CLI).
++    </description>
++    <name>yarn.resourcemanager.zk-auth</name>
++  </property>
++
++  <property>
+     <description>URI pointing to the location of the FileSystem path where
+     RM state will be stored. This must be supplied when using
+     org.apache.hadoop.yarn.server.resourcemanager.recovery.FileSystemRMStateStore
+-- 
+1.7.0.4
+

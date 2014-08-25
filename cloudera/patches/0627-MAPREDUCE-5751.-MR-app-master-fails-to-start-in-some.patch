@@ -1,0 +1,39 @@
+From ba894c2d0654a97a41dc5b37b41a6c24426602c7 Mon Sep 17 00:00:00 2001
+From: Jason Darrell Lowe <jlowe@apache.org>
+Date: Fri, 14 Mar 2014 14:47:37 +0000
+Subject: [PATCH 627/795] MAPREDUCE-5751. MR app master fails to start in some cases if mapreduce.job.classloader is true. Contributed by Sangjin Lee
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1577555 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 15043808a75554b14e188a1cbb978e4a16c425ea)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../hadoop/mapreduce/v2/app/MRAppMaster.java       |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
+index ac69eb0..30f5973 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
+@@ -1066,6 +1066,8 @@ protected void serviceStart() throws Exception {
+     //start all the components
+     super.serviceStart();
+ 
++    // set job classloader if configured
++    MRApps.setJobClassLoader(getConfig());
+     // All components have started, start the job.
+     startJobs();
+   }
+@@ -1376,8 +1378,6 @@ public static void main(String[] args) {
+       // SIGTERM I have a chance to write out the job history. I'll be closing
+       // the objects myself.
+       conf.setBoolean("fs.automatic.close", false);
+-      // set job classloader if configured
+-      MRApps.setJobClassLoader(conf);
+       initAndStartAppMaster(appMaster, conf, jobUserName);
+     } catch (Throwable t) {
+       LOG.fatal("Error starting MRAppMaster", t);
+-- 
+1.7.0.4
+

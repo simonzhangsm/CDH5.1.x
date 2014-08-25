@@ -1,0 +1,29 @@
+From 4896a396b6dc990d97f216c1bbeca5b74e592b8f Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Thu, 6 Mar 2014 22:54:36 +0000
+Subject: [PATCH 697/795] HDFS-6084. DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_DEFAULT is not updated with latest block report interval of 6 hrs. Contributed by Vinayakumar B.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1575086 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 720798c..322c634 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -417,7 +417,7 @@
+   public static final String  DFS_DF_INTERVAL_KEY = "dfs.df.interval";
+   public static final int     DFS_DF_INTERVAL_DEFAULT = 60000;
+   public static final String  DFS_BLOCKREPORT_INTERVAL_MSEC_KEY = "dfs.blockreport.intervalMsec";
+-  public static final long    DFS_BLOCKREPORT_INTERVAL_MSEC_DEFAULT = 60 * 60 * 1000;
++  public static final long    DFS_BLOCKREPORT_INTERVAL_MSEC_DEFAULT = 6 * 60 * 60 * 1000;
+   public static final String  DFS_BLOCKREPORT_INITIAL_DELAY_KEY = "dfs.blockreport.initialDelay";
+   public static final int     DFS_BLOCKREPORT_INITIAL_DELAY_DEFAULT = 0;
+   public static final String  DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY = "dfs.blockreport.split.threshold";
+-- 
+1.7.0.4
+

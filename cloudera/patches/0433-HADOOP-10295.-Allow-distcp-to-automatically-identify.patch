@@ -1,0 +1,794 @@
+From 253757c27e3db2012fc43f4affe95c8752023054 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Thu, 30 Jan 2014 23:53:23 +0000
+Subject: [PATCH 433/795] HADOOP-10295. Allow distcp to automatically identify the checksum type of source files and use it for the target. Contributed by Jing Zhao and Laurent Goujon.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1563019 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 5133e9bf7a880c95342b07d78ec7991c6d3b77a2)
+---
+ .../java/org/apache/hadoop/fs/FileChecksum.java    |   13 ++-
+ .../apache/hadoop/fs/MD5MD5CRC32FileChecksum.java  |   15 ++-
+ .../apache/hadoop/tools/DistCpOptionSwitch.java    |   15 ++-
+ .../org/apache/hadoop/tools/DistCpOptions.java     |    2 +-
+ .../org/apache/hadoop/tools/OptionsParser.java     |    6 +-
+ .../org/apache/hadoop/tools/mapred/CopyMapper.java |    6 +-
+ .../tools/mapred/RetriableFileCopyCommand.java     |  107 ++++++++++++-----
+ .../org/apache/hadoop/tools/util/DistCpUtils.java  |   14 ++-
+ .../org/apache/hadoop/tools/TestOptionsParser.java |   35 +++++-
+ .../apache/hadoop/tools/mapred/TestCopyMapper.java |  122 +++++++++++++++-----
+ 10 files changed, 239 insertions(+), 96 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileChecksum.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileChecksum.java
+index 149a3e3..62f1a9b 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileChecksum.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileChecksum.java
+@@ -21,21 +21,26 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
++import org.apache.hadoop.fs.Options.ChecksumOpt;
+ import org.apache.hadoop.io.Writable;
+ 
+ /** An abstract class representing file checksums for files. */
+ @InterfaceAudience.Public
+ @InterfaceStability.Stable
+ public abstract class FileChecksum implements Writable {
+-  /** The checksum algorithm name */ 
++  /** The checksum algorithm name */
+   public abstract String getAlgorithmName();
+ 
+-  /** The length of the checksum in bytes */ 
++  /** The length of the checksum in bytes */
+   public abstract int getLength();
+ 
+-  /** The value of the checksum in bytes */ 
++  /** The value of the checksum in bytes */
+   public abstract byte[] getBytes();
+ 
++  public ChecksumOpt getChecksumOpt() {
++    return null;
++  }
++
+   /** Return true if both the algorithms and the values are the same. */
+   @Override
+   public boolean equals(Object other) {
+@@ -50,7 +55,7 @@ public boolean equals(Object other) {
+     return this.getAlgorithmName().equals(that.getAlgorithmName())
+       && Arrays.equals(this.getBytes(), that.getBytes());
+   }
+-  
++
+   @Override
+   public int hashCode() {
+     return getAlgorithmName().hashCode() ^ Arrays.hashCode(getBytes());
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/MD5MD5CRC32FileChecksum.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/MD5MD5CRC32FileChecksum.java
+index 5bddb96..5f1fc01 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/MD5MD5CRC32FileChecksum.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/MD5MD5CRC32FileChecksum.java
+@@ -56,7 +56,7 @@ public MD5MD5CRC32FileChecksum(int bytesPerCRC, long crcPerBlock, MD5Hash md5) {
+     this.crcPerBlock = crcPerBlock;
+     this.md5 = md5;
+   }
+-  
++
+   @Override
+   public String getAlgorithmName() {
+     return "MD5-of-" + crcPerBlock + "MD5-of-" + bytesPerCRC +
+@@ -73,10 +73,10 @@ public String getAlgorithmName() {
+ 
+     throw new IOException("Unknown checksum type in " + algorithm);
+   }
+- 
++
+   @Override
+   public int getLength() {return LENGTH;}
+- 
++
+   @Override
+   public byte[] getBytes() {
+     return WritableUtils.toByteArray(this);
+@@ -88,6 +88,7 @@ public String getAlgorithmName() {
+     return DataChecksum.Type.CRC32;
+   }
+ 
++  @Override
+   public ChecksumOpt getChecksumOpt() {
+     return new ChecksumOpt(getCrcType(), bytesPerCRC);
+   }
+@@ -98,12 +99,12 @@ public void readFields(DataInput in) throws IOException {
+     crcPerBlock = in.readLong();
+     md5 = MD5Hash.read(in);
+   }
+- 
++
+   @Override
+   public void write(DataOutput out) throws IOException {
+     out.writeInt(bytesPerCRC);
+     out.writeLong(crcPerBlock);
+-    md5.write(out);    
++    md5.write(out);
+   }
+ 
+   /** Write that object to xml output. */
+@@ -157,11 +158,11 @@ public static MD5MD5CRC32FileChecksum valueOf(Attributes attrs
+       }
+     } catch (Exception e) {
+       throw new SAXException("Invalid attributes: bytesPerCRC=" + bytesPerCRC
+-          + ", crcPerBlock=" + crcPerBlock + ", crcType=" + crcType 
++          + ", crcPerBlock=" + crcPerBlock + ", crcType=" + crcType
+           + ", md5=" + md5, e);
+     }
+   }
+- 
++
+   @Override
+   public String toString() {
+     return getAlgorithmName() + ":" + md5;
+diff --git a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptionSwitch.java b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptionSwitch.java
+index 6cecf06..c3630cc 100644
+--- a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptionSwitch.java
++++ b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptionSwitch.java
+@@ -37,15 +37,16 @@
+   /**
+    * Preserves status of file/path in the target.
+    * Default behavior with -p, is to preserve replication,
+-   * block size, user, group and permission on the target file
++   * block size, user, group, permission and checksum type on the target file.
++   * Note that when preserving checksum type, block size is also preserved.
+    *
+-   * If any of the optional switches are present among rbugp, then
+-   * only the corresponding file attribute is preserved
++   * If any of the optional switches are present among rbugpc, then
++   * only the corresponding file attribute is preserved.
+    *
+    */
+   PRESERVE_STATUS(DistCpConstants.CONF_LABEL_PRESERVE_STATUS,
+-      new Option("p", true, "preserve status (rbugp)" +
+-          "(replication, block-size, user, group, permission)")),
++      new Option("p", true, "preserve status (rbugpc)" +
++          "(replication, block-size, user, group, permission, checksum-type)")),
+ 
+   /**
+    * Update target location by copying only files that are missing
+@@ -53,7 +54,7 @@
+    * across source and target. Typically used with DELETE_MISSING
+    * Incompatible with ATOMIC_COMMIT
+    */
+-  SYNC_FOLDERS(DistCpConstants.CONF_LABEL_SYNC_FOLDERS, 
++  SYNC_FOLDERS(DistCpConstants.CONF_LABEL_SYNC_FOLDERS,
+       new Option("update", false, "Update target, copying only missing" +
+           "files or directories")),
+ 
+@@ -80,7 +81,7 @@
+    * Max number of maps to use during copy. DistCp will split work
+    * as equally as possible among these maps
+    */
+-  MAX_MAPS(DistCpConstants.CONF_LABEL_MAX_MAPS, 
++  MAX_MAPS(DistCpConstants.CONF_LABEL_MAX_MAPS,
+       new Option("m", true, "Max number of concurrent maps to use for copy")),
+ 
+   /**
+diff --git a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptions.java b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptions.java
+index f605767..b85dafa 100644
+--- a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptions.java
++++ b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/DistCpOptions.java
+@@ -61,7 +61,7 @@
+   private Path targetPath;
+ 
+   public static enum FileAttribute{
+-    REPLICATION, BLOCKSIZE, USER, GROUP, PERMISSION;
++    REPLICATION, BLOCKSIZE, USER, GROUP, PERMISSION, CHECKSUMTYPE;
+ 
+     public static FileAttribute getAttribute(char symbol) {
+       for (FileAttribute attribute : values()) {
+diff --git a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/OptionsParser.java b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/OptionsParser.java
+index 79487e5..d36311d 100644
+--- a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/OptionsParser.java
++++ b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/OptionsParser.java
+@@ -34,7 +34,7 @@
+ 
+   private static final Log LOG = LogFactory.getLog(OptionsParser.class);
+ 
+-  private static final Options cliOptions = new Options();      
++  private static final Options cliOptions = new Options();
+ 
+   static {
+     for (DistCpOptionSwitch option : DistCpOptionSwitch.values()) {
+@@ -50,7 +50,7 @@
+     protected String[] flatten(Options options, String[] arguments, boolean stopAtNonOption) {
+       for (int index = 0; index < arguments.length; index++) {
+         if (arguments[index].equals("-" + DistCpOptionSwitch.PRESERVE_STATUS.getSwitch())) {
+-          arguments[index] = "-prbugp";
++          arguments[index] = "-prbugpc";
+         }
+       }
+       return super.flatten(options, arguments, stopAtNonOption);
+@@ -125,7 +125,7 @@ public static DistCpOptions parse(String args[]) throws IllegalArgumentException
+         option.setAtomicWorkPath(new Path(workPath));
+       }
+     } else if (command.hasOption(DistCpOptionSwitch.WORK_PATH.getSwitch())) {
+-      throw new IllegalArgumentException("-tmp work-path can only be specified along with -atomic");      
++      throw new IllegalArgumentException("-tmp work-path can only be specified along with -atomic");
+     }
+ 
+     if (command.hasOption(DistCpOptionSwitch.LOG_PATH.getSwitch())) {
+diff --git a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/mapred/CopyMapper.java b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/mapred/CopyMapper.java
+index 7fe0b99..9386f6e 100644
+--- a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/mapred/CopyMapper.java
++++ b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/mapred/CopyMapper.java
+@@ -111,7 +111,7 @@ public void setup(Context context) throws IOException, InterruptedException {
+    */
+   private void initializeSSLConf(Context context) throws IOException {
+     LOG.info("Initializing SSL configuration");
+-    
++
+     String workDir = conf.get(JobContext.JOB_LOCAL_DIR) + "/work";
+     Path[] cacheFiles = context.getLocalCacheFiles();
+ 
+@@ -294,7 +294,7 @@ private void handleFailures(IOException exception,
+             RetriableFileCopyCommand.CopyReadException) {
+       incrementCounter(context, Counter.FAIL, 1);
+       incrementCounter(context, Counter.BYTESFAILED, sourceFileStatus.getLen());
+-      context.write(null, new Text("FAIL: " + sourceFileStatus.getPath() + " - " + 
++      context.write(null, new Text("FAIL: " + sourceFileStatus.getPath() + " - " +
+           StringUtils.stringifyException(exception)));
+     }
+     else
+@@ -322,7 +322,7 @@ private boolean mustUpdate(FileSystem sourceFS, FileStatus source, Path target)
+                    targetFileStatus.getLen() != source.getLen()
+                 || (!skipCrc &&
+                        !DistCpUtils.checksumsAreEqual(sourceFS,
+-                                          source.getPath(), targetFS, target))
++                          source.getPath(), null, targetFS, target))
+                 || (source.getBlockSize() != targetFileStatus.getBlockSize() &&
+                       preserve.contains(FileAttribute.BLOCKSIZE))
+                );
+diff --git a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/mapred/RetriableFileCopyCommand.java b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/mapred/RetriableFileCopyCommand.java
+index 580229c..1b73526 100644
+--- a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/mapred/RetriableFileCopyCommand.java
++++ b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/mapred/RetriableFileCopyCommand.java
+@@ -18,23 +18,33 @@
+ 
+ package org.apache.hadoop.tools.mapred;
+ 
+-import org.apache.hadoop.tools.util.RetriableCommand;
+-import org.apache.hadoop.tools.util.ThrottledInputStream;
+-import org.apache.hadoop.tools.util.DistCpUtils;
+-import org.apache.hadoop.tools.DistCpOptions.*;
+-import org.apache.hadoop.tools.DistCpConstants;
+-import org.apache.hadoop.fs.*;
+-import org.apache.hadoop.mapreduce.Mapper;
+-import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.io.IOUtils;
++import java.io.BufferedInputStream;
++import java.io.BufferedOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.util.EnumSet;
++
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.CreateFlag;
++import org.apache.hadoop.fs.FileChecksum;
++import org.apache.hadoop.fs.FileStatus;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Options.ChecksumOpt;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.fs.permission.FsPermission;
++import org.apache.hadoop.io.IOUtils;
++import org.apache.hadoop.mapreduce.Mapper;
++import org.apache.hadoop.tools.DistCpConstants;
++import org.apache.hadoop.tools.DistCpOptions.FileAttribute;
++import org.apache.hadoop.tools.util.DistCpUtils;
++import org.apache.hadoop.tools.util.RetriableCommand;
++import org.apache.hadoop.tools.util.ThrottledInputStream;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ 
+-import java.io.*;
+-import java.util.EnumSet;
+-
+ /**
+  * This class extends RetriableCommand to implement the copy of files,
+  * with retries on failure.
+@@ -44,7 +54,7 @@
+   private static Log LOG = LogFactory.getLog(RetriableFileCopyCommand.class);
+   private static int BUFFER_SIZE = 8 * 1024;
+   private boolean skipCrc = false;
+-  
++
+   /**
+    * Constructor, taking a description of the action.
+    * @param description Verbose description of the copy operation.
+@@ -52,7 +62,7 @@
+   public RetriableFileCopyCommand(String description) {
+     super(description);
+   }
+- 
++
+   /**
+    * Create a RetriableFileCopyCommand.
+    *
+@@ -99,15 +109,21 @@ private long doCopy(FileStatus sourceFileStatus, Path target,
+         LOG.debug("Copying " + sourceFileStatus.getPath() + " to " + target);
+         LOG.debug("Tmp-file path: " + tmpTargetPath);
+       }
+-      FileSystem sourceFS = sourceFileStatus.getPath().getFileSystem(
+-              configuration);
++      final Path sourcePath = sourceFileStatus.getPath();
++      final FileSystem sourceFS = sourcePath.getFileSystem(configuration);
++      final FileChecksum sourceChecksum = fileAttributes
++          .contains(FileAttribute.CHECKSUMTYPE) ? sourceFS
++          .getFileChecksum(sourcePath) : null;
++
+       long bytesRead = copyToTmpFile(tmpTargetPath, targetFS, sourceFileStatus,
+-                                     context, fileAttributes);
++          context, fileAttributes, sourceChecksum);
+ 
+-      compareFileLengths(sourceFileStatus, tmpTargetPath, configuration, bytesRead);
++      compareFileLengths(sourceFileStatus, tmpTargetPath, configuration,
++          bytesRead);
+       //At this point, src&dest lengths are same. if length==0, we skip checksum
+       if ((bytesRead != 0) && (!skipCrc)) {
+-        compareCheckSums(sourceFS, sourceFileStatus.getPath(), targetFS, tmpTargetPath);
++        compareCheckSums(sourceFS, sourceFileStatus.getPath(), sourceChecksum,
++            targetFS, tmpTargetPath);
+       }
+       promoteTmpToTarget(tmpTargetPath, target, targetFS);
+       return bytesRead;
+@@ -118,14 +134,33 @@ private long doCopy(FileStatus sourceFileStatus, Path target,
+     }
+   }
+ 
++  /**
++   * @return the checksum spec of the source checksum if checksum type should be
++   *         preserved
++   */
++  private ChecksumOpt getChecksumOpt(EnumSet<FileAttribute> fileAttributes,
++      FileChecksum sourceChecksum) {
++    if (fileAttributes.contains(FileAttribute.CHECKSUMTYPE)
++        && sourceChecksum != null) {
++      return sourceChecksum.getChecksumOpt();
++    }
++    return null;
++  }
++
+   private long copyToTmpFile(Path tmpTargetPath, FileSystem targetFS,
+-                             FileStatus sourceFileStatus, Mapper.Context context,
+-                             EnumSet<FileAttribute> fileAttributes)
+-                             throws IOException {
+-    OutputStream outStream = new BufferedOutputStream(targetFS.create(
+-            tmpTargetPath, true, BUFFER_SIZE,
+-            getReplicationFactor(fileAttributes, sourceFileStatus, targetFS, tmpTargetPath),
+-            getBlockSize(fileAttributes, sourceFileStatus, targetFS, tmpTargetPath), context));
++      FileStatus sourceFileStatus, Mapper.Context context,
++      EnumSet<FileAttribute> fileAttributes, final FileChecksum sourceChecksum)
++      throws IOException {
++    FsPermission permission = FsPermission.getFileDefault().applyUMask(
++        FsPermission.getUMask(targetFS.getConf()));
++    OutputStream outStream = new BufferedOutputStream(
++        targetFS.create(tmpTargetPath, permission,
++            EnumSet.of(CreateFlag.CREATE, CreateFlag.OVERWRITE), BUFFER_SIZE,
++            getReplicationFactor(fileAttributes, sourceFileStatus, targetFS,
++                tmpTargetPath),
++            getBlockSize(fileAttributes, sourceFileStatus, targetFS,
++                tmpTargetPath),
++            context, getChecksumOpt(fileAttributes, sourceChecksum)));
+     return copyBytes(sourceFileStatus, outStream, BUFFER_SIZE, context);
+   }
+ 
+@@ -140,9 +175,10 @@ private void compareFileLengths(FileStatus sourceFileStatus, Path target,
+   }
+ 
+   private void compareCheckSums(FileSystem sourceFS, Path source,
+-                                FileSystem targetFS, Path target)
+-                                throws IOException {
+-    if (!DistCpUtils.checksumsAreEqual(sourceFS, source, targetFS, target)) {
++      FileChecksum sourceChecksum, FileSystem targetFS, Path target)
++      throws IOException {
++    if (!DistCpUtils.checksumsAreEqual(sourceFS, source, sourceChecksum,
++        targetFS, target)) {
+       StringBuilder errorMessage = new StringBuilder("Check-sum mismatch between ")
+           .append(source).append(" and ").append(target).append(".");
+       if (sourceFS.getFileStatus(source).getBlockSize() != targetFS.getFileStatus(target).getBlockSize()) {
+@@ -249,11 +285,18 @@ private static short getReplicationFactor(
+             sourceFile.getReplication() : targetFS.getDefaultReplication(tmpTargetPath);
+   }
+ 
++  /**
++   * @return the block size of the source file if we need to preserve either
++   *         the block size or the checksum type. Otherwise the default block
++   *         size of the target FS.
++   */
+   private static long getBlockSize(
+           EnumSet<FileAttribute> fileAttributes,
+           FileStatus sourceFile, FileSystem targetFS, Path tmpTargetPath) {
+-    return fileAttributes.contains(FileAttribute.BLOCKSIZE)?
+-            sourceFile.getBlockSize() : targetFS.getDefaultBlockSize(tmpTargetPath);
++    boolean preserve = fileAttributes.contains(FileAttribute.BLOCKSIZE)
++        || fileAttributes.contains(FileAttribute.CHECKSUMTYPE);
++    return preserve ? sourceFile.getBlockSize() : targetFS
++        .getDefaultBlockSize(tmpTargetPath);
+   }
+ 
+   /**
+@@ -261,7 +304,7 @@ private static long getBlockSize(
+    * failures from other kinds of IOExceptions.
+    * The failure to read from source is dealt with specially, in the CopyMapper.
+    * Such failures may be skipped if the DistCpOptions indicate so.
+-   * Write failures are intolerable, and amount to CopyMapper failure.  
++   * Write failures are intolerable, and amount to CopyMapper failure.
+    */
+   public static class CopyReadException extends IOException {
+     public CopyReadException(Throwable rootCause) {
+diff --git a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/util/DistCpUtils.java b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/util/DistCpUtils.java
+index 24c2c94..170e2ed 100644
+--- a/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/util/DistCpUtils.java
++++ b/hadoop-tools/hadoop-distcp/src/main/java/org/apache/hadoop/tools/util/DistCpUtils.java
+@@ -125,7 +125,7 @@ public static long getLong(Configuration configuration, String label) {
+    * @param sourceRootPath - Source root path
+    * @param childPath - Path for which relative path is required
+    * @return - Relative portion of the child path (always prefixed with /
+-   *           unless it is empty 
++   *           unless it is empty
+    */
+   public static String getRelativePath(Path sourceRootPath, Path childPath) {
+     String childPathString = childPath.toUri().getPath();
+@@ -277,9 +277,11 @@ public static String getStringDescriptionFor(long nBytes) {
+    * If checksums's can't be retrieved, it doesn't fail the test
+    * Only time the comparison would fail is when checksums are
+    * available and they don't match
+-   *                                  
++   *
+    * @param sourceFS FileSystem for the source path.
+    * @param source The source path.
++   * @param sourceChecksum The checksum of the source file. If it is null we
++   * still need to retrieve it through sourceFS.
+    * @param targetFS FileSystem for the target path.
+    * @param target The target path.
+    * @return If either checksum couldn't be retrieved, the function returns
+@@ -288,12 +290,12 @@ public static String getStringDescriptionFor(long nBytes) {
+    * @throws IOException if there's an exception while retrieving checksums.
+    */
+   public static boolean checksumsAreEqual(FileSystem sourceFS, Path source,
+-                                   FileSystem targetFS, Path target)
+-                                   throws IOException {
+-    FileChecksum sourceChecksum = null;
++      FileChecksum sourceChecksum, FileSystem targetFS, Path target)
++      throws IOException {
+     FileChecksum targetChecksum = null;
+     try {
+-      sourceChecksum = sourceFS.getFileChecksum(source);
++      sourceChecksum = sourceChecksum != null ? sourceChecksum : sourceFS
++          .getFileChecksum(source);
+       targetChecksum = targetFS.getFileChecksum(target);
+     } catch (IOException e) {
+       LOG.error("Unable to retrieve checksum for " + source + " or " + target, e);
+diff --git a/hadoop-tools/hadoop-distcp/src/test/java/org/apache/hadoop/tools/TestOptionsParser.java b/hadoop-tools/hadoop-distcp/src/test/java/org/apache/hadoop/tools/TestOptionsParser.java
+index fb6e292..90ae25b 100644
+--- a/hadoop-tools/hadoop-distcp/src/test/java/org/apache/hadoop/tools/TestOptionsParser.java
++++ b/hadoop-tools/hadoop-distcp/src/test/java/org/apache/hadoop/tools/TestOptionsParser.java
+@@ -110,7 +110,7 @@ public void testParsebandwidth() {
+         "hdfs://localhost:8020/target/"});
+     Assert.assertEquals(options.getMapBandwidth(), 11);
+   }
+-  
++
+   @Test(expected=IllegalArgumentException.class)
+   public void testParseNonPositiveBandwidth() {
+     OptionsParser.parse(new String[] {
+@@ -119,7 +119,7 @@ public void testParseNonPositiveBandwidth() {
+         "hdfs://localhost:8020/source/first",
+         "hdfs://localhost:8020/target/"});
+   }
+-  
++
+   @Test(expected=IllegalArgumentException.class)
+   public void testParseZeroBandwidth() {
+     OptionsParser.parse(new String[] {
+@@ -397,6 +397,7 @@ public void testPreserve() {
+     Assert.assertFalse(options.shouldPreserve(FileAttribute.PERMISSION));
+     Assert.assertFalse(options.shouldPreserve(FileAttribute.USER));
+     Assert.assertFalse(options.shouldPreserve(FileAttribute.GROUP));
++    Assert.assertFalse(options.shouldPreserve(FileAttribute.CHECKSUMTYPE));
+ 
+     options = OptionsParser.parse(new String[] {
+         "-p",
+@@ -408,6 +409,7 @@ public void testPreserve() {
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.PERMISSION));
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.USER));
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.GROUP));
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.CHECKSUMTYPE));
+ 
+     options = OptionsParser.parse(new String[] {
+         "-p",
+@@ -418,6 +420,7 @@ public void testPreserve() {
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.PERMISSION));
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.USER));
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.GROUP));
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.CHECKSUMTYPE));
+ 
+     options = OptionsParser.parse(new String[] {
+         "-pbr",
+@@ -429,6 +432,7 @@ public void testPreserve() {
+     Assert.assertFalse(options.shouldPreserve(FileAttribute.PERMISSION));
+     Assert.assertFalse(options.shouldPreserve(FileAttribute.USER));
+     Assert.assertFalse(options.shouldPreserve(FileAttribute.GROUP));
++    Assert.assertFalse(options.shouldPreserve(FileAttribute.CHECKSUMTYPE));
+ 
+     options = OptionsParser.parse(new String[] {
+         "-pbrgup",
+@@ -440,6 +444,31 @@ public void testPreserve() {
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.PERMISSION));
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.USER));
+     Assert.assertTrue(options.shouldPreserve(FileAttribute.GROUP));
++    Assert.assertFalse(options.shouldPreserve(FileAttribute.CHECKSUMTYPE));
++
++    options = OptionsParser.parse(new String[] {
++        "-pbrgupc",
++        "-f",
++        "hdfs://localhost:8020/source/first",
++        "hdfs://localhost:8020/target/"});
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.BLOCKSIZE));
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.REPLICATION));
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.PERMISSION));
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.USER));
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.GROUP));
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.CHECKSUMTYPE));
++
++    options = OptionsParser.parse(new String[] {
++        "-pc",
++        "-f",
++        "hdfs://localhost:8020/source/first",
++        "hdfs://localhost:8020/target/"});
++    Assert.assertFalse(options.shouldPreserve(FileAttribute.BLOCKSIZE));
++    Assert.assertFalse(options.shouldPreserve(FileAttribute.REPLICATION));
++    Assert.assertFalse(options.shouldPreserve(FileAttribute.PERMISSION));
++    Assert.assertFalse(options.shouldPreserve(FileAttribute.USER));
++    Assert.assertFalse(options.shouldPreserve(FileAttribute.GROUP));
++    Assert.assertTrue(options.shouldPreserve(FileAttribute.CHECKSUMTYPE));
+ 
+     options = OptionsParser.parse(new String[] {
+         "-p",
+@@ -452,7 +481,7 @@ public void testPreserve() {
+       attribIterator.next();
+       i++;
+     }
+-    Assert.assertEquals(i, 5);
++    Assert.assertEquals(i, 6);
+ 
+     try {
+       OptionsParser.parse(new String[] {
+diff --git a/hadoop-tools/hadoop-distcp/src/test/java/org/apache/hadoop/tools/mapred/TestCopyMapper.java b/hadoop-tools/hadoop-distcp/src/test/java/org/apache/hadoop/tools/mapred/TestCopyMapper.java
+index f05743f..9568e61 100644
+--- a/hadoop-tools/hadoop-distcp/src/test/java/org/apache/hadoop/tools/mapred/TestCopyMapper.java
++++ b/hadoop-tools/hadoop-distcp/src/test/java/org/apache/hadoop/tools/mapred/TestCopyMapper.java
+@@ -18,18 +18,28 @@
+ 
+ package org.apache.hadoop.tools.mapred;
+ 
++import java.io.DataOutputStream;
++import java.io.IOException;
++import java.io.OutputStream;
++import java.security.PrivilegedAction;
++import java.util.ArrayList;
++import java.util.EnumSet;
++import java.util.List;
++
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.CreateFlag;
+ import org.apache.hadoop.fs.FileStatus;
+ import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Options.ChecksumOpt;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.fs.permission.FsAction;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.io.Text;
+-import org.apache.hadoop.mapreduce.*;
++import org.apache.hadoop.mapreduce.Mapper;
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.tools.DistCpConstants;
+@@ -37,23 +47,17 @@
+ import org.apache.hadoop.tools.DistCpOptions;
+ import org.apache.hadoop.tools.StubContext;
+ import org.apache.hadoop.tools.util.DistCpUtils;
++import org.apache.hadoop.util.DataChecksum;
+ import org.junit.Assert;
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+ 
+-import java.io.DataOutputStream;
+-import java.io.IOException;
+-import java.io.OutputStream;
+-import java.security.PrivilegedAction;
+-import java.util.ArrayList;
+-import java.util.EnumSet;
+-import java.util.List;
+-
+ public class TestCopyMapper {
+   private static final Log LOG = LogFactory.getLog(TestCopyMapper.class);
+   private static List<Path> pathList = new ArrayList<Path>();
+   private static int nFiles = 0;
+   private static final int DEFAULT_FILE_SIZE = 1024;
++  private static final long NON_DEFAULT_BLOCK_SIZE = 4096;
+ 
+   private static MiniDFSCluster cluster;
+ 
+@@ -119,12 +123,27 @@ private static void createSourceDataWithDifferentBlockSize() throws Exception {
+     mkdirs(SOURCE_PATH + "/2/3/4");
+     mkdirs(SOURCE_PATH + "/2/3");
+     mkdirs(SOURCE_PATH + "/5");
+-    touchFile(SOURCE_PATH + "/5/6", true);
++    touchFile(SOURCE_PATH + "/5/6", true, null);
+     mkdirs(SOURCE_PATH + "/7");
+     mkdirs(SOURCE_PATH + "/7/8");
+     touchFile(SOURCE_PATH + "/7/8/9");
+   }
+ 
++  private static void createSourceDataWithDifferentChecksumType()
++      throws Exception {
++    mkdirs(SOURCE_PATH + "/1");
++    mkdirs(SOURCE_PATH + "/2");
++    mkdirs(SOURCE_PATH + "/2/3/4");
++    mkdirs(SOURCE_PATH + "/2/3");
++    mkdirs(SOURCE_PATH + "/5");
++    touchFile(SOURCE_PATH + "/5/6", new ChecksumOpt(DataChecksum.Type.CRC32,
++        512));
++    mkdirs(SOURCE_PATH + "/7");
++    mkdirs(SOURCE_PATH + "/7/8");
++    touchFile(SOURCE_PATH + "/7/8/9", new ChecksumOpt(DataChecksum.Type.CRC32C,
++        512));
++  }
++
+   private static void mkdirs(String path) throws Exception {
+     FileSystem fileSystem = cluster.getFileSystem();
+     final Path qualifiedPath = new Path(path).makeQualified(fileSystem.getUri(),
+@@ -134,21 +153,31 @@ private static void mkdirs(String path) throws Exception {
+   }
+ 
+   private static void touchFile(String path) throws Exception {
+-    touchFile(path, false);
++    touchFile(path, false, null);
+   }
+ 
+-  private static void touchFile(String path, boolean createMultipleBlocks) throws Exception {
+-    final long NON_DEFAULT_BLOCK_SIZE = 4096;
++  private static void touchFile(String path, ChecksumOpt checksumOpt)
++      throws Exception {
++    // create files with specific checksum opt and non-default block size
++    touchFile(path, true, checksumOpt);
++  }
++
++  private static void touchFile(String path, boolean createMultipleBlocks,
++      ChecksumOpt checksumOpt) throws Exception {
+     FileSystem fs;
+     DataOutputStream outputStream = null;
+     try {
+       fs = cluster.getFileSystem();
+       final Path qualifiedPath = new Path(path).makeQualified(fs.getUri(),
+-                                                      fs.getWorkingDirectory());
+-      final long blockSize = createMultipleBlocks? NON_DEFAULT_BLOCK_SIZE : fs.getDefaultBlockSize(qualifiedPath) * 2;
+-      outputStream = fs.create(qualifiedPath, true, 0,
+-              (short)(fs.getDefaultReplication(qualifiedPath)*2),
+-              blockSize);
++          fs.getWorkingDirectory());
++      final long blockSize = createMultipleBlocks ? NON_DEFAULT_BLOCK_SIZE : fs
++          .getDefaultBlockSize(qualifiedPath) * 2;
++      FsPermission permission = FsPermission.getFileDefault().applyUMask(
++          FsPermission.getUMask(fs.getConf()));
++      outputStream = fs.create(qualifiedPath, permission,
++          EnumSet.of(CreateFlag.CREATE, CreateFlag.OVERWRITE), 0,
++          (short) (fs.getDefaultReplication(qualifiedPath) * 2), blockSize,
++          null, checksumOpt);
+       byte[] bytes = new byte[DEFAULT_FILE_SIZE];
+       outputStream.write(bytes);
+       long fileSize = DEFAULT_FILE_SIZE;
+@@ -171,17 +200,40 @@ private static void touchFile(String path, boolean createMultipleBlocks) throws 
+     }
+   }
+ 
++  @Test
++  public void testCopyWithDifferentChecksumType() throws Exception {
++    testCopy(true);
++  }
++
+   @Test(timeout=40000)
+   public void testRun() {
++    testCopy(false);
++  }
++
++  private void testCopy(boolean preserveChecksum) {
+     try {
+       deleteState();
+-      createSourceData();
++      if (preserveChecksum) {
++        createSourceDataWithDifferentChecksumType();
++      } else {
++        createSourceData();
++      }
+ 
+       FileSystem fs = cluster.getFileSystem();
+       CopyMapper copyMapper = new CopyMapper();
+       StubContext stubContext = new StubContext(getConfiguration(), null, 0);
+       Mapper<Text, FileStatus, Text, Text>.Context context
+               = stubContext.getContext();
++
++      Configuration configuration = context.getConfiguration();
++      EnumSet<DistCpOptions.FileAttribute> fileAttributes
++              = EnumSet.of(DistCpOptions.FileAttribute.REPLICATION);
++      if (preserveChecksum) {
++        fileAttributes.add(DistCpOptions.FileAttribute.CHECKSUMTYPE);
++      }
++      configuration.set(DistCpOptionSwitch.PRESERVE_STATUS.getConfigLabel(),
++              DistCpUtils.packAttributes(fileAttributes));
++
+       copyMapper.setup(context);
+ 
+       for (Path path: pathList) {
+@@ -195,19 +247,29 @@ public void testRun() {
+                 .replaceAll(SOURCE_PATH, TARGET_PATH));
+         Assert.assertTrue(fs.exists(targetPath));
+         Assert.assertTrue(fs.isFile(targetPath) == fs.isFile(path));
+-        Assert.assertEquals(fs.getFileStatus(path).getReplication(),
+-                fs.getFileStatus(targetPath).getReplication());
+-        Assert.assertEquals(fs.getFileStatus(path).getBlockSize(),
+-                fs.getFileStatus(targetPath).getBlockSize());
+-        Assert.assertTrue(!fs.isFile(targetPath) ||
+-                fs.getFileChecksum(targetPath).equals(
+-                        fs.getFileChecksum(path)));
++        FileStatus sourceStatus = fs.getFileStatus(path);
++        FileStatus targetStatus = fs.getFileStatus(targetPath);
++        Assert.assertEquals(sourceStatus.getReplication(),
++            targetStatus.getReplication());
++        if (preserveChecksum) {
++          Assert.assertEquals(sourceStatus.getBlockSize(),
++              targetStatus.getBlockSize());
++        }
++        Assert.assertTrue(!fs.isFile(targetPath)
++            || fs.getFileChecksum(targetPath).equals(fs.getFileChecksum(path)));
+       }
+ 
+       Assert.assertEquals(pathList.size(),
+               stubContext.getReporter().getCounter(CopyMapper.Counter.COPY).getValue());
+-      Assert.assertEquals(nFiles * DEFAULT_FILE_SIZE,
+-              stubContext.getReporter().getCounter(CopyMapper.Counter.BYTESCOPIED).getValue());
++      if (!preserveChecksum) {
++        Assert.assertEquals(nFiles * DEFAULT_FILE_SIZE, stubContext
++            .getReporter().getCounter(CopyMapper.Counter.BYTESCOPIED)
++            .getValue());
++      } else {
++        Assert.assertEquals(nFiles * NON_DEFAULT_BLOCK_SIZE * 2, stubContext
++            .getReporter().getCounter(CopyMapper.Counter.BYTESCOPIED)
++            .getValue());
++      }
+ 
+       testCopyingExistingFiles(fs, copyMapper, context);
+       for (Text value : stubContext.getWriter().values()) {
+@@ -309,7 +371,7 @@ public void testPreserve() {
+       UserGroupInformation tmpUser = UserGroupInformation.createRemoteUser("guest");
+ 
+       final CopyMapper copyMapper = new CopyMapper();
+-      
++
+       final Mapper<Text, FileStatus, Text, Text>.Context context =  tmpUser.
+           doAs(new PrivilegedAction<Mapper<Text, FileStatus, Text, Text>.Context>() {
+         @Override
+@@ -535,7 +597,7 @@ public StubContext run() {
+ 
+       final Mapper<Text, FileStatus, Text, Text>.Context context
+               = stubContext.getContext();
+-      
++
+       context.getConfiguration().set(DistCpConstants.CONF_LABEL_PRESERVE_STATUS,
+         DistCpUtils.packAttributes(preserveStatus));
+ 
+-- 
+1.7.0.4
+

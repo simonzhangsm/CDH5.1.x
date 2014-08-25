@@ -1,0 +1,197 @@
+From a0b4a8d137dd552a9d0cc8e2ce83d06fd047aa41 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Sat, 15 Feb 2014 00:17:58 +0000
+Subject: [PATCH 450/795] HDFS-5716. Allow WebHDFS to use pluggable authentication filter. Contributed by Haohui Mai
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568553 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d3680b96eed7bc38cf22645446aea19e53db008c)
+---
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    3 +
+ .../hdfs/server/namenode/NameNodeHttpServer.java   |   28 +++--
+ .../web/TestWebHdfsWithAuthenticationFilter.java   |  103 ++++++++++++++++++++
+ 3 files changed, 123 insertions(+), 11 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHdfsWithAuthenticationFilter.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 2866395..f9ab7e6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -21,6 +21,7 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyDefault;
++import org.apache.hadoop.hdfs.web.AuthFilter;
+ import org.apache.hadoop.http.HttpConfig;
+ 
+ /** 
+@@ -173,6 +174,8 @@
+   public static final int     DFS_NAMENODE_REPLICATION_MAX_STREAMS_DEFAULT = 2;
+   public static final String  DFS_NAMENODE_REPLICATION_STREAMS_HARD_LIMIT_KEY = "dfs.namenode.replication.max-streams-hard-limit";
+   public static final int     DFS_NAMENODE_REPLICATION_STREAMS_HARD_LIMIT_DEFAULT = 4;
++  public static final String  DFS_WEBHDFS_AUTHENTICATION_FILTER_KEY = "dfs.web.authentication.filter";
++  public static final String  DFS_WEBHDFS_AUTHENTICATION_FILTER_DEFAULT = AuthFilter.class.getName();
+   public static final String  DFS_WEBHDFS_ENABLED_KEY = "dfs.webhdfs.enabled";
+   public static final boolean DFS_WEBHDFS_ENABLED_DEFAULT = true;
+   public static final String  DFS_WEBHDFS_USER_PATTERN_KEY = "dfs.webhdfs.user.provider.user.pattern";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeHttpServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeHttpServer.java
+index fbeb141..43952be 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeHttpServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeHttpServer.java
+@@ -32,7 +32,6 @@
+ import org.apache.hadoop.hdfs.server.common.JspHelper;
+ import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
+ import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
+-import org.apache.hadoop.hdfs.web.AuthFilter;
+ import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
+ import org.apache.hadoop.hdfs.web.resources.Param;
+ import org.apache.hadoop.hdfs.web.resources.UserParam;
+@@ -70,20 +69,27 @@
+   private void initWebHdfs(Configuration conf) throws IOException {
+     if (WebHdfsFileSystem.isEnabled(conf, HttpServer2.LOG)) {
+       // set user pattern based on configuration file
+-      UserParam.setUserPattern(conf.get(DFSConfigKeys.DFS_WEBHDFS_USER_PATTERN_KEY, DFSConfigKeys.DFS_WEBHDFS_USER_PATTERN_DEFAULT));
+-      //add SPNEGO authentication filter for webhdfs
+-      final String name = "SPNEGO";
+-      final String classname = AuthFilter.class.getName();
++      UserParam.setUserPattern(conf.get(
++          DFSConfigKeys.DFS_WEBHDFS_USER_PATTERN_KEY,
++          DFSConfigKeys.DFS_WEBHDFS_USER_PATTERN_DEFAULT));
++
++      // add authentication filter for webhdfs
++      final String className = conf.get(
++          DFSConfigKeys.DFS_WEBHDFS_AUTHENTICATION_FILTER_KEY,
++          DFSConfigKeys.DFS_WEBHDFS_AUTHENTICATION_FILTER_DEFAULT);
++      final String name = className;
++
+       final String pathSpec = WebHdfsFileSystem.PATH_PREFIX + "/*";
+       Map<String, String> params = getAuthFilterParams(conf);
+-      HttpServer2.defineFilter(httpServer.getWebAppContext(), name, classname, params,
+-          new String[]{pathSpec});
+-      HttpServer2.LOG.info("Added filter '" + name + "' (class=" + classname + ")");
++      HttpServer2.defineFilter(httpServer.getWebAppContext(), name, className,
++          params, new String[] { pathSpec });
++      HttpServer2.LOG.info("Added filter '" + name + "' (class=" + className
++          + ")");
+ 
+       // add webhdfs packages
+-      httpServer.addJerseyResourcePackage(
+-          NamenodeWebHdfsMethods.class.getPackage().getName()
+-              + ";" + Param.class.getPackage().getName(), pathSpec);
++      httpServer.addJerseyResourcePackage(NamenodeWebHdfsMethods.class
++          .getPackage().getName() + ";" + Param.class.getPackage().getName(),
++          pathSpec);
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHdfsWithAuthenticationFilter.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHdfsWithAuthenticationFilter.java
+new file mode 100644
+index 0000000..09c7872
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHdfsWithAuthenticationFilter.java
+@@ -0,0 +1,103 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.web;
++
++import java.io.IOException;
++import java.net.InetSocketAddress;
++import java.net.URI;
++
++import javax.servlet.Filter;
++import javax.servlet.FilterChain;
++import javax.servlet.FilterConfig;
++import javax.servlet.ServletException;
++import javax.servlet.ServletRequest;
++import javax.servlet.ServletResponse;
++import javax.servlet.http.HttpServletResponse;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hdfs.DFSConfigKeys;
++import org.apache.hadoop.hdfs.MiniDFSCluster;
++import org.apache.hadoop.net.NetUtils;
++import org.junit.AfterClass;
++import org.junit.Assert;
++import org.junit.BeforeClass;
++import org.junit.Test;
++
++public class TestWebHdfsWithAuthenticationFilter {
++  private static boolean authorized = false;
++
++  public static final class CustomizedFilter implements Filter {
++    @Override
++    public void init(FilterConfig filterConfig) throws ServletException {
++    }
++
++    @Override
++    public void doFilter(ServletRequest request, ServletResponse response,
++        FilterChain chain) throws IOException, ServletException {
++      if (authorized) {
++        chain.doFilter(request, response);
++      } else {
++        ((HttpServletResponse) response)
++            .sendError(HttpServletResponse.SC_FORBIDDEN);
++      }
++    }
++
++    @Override
++    public void destroy() {
++    }
++
++  }
++
++  private static Configuration conf;
++  private static MiniDFSCluster cluster;
++  private static FileSystem fs;
++
++  @BeforeClass
++  public static void setUp() throws IOException {
++    conf = new Configuration();
++    conf.set(DFSConfigKeys.DFS_WEBHDFS_AUTHENTICATION_FILTER_KEY,
++        CustomizedFilter.class.getName());
++    conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY, "localhost:0");
++    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
++    InetSocketAddress addr = cluster.getNameNode().getHttpAddress();
++    fs = FileSystem.get(
++        URI.create("webhdfs://" + NetUtils.getHostPortString(addr)), conf);
++    cluster.waitActive();
++  }
++
++  @AfterClass
++  public static void tearDown() throws IOException {
++    fs.close();
++    cluster.shutdown();
++  }
++
++  @Test
++  public void testWebHdfsAuthFilter() throws IOException {
++    // getFileStatus() is supposed to pass through with the default filter.
++    authorized = false;
++    try {
++      fs.getFileStatus(new Path("/"));
++      Assert.fail("The filter fails to block the request");
++    } catch (IOException e) {
++    }
++    authorized = true;
++    fs.getFileStatus(new Path("/"));
++  }
++}
+-- 
+1.7.0.4
+

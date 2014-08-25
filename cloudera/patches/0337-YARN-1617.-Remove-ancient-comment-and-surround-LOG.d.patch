@@ -1,0 +1,88 @@
+From 5b74401343bb15216cf04da663a52c45322d6a59 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Thu, 30 Jan 2014 22:41:16 +0000
+Subject: [PATCH 337/795] YARN-1617. Remove ancient comment and surround LOG.debug in AppSchedulingInfo.allocate (Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1563005 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 80fac56ce95a98a8168837e6acc28269f7daacf4)
+(cherry picked from commit 4fb2b5fba3f4f2ccd9ae754022e0359efc2f057d)
+---
+ .../scheduler/AppSchedulingInfo.java               |   34 ++++---------------
+ 1 files changed, 7 insertions(+), 27 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AppSchedulingInfo.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AppSchedulingInfo.java
+index b5b22b6..937e34b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AppSchedulingInfo.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AppSchedulingInfo.java
+@@ -262,8 +262,13 @@ synchronized public void allocate(NodeType type, SchedulerNode node,
+       pending = false;
+       metrics.incrAppsRunning(this, user);
+     }
+-    LOG.debug("allocate: user: " + user + ", memory: "
+-        + request.getCapability());
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("allocate: applicationId=" + applicationId
++          + " container=" + container.getId()
++          + " host=" + container.getNodeId().toString()
++          + " user=" + user
++          + " resource=" + request.getCapability());
++    }
+     metrics.allocateResources(user, 1, request.getCapability());
+   }
+ 
+@@ -277,9 +282,6 @@ synchronized public void allocate(NodeType type, SchedulerNode node,
+   synchronized private void allocateNodeLocal( 
+       SchedulerNode node, Priority priority, 
+       ResourceRequest nodeLocalRequest, Container container) {
+-    // Update consumption and track allocations
+-    allocate(container);
+-
+     // Update future requirements
+     nodeLocalRequest.setNumContainers(nodeLocalRequest.getNumContainers() - 1);
+     if (nodeLocalRequest.getNumContainers() == 0) {
+@@ -306,10 +308,6 @@ synchronized private void allocateNodeLocal(
+   synchronized private void allocateRackLocal(
+       SchedulerNode node, Priority priority,
+       ResourceRequest rackLocalRequest, Container container) {
+-
+-    // Update consumption and track allocations
+-    allocate(container);
+-
+     // Update future requirements
+     rackLocalRequest.setNumContainers(rackLocalRequest.getNumContainers() - 1);
+     if (rackLocalRequest.getNumContainers() == 0) {
+@@ -329,10 +327,6 @@ synchronized private void allocateRackLocal(
+   synchronized private void allocateOffSwitch(
+       SchedulerNode node, Priority priority,
+       ResourceRequest offSwitchRequest, Container container) {
+-
+-    // Update consumption and track allocations
+-    allocate(container);
+-
+     // Update future requirements
+     decrementOutstanding(offSwitchRequest);
+   }
+@@ -365,20 +359,6 @@ synchronized private void checkForDeactivation() {
+     }
+   }
+   
+-  synchronized private void allocate(Container container) {
+-    // Update consumption and track allocations
+-    //TODO: fixme sharad
+-    /* try {
+-        store.storeContainer(container);
+-      } catch (IOException ie) {
+-        // TODO fix this. we shouldnt ignore
+-      }*/
+-    
+-    LOG.debug("allocate: applicationId=" + applicationId + " container="
+-        + container.getId() + " host="
+-        + container.getNodeId().toString());
+-  }
+-
+   synchronized public void stop(RMAppAttemptState rmAppAttemptFinalState) {
+     // clear pending resources metrics for the application
+     QueueMetrics metrics = queue.getMetrics();
+-- 
+1.7.0.4
+

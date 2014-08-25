@@ -1,0 +1,72 @@
+From afaf3c97b0f5a97143942d92d1339ee5d90e50cc Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Wed, 12 Feb 2014 23:06:11 +0000
+Subject: [PATCH 607/795] YARN-1692. ConcurrentModificationException in fair scheduler AppSchedulable (Sangjin Lee via Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1567789 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1593da39ff3e528782f2be0bd33336ccfc5158b6)
+---
+ .../scheduler/SchedulerApplicationAttempt.java     |    4 ++--
+ .../scheduler/common/fica/FiCaSchedulerApp.java    |    2 +-
+ .../scheduler/fair/AppSchedulable.java             |   10 ++++++----
+ 3 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+index a61d17c..a32f59c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+@@ -152,7 +152,7 @@ public int getNewContainerId() {
+     return appSchedulingInfo.getPriorities();
+   }
+   
+-  public ResourceRequest getResourceRequest(Priority priority, String resourceName) {
++  public synchronized ResourceRequest getResourceRequest(Priority priority, String resourceName) {
+     return this.appSchedulingInfo.getResourceRequest(priority, resourceName);
+   }
+ 
+@@ -160,7 +160,7 @@ public synchronized int getTotalRequiredResources(Priority priority) {
+     return getResourceRequest(priority, ResourceRequest.ANY).getNumContainers();
+   }
+ 
+-  public Resource getResource(Priority priority) {
++  public synchronized Resource getResource(Priority priority) {
+     return appSchedulingInfo.getResource(priority);
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/common/fica/FiCaSchedulerApp.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/common/fica/FiCaSchedulerApp.java
+index 52ce259..696fb78 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/common/fica/FiCaSchedulerApp.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/common/fica/FiCaSchedulerApp.java
+@@ -193,7 +193,7 @@ public synchronized float getLocalityWaitFactor(
+     return Math.min(((float)requiredResources / clusterNodes), 1.0f);
+   }
+ 
+-  public Resource getTotalPendingRequests() {
++  public synchronized Resource getTotalPendingRequests() {
+     Resource ret = Resource.newInstance(0, 0);
+     for (ResourceRequest rr : appSchedulingInfo.getAllResourceRequests()) {
+       // to avoid double counting we count only "ANY" resource requests
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+index 9f2d22e..304a2cf 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+@@ -82,10 +82,12 @@ public void updateDemand() {
+     Resources.addTo(demand, app.getCurrentConsumption());
+ 
+     // Add up outstanding resource requests
+-    for (Priority p : app.getPriorities()) {
+-      for (ResourceRequest r : app.getResourceRequests(p).values()) {
+-        Resource total = Resources.multiply(r.getCapability(), r.getNumContainers());
+-        Resources.addTo(demand, total);
++    synchronized (app) {
++      for (Priority p : app.getPriorities()) {
++        for (ResourceRequest r : app.getResourceRequests(p).values()) {
++          Resource total = Resources.multiply(r.getCapability(), r.getNumContainers());
++          Resources.addTo(demand, total);
++        }
+       }
+     }
+   }
+-- 
+1.7.0.4
+

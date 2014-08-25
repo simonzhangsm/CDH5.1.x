@@ -1,0 +1,1968 @@
+From 5f570685122a166e1872bbecc8a071c1d268f24f Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Wed, 14 May 2014 01:15:48 +0000
+Subject: [PATCH 689/795] HDFS-6293. Issues with OIV processing PB-based fsimages. Contributed by Kihwal Lee.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1594440 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d8c8e39e45baace638bec748e3ef17e873525ef9)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java
+---
+ hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs  |    3 +
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    1 +
+ .../delegation/DelegationTokenSecretManager.java   |   85 ++++-
+ .../hadoop/hdfs/server/namenode/CacheManager.java  |   59 +++-
+ .../hdfs/server/namenode/CheckpointConf.java       |    8 +
+ .../hadoop/hdfs/server/namenode/FSImage.java       |   19 +
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |  385 +++++++++++++++++++-
+ .../hdfs/server/namenode/FSImageSerialization.java |  217 +++++++++++-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   58 +++-
+ .../hadoop/hdfs/server/namenode/NNStorage.java     |    7 +-
+ .../server/namenode/NNStorageRetentionManager.java |   56 +++
+ .../hdfs/server/namenode/SecondaryNameNode.java    |   19 +-
+ .../server/namenode/ha/StandbyCheckpointer.java    |    6 +
+ .../namenode/snapshot/AbstractINodeDiff.java       |   15 +-
+ .../snapshot/DirectoryWithSnapshotFeature.java     |   52 +++
+ .../hdfs/server/namenode/snapshot/FileDiff.java    |   22 +-
+ .../hdfs/server/namenode/snapshot/Snapshot.java    |    9 +
+ .../namenode/snapshot/SnapshotFSImageFormat.java   |   73 ++++-
+ .../server/namenode/snapshot/SnapshotManager.java  |   17 +
+ .../offlineImageViewer/ImageLoaderCurrent.java     |   58 ++--
+ .../offlineImageViewer/OfflineImageViewer.java     |    2 +-
+ .../hdfs/server/namenode/TestCheckpoint.java       |   41 ++
+ .../server/namenode/ha/TestStandbyCheckpoints.java |   11 +-
+ 23 files changed, 1143 insertions(+), 80 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs b/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+index c3ad8c3..904ccd2 100755
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+@@ -49,6 +49,7 @@ function print_usage(){
+   echo "  balancer             run a cluster balancing utility"
+   echo "  jmxget               get JMX exported values from NameNode or DataNode."
+   echo "  oiv                  apply the offline fsimage viewer to an fsimage"
++  echo "  oiv_legacy           apply the offline fsimage viewer to an legacy fsimage"
+   echo "  oev                  apply the offline edits viewer to an edits file"
+   echo "  fetchdt              fetch a delegation token from the NameNode"
+   echo "  getconf              get config values from configuration"
+@@ -161,6 +162,8 @@ elif [ "$COMMAND" = "jmxget" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.JMXGet
+ elif [ "$COMMAND" = "oiv" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.offlineImageViewer.OfflineImageViewerPB
++elif [ "COMMAND" = "oiv_legacy" ] ; then
++  CLASS=org.apache.hadoop.hdfs.tools.offlineImageViewer.OfflineImageViewer
+ elif [ "$COMMAND" = "oev" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.offlineEditsViewer.OfflineEditsViewer
+ elif [ "$COMMAND" = "fetchdt" ] ; then
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index a72b405..720798c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -501,6 +501,7 @@
+   public static final String  DFS_SECONDARY_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY = "dfs.secondary.namenode.kerberos.internal.spnego.principal";
+   public static final String  DFS_NAMENODE_NAME_CACHE_THRESHOLD_KEY = "dfs.namenode.name.cache.threshold";
+   public static final int     DFS_NAMENODE_NAME_CACHE_THRESHOLD_DEFAULT = 10;
++  public static final String  DFS_NAMENODE_LEGACY_OIV_IMAGE_DIR_KEY = "dfs.namenode.legacy-oiv-image.dir";
+   
+   public static final String  DFS_NAMESERVICES = "dfs.nameservices";
+   public static final String  DFS_NAMESERVICE_ID = "dfs.nameservice.id";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
+index e0a8f30..175e3ed 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
+@@ -18,9 +18,16 @@
+ 
+ package org.apache.hadoop.hdfs.security.token.delegation;
+ 
+-import com.google.common.base.Preconditions;
+-import com.google.common.collect.Lists;
+-import com.google.protobuf.ByteString;
++import java.io.DataInput;
++import java.io.DataOutputStream;
++import java.io.IOException;
++import java.io.InterruptedIOException;
++import java.net.InetSocketAddress;
++import java.util.ArrayList;
++import java.util.Iterator;
++import java.util.List;
++import java.util.Map.Entry;
++
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
+@@ -43,13 +50,9 @@
+ import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager;
+ import org.apache.hadoop.security.token.delegation.DelegationKey;
+ 
+-import java.io.DataInput;
+-import java.io.IOException;
+-import java.io.InterruptedIOException;
+-import java.net.InetSocketAddress;
+-import java.util.ArrayList;
+-import java.util.List;
+-import java.util.Map.Entry;
++import com.google.common.base.Preconditions;
++import com.google.common.collect.Lists;
++import com.google.protobuf.ByteString;
+ 
+ /**
+  * A HDFS specific delegation token secret manager.
+@@ -211,6 +214,18 @@ public synchronized void loadSecretManagerState(SecretManagerState state)
+     }
+   }
+ 
++  /**
++   * Store the current state of the SecretManager for persistence
++   *
++   * @param out Output stream for writing into fsimage.
++   * @param sdPath String storage directory path
++   * @throws IOException
++   */
++  public synchronized void saveSecretManagerStateCompat(DataOutputStream out,
++      String sdPath) throws IOException {
++    serializerCompat.save(out, sdPath);
++  }
++
+   public synchronized SecretManagerState saveSecretManagerState() {
+     SecretManagerSection s = SecretManagerSection.newBuilder()
+         .setCurrentId(currentId)
+@@ -406,6 +421,56 @@ private void load(DataInput in) throws IOException {
+       loadCurrentTokens(in);
+     }
+ 
++    private void save(DataOutputStream out, String sdPath) throws IOException {
++      out.writeInt(currentId);
++      saveAllKeys(out, sdPath);
++      out.writeInt(delegationTokenSequenceNumber);
++      saveCurrentTokens(out, sdPath);
++    }
++
++    /**
++     * Private helper methods to save delegation keys and tokens in fsimage
++     */
++    private synchronized void saveCurrentTokens(DataOutputStream out,
++        String sdPath) throws IOException {
++      StartupProgress prog = NameNode.getStartupProgress();
++      Step step = new Step(StepType.DELEGATION_TOKENS, sdPath);
++      prog.beginStep(Phase.SAVING_CHECKPOINT, step);
++      prog.setTotal(Phase.SAVING_CHECKPOINT, step, currentTokens.size());
++      Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
++      out.writeInt(currentTokens.size());
++      Iterator<DelegationTokenIdentifier> iter = currentTokens.keySet()
++          .iterator();
++      while (iter.hasNext()) {
++        DelegationTokenIdentifier id = iter.next();
++        id.write(out);
++        DelegationTokenInformation info = currentTokens.get(id);
++        out.writeLong(info.getRenewDate());
++        counter.increment();
++      }
++      prog.endStep(Phase.SAVING_CHECKPOINT, step);
++    }
++
++    /*
++     * Save the current state of allKeys
++     */
++    private synchronized void saveAllKeys(DataOutputStream out, String sdPath)
++        throws IOException {
++      StartupProgress prog = NameNode.getStartupProgress();
++      Step step = new Step(StepType.DELEGATION_KEYS, sdPath);
++      prog.beginStep(Phase.SAVING_CHECKPOINT, step);
++      prog.setTotal(Phase.SAVING_CHECKPOINT, step, currentTokens.size());
++      Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
++      out.writeInt(allKeys.size());
++      Iterator<Integer> iter = allKeys.keySet().iterator();
++      while (iter.hasNext()) {
++        Integer key = iter.next();
++        allKeys.get(key).write(out);
++        counter.increment();
++      }
++      prog.endStep(Phase.SAVING_CHECKPOINT, step);
++    }
++
+     /**
+      * Private helper methods to load Delegation tokens from fsimage
+      */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
+index b6edfb7..1d74cf3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
+@@ -27,6 +27,7 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_PATH_BASED_CACHE_REFRESH_INTERVAL_MS_DEFAULT;
+ 
+ import java.io.DataInput;
++import java.io.DataOutputStream;
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.Collection;
+@@ -61,10 +62,10 @@
+ import org.apache.hadoop.hdfs.protocol.CacheDirectiveStats;
+ import org.apache.hadoop.hdfs.protocol.CachePoolEntry;
+ import org.apache.hadoop.hdfs.protocol.CachePoolInfo;
+-import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CacheDirectiveInfoProto;
+-import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CachePoolInfoProto;
+ import org.apache.hadoop.hdfs.protocol.DatanodeID;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
++import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CacheDirectiveInfoProto;
++import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CachePoolInfoProto;
+ import org.apache.hadoop.hdfs.protocolPB.PBHelper;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.blockmanagement.CacheReplicationMonitor;
+@@ -971,6 +972,18 @@ private void processCacheReportImpl(final DatanodeDescriptor datanode,
+     }
+   }
+ 
++  /**
++   * Saves the current state of the CacheManager to the DataOutput. Used
++   * to persist CacheManager state in the FSImage.
++   * @param out DataOutput to persist state
++   * @param sdPath path of the storage directory
++   * @throws IOException
++   */
++  public void saveStateCompat(DataOutputStream out, String sdPath)
++      throws IOException {
++    serializerCompat.save(out, sdPath);
++  }
++
+   public PersistState saveState() throws IOException {
+     ArrayList<CachePoolInfoProto> pools = Lists
+         .newArrayListWithCapacity(cachePools.size());
+@@ -1090,6 +1103,12 @@ private void addCacheDirective(final String poolName,
+   }
+ 
+   private final class SerializerCompat {
++    private void save(DataOutputStream out, String sdPath) throws IOException {
++      out.writeLong(nextDirectiveId);
++      savePools(out, sdPath);
++      saveDirectives(out, sdPath);
++    }
++
+     private void load(DataInput in) throws IOException {
+       nextDirectiveId = in.readLong();
+       // pools need to be loaded first since directives point to their parent pool
+@@ -1098,6 +1117,42 @@ private void load(DataInput in) throws IOException {
+     }
+ 
+     /**
++     * Save cache pools to fsimage
++     */
++    private void savePools(DataOutputStream out,
++        String sdPath) throws IOException {
++      StartupProgress prog = NameNode.getStartupProgress();
++      Step step = new Step(StepType.CACHE_POOLS, sdPath);
++      prog.beginStep(Phase.SAVING_CHECKPOINT, step);
++      prog.setTotal(Phase.SAVING_CHECKPOINT, step, cachePools.size());
++      Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
++      out.writeInt(cachePools.size());
++      for (CachePool pool: cachePools.values()) {
++        FSImageSerialization.writeCachePoolInfo(out, pool.getInfo(true));
++        counter.increment();
++      }
++      prog.endStep(Phase.SAVING_CHECKPOINT, step);
++    }
++
++    /*
++     * Save cache entries to fsimage
++     */
++    private void saveDirectives(DataOutputStream out, String sdPath)
++        throws IOException {
++      StartupProgress prog = NameNode.getStartupProgress();
++      Step step = new Step(StepType.CACHE_ENTRIES, sdPath);
++      prog.beginStep(Phase.SAVING_CHECKPOINT, step);
++      prog.setTotal(Phase.SAVING_CHECKPOINT, step, directivesById.size());
++      Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
++      out.writeInt(directivesById.size());
++      for (CacheDirective directive : directivesById.values()) {
++        FSImageSerialization.writeCacheDirectiveInfo(out, directive.toInfo());
++        counter.increment();
++      }
++      prog.endStep(Phase.SAVING_CHECKPOINT, step);
++    }
++
++    /**
+      * Load cache pools from fsimage
+      */
+     private void loadPools(DataInput in)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CheckpointConf.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CheckpointConf.java
+index 0bc62d8..b1636bc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CheckpointConf.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CheckpointConf.java
+@@ -41,6 +41,9 @@
+ 
+   /** maxium number of retries when merge errors occur */
+   private final int maxRetriesOnMergeError;
++
++  /** The output dir for legacy OIV image */
++  private final String legacyOivImageDir;
+   
+   public CheckpointConf(Configuration conf) {
+     checkpointCheckPeriod = conf.getLong(
+@@ -53,6 +56,7 @@ public CheckpointConf(Configuration conf) {
+                                   DFS_NAMENODE_CHECKPOINT_TXNS_DEFAULT);
+     maxRetriesOnMergeError = conf.getInt(DFS_NAMENODE_CHECKPOINT_MAX_RETRIES_KEY,
+                                   DFS_NAMENODE_CHECKPOINT_MAX_RETRIES_DEFAULT);
++    legacyOivImageDir = conf.get(DFS_NAMENODE_LEGACY_OIV_IMAGE_DIR_KEY);
+     warnForDeprecatedConfigs(conf);
+   }
+   
+@@ -83,4 +87,8 @@ public long getTxnCount() {
+   public int getMaxRetriesOnMergeError() {
+     return maxRetriesOnMergeError;
+   }
++
++  public String getLegacyOivImageDir() {
++    return legacyOivImageDir;
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index b42d01c..26fa739 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -938,6 +938,25 @@ void saveFSImage(SaveNamespaceContext context, StorageDirectory sd,
+   }
+ 
+   /**
++   * Save FSimage in the legacy format. This is not for NN consumption,
++   * but for tools like OIV.
++   */
++  public void saveLegacyOIVImage(FSNamesystem source, String targetDir,
++      Canceler canceler) throws IOException {
++    FSImageCompression compression =
++        FSImageCompression.createCompression(conf);
++    long txid = getLastAppliedOrWrittenTxId();
++    SaveNamespaceContext ctx = new SaveNamespaceContext(source, txid,
++        canceler);
++    FSImageFormat.Saver saver = new FSImageFormat.Saver(ctx);
++    String imageFileName = NNStorage.getLegacyOIVImageFileName(txid);
++    File imageFile = new File(targetDir, imageFileName);
++    saver.save(imageFile, compression);
++    archivalManager.purgeOldLegacyOIVImages(targetDir, txid);
++  }
++
++
++  /**
+    * FSImageSaver is being run in a separate thread when saving
+    * FSImage. There is one thread per each copy of the image.
+    *
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index 4b1a7c9..e9a457c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -21,14 +21,20 @@
+ 
+ import java.io.DataInput;
+ import java.io.DataInputStream;
++import java.io.DataOutputStream;
+ import java.io.File;
+ import java.io.FileInputStream;
+ import java.io.FileNotFoundException;
++import java.io.FileOutputStream;
+ import java.io.IOException;
+ import java.security.DigestInputStream;
++import java.security.DigestOutputStream;
+ import java.security.MessageDigest;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
++import java.util.HashMap;
++import java.util.List;
+ import java.util.Map;
+ import java.util.TreeMap;
+ 
+@@ -51,6 +57,7 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiffList;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+@@ -61,6 +68,7 @@
+ import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress.Counter;
+ import org.apache.hadoop.hdfs.server.namenode.startupprogress.Step;
+ import org.apache.hadoop.hdfs.server.namenode.startupprogress.StepType;
++import org.apache.hadoop.hdfs.util.ReadOnlyList;
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.io.MD5Hash;
+ import org.apache.hadoop.io.Text;
+@@ -70,8 +78,105 @@
+ import com.google.common.annotations.VisibleForTesting;
+ 
+ /**
+- * This class loads and stores the FSImage of the NameNode. The file
+- * src/main/proto/fsimage.proto describes the on-disk layout of the FSImage.
++ * Contains inner classes for reading or writing the on-disk format for
++ * FSImages.
++ *
++ * In particular, the format of the FSImage looks like:
++ * <pre>
++ * FSImage {
++ *   layoutVersion: int, namespaceID: int, numberItemsInFSDirectoryTree: long,
++ *   namesystemGenerationStampV1: long, namesystemGenerationStampV2: long,
++ *   generationStampAtBlockIdSwitch:long, lastAllocatedBlockId:
++ *   long transactionID: long, snapshotCounter: int, numberOfSnapshots: int,
++ *   numOfSnapshottableDirs: int,
++ *   {FSDirectoryTree, FilesUnderConstruction, SecretManagerState} (can be compressed)
++ * }
++ *
++ * FSDirectoryTree (if {@link Feature#FSIMAGE_NAME_OPTIMIZATION} is supported) {
++ *   INodeInfo of root, numberOfChildren of root: int
++ *   [list of INodeInfo of root's children],
++ *   [list of INodeDirectoryInfo of root's directory children]
++ * }
++ *
++ * FSDirectoryTree (if {@link Feature#FSIMAGE_NAME_OPTIMIZATION} not supported){
++ *   [list of INodeInfo of INodes in topological order]
++ * }
++ *
++ * INodeInfo {
++ *   {
++ *     localName: short + byte[]
++ *   } when {@link Feature#FSIMAGE_NAME_OPTIMIZATION} is supported
++ *   or
++ *   {
++ *     fullPath: byte[]
++ *   } when {@link Feature#FSIMAGE_NAME_OPTIMIZATION} is not supported
++ *   replicationFactor: short, modificationTime: long,
++ *   accessTime: long, preferredBlockSize: long,
++ *   numberOfBlocks: int (-1 for INodeDirectory, -2 for INodeSymLink),
++ *   {
++ *     nsQuota: long, dsQuota: long,
++ *     {
++ *       isINodeSnapshottable: byte,
++ *       isINodeWithSnapshot: byte (if isINodeSnapshottable is false)
++ *     } (when {@link Feature#SNAPSHOT} is supported),
++ *     fsPermission: short, PermissionStatus
++ *   } for INodeDirectory
++ *   or
++ *   {
++ *     symlinkString, fsPermission: short, PermissionStatus
++ *   } for INodeSymlink
++ *   or
++ *   {
++ *     [list of BlockInfo]
++ *     [list of FileDiff]
++ *     {
++ *       isINodeFileUnderConstructionSnapshot: byte,
++ *       {clientName: short + byte[], clientMachine: short + byte[]} (when
++ *       isINodeFileUnderConstructionSnapshot is true),
++ *     } (when {@link Feature#SNAPSHOT} is supported and writing snapshotINode),
++ *     fsPermission: short, PermissionStatus
++ *   } for INodeFile
++ * }
++ *
++ * INodeDirectoryInfo {
++ *   fullPath of the directory: short + byte[],
++ *   numberOfChildren: int, [list of INodeInfo of children INode],
++ *   {
++ *     numberOfSnapshots: int,
++ *     [list of Snapshot] (when NumberOfSnapshots is positive),
++ *     numberOfDirectoryDiffs: int,
++ *     [list of DirectoryDiff] (NumberOfDirectoryDiffs is positive),
++ *     number of children that are directories,
++ *     [list of INodeDirectoryInfo of the directory children] (includes
++ *     snapshot copies of deleted sub-directories)
++ *   } (when {@link Feature#SNAPSHOT} is supported),
++ * }
++ *
++ * Snapshot {
++ *   snapshotID: int, root of Snapshot: INodeDirectoryInfo (its local name is
++ *   the name of the snapshot)
++ * }
++ *
++ * DirectoryDiff {
++ *   full path of the root of the associated Snapshot: short + byte[],
++ *   childrenSize: int,
++ *   isSnapshotRoot: byte,
++ *   snapshotINodeIsNotNull: byte (when isSnapshotRoot is false),
++ *   snapshotINode: INodeDirectory (when SnapshotINodeIsNotNull is true), Diff
++ * }
++ *
++ * Diff {
++ *   createdListSize: int, [Local name of INode in created list],
++ *   deletedListSize: int, [INode in deleted list: INodeInfo]
++ * }
++ *
++ * FileDiff {
++ *   full path of the root of the associated Snapshot: short + byte[],
++ *   fileSize: long,
++ *   snapshotINodeIsNotNull: byte,
++ *   snapshotINode: INodeFile (when SnapshotINodeIsNotNull is true), Diff
++ * }
++ * </pre>
+  */
+ @InterfaceAudience.Private
+ @InterfaceStability.Evolving
+@@ -581,6 +686,11 @@ public void updateBlocksMap(INodeFile file) {
+       }
+     }
+ 
++    /** @return The FSDirectory of the namesystem where the fsimage is loaded */
++    public FSDirectory getFSDirectoryInLoading() {
++      return namesystem.dir;
++    }
++
+     public INode loadINodeWithLocalName(boolean isSnapshotINode, DataInput in,
+         boolean updateINodeMap) throws IOException {
+       return loadINodeWithLocalName(isSnapshotINode, in, updateINodeMap, null);
+@@ -1014,7 +1124,7 @@ static String renameReservedPathsOnUpgrade(String path,
+       + " option to automatically rename these paths during upgrade.";
+ 
+   /**
+-   * Same as {@link #renameReservedPathsOnUpgrade}, but for a single
++   * Same as {@link #renameReservedPathsOnUpgrade(String)}, but for a single
+    * byte array path component.
+    */
+   private static byte[] renameReservedComponentOnUpgrade(byte[] component,
+@@ -1035,7 +1145,7 @@ static String renameReservedPathsOnUpgrade(String path,
+   }
+ 
+   /**
+-   * Same as {@link #renameReservedPathsOnUpgrade}, but for a single
++   * Same as {@link #renameReservedPathsOnUpgrade(String)}, but for a single
+    * byte array path component.
+    */
+   private static byte[] renameReservedRootComponentOnUpgrade(byte[] component,
+@@ -1057,4 +1167,271 @@ static String renameReservedPathsOnUpgrade(String path,
+     }
+     return component;
+   }
++
++  /**
++   * A one-shot class responsible for writing an image file.
++   * The write() function should be called once, after which the getter
++   * functions may be used to retrieve information about the file that was written.
++   *
++   * This is replaced by the PB-based FSImage. The class is to maintain
++   * compatibility for the external fsimage tool.
++   */
++  @Deprecated
++  static class Saver {
++    private static final int LAYOUT_VERSION = -51;
++    private final SaveNamespaceContext context;
++    /** Set to true once an image has been written */
++    private boolean saved = false;
++
++    /** The MD5 checksum of the file that was written */
++    private MD5Hash savedDigest;
++    private final ReferenceMap referenceMap = new ReferenceMap();
++
++    private final Map<Long, INodeFile> snapshotUCMap =
++        new HashMap<Long, INodeFile>();
++
++    /** @throws IllegalStateException if the instance has not yet saved an image */
++    private void checkSaved() {
++      if (!saved) {
++        throw new IllegalStateException("FSImageSaver has not saved an image");
++      }
++    }
++
++    /** @throws IllegalStateException if the instance has already saved an image */
++    private void checkNotSaved() {
++      if (saved) {
++        throw new IllegalStateException("FSImageSaver has already saved an image");
++      }
++    }
++
++
++    Saver(SaveNamespaceContext context) {
++      this.context = context;
++    }
++
++    /**
++     * Return the MD5 checksum of the image file that was saved.
++     */
++    MD5Hash getSavedDigest() {
++      checkSaved();
++      return savedDigest;
++    }
++
++    void save(File newFile, FSImageCompression compression) throws IOException {
++      checkNotSaved();
++
++      final FSNamesystem sourceNamesystem = context.getSourceNamesystem();
++      final INodeDirectory rootDir = sourceNamesystem.dir.rootDir;
++      final long numINodes = rootDir.getDirectoryWithQuotaFeature()
++          .getSpaceConsumed().get(Quota.NAMESPACE);
++      String sdPath = newFile.getParentFile().getParentFile().getAbsolutePath();
++      Step step = new Step(StepType.INODES, sdPath);
++      StartupProgress prog = NameNode.getStartupProgress();
++      prog.beginStep(Phase.SAVING_CHECKPOINT, step);
++      prog.setTotal(Phase.SAVING_CHECKPOINT, step, numINodes);
++      Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
++      long startTime = now();
++      //
++      // Write out data
++      //
++      MessageDigest digester = MD5Hash.getDigester();
++      FileOutputStream fout = new FileOutputStream(newFile);
++      DigestOutputStream fos = new DigestOutputStream(fout, digester);
++      DataOutputStream out = new DataOutputStream(fos);
++      try {
++        out.writeInt(LAYOUT_VERSION);
++        LayoutFlags.write(out);
++        // We use the non-locked version of getNamespaceInfo here since
++        // the coordinating thread of saveNamespace already has read-locked
++        // the namespace for us. If we attempt to take another readlock
++        // from the actual saver thread, there's a potential of a
++        // fairness-related deadlock. See the comments on HDFS-2223.
++        out.writeInt(sourceNamesystem.unprotectedGetNamespaceInfo()
++            .getNamespaceID());
++        out.writeLong(numINodes);
++        out.writeLong(sourceNamesystem.getGenerationStampV1());
++        out.writeLong(sourceNamesystem.getGenerationStampV2());
++        out.writeLong(sourceNamesystem.getGenerationStampAtblockIdSwitch());
++        out.writeLong(sourceNamesystem.getLastAllocatedBlockId());
++        out.writeLong(context.getTxId());
++        out.writeLong(sourceNamesystem.getLastInodeId());
++
++
++        sourceNamesystem.getSnapshotManager().write(out);
++
++        // write compression info and set up compressed stream
++        out = compression.writeHeaderAndWrapStream(fos);
++        LOG.info("Saving image file " + newFile +
++                 " using " + compression);
++
++        // save the root
++        saveINode2Image(rootDir, out, false, referenceMap, counter);
++        // save the rest of the nodes
++        saveImage(rootDir, out, true, false, counter);
++        prog.endStep(Phase.SAVING_CHECKPOINT, step);
++        // Now that the step is finished, set counter equal to total to adjust
++        // for possible under-counting due to reference inodes.
++        prog.setCount(Phase.SAVING_CHECKPOINT, step, numINodes);
++        // save files under construction
++        // TODO: for HDFS-5428, since we cannot break the compatibility of
++        // fsimage, we store part of the under-construction files that are only
++        // in snapshots in this "under-construction-file" section. As a
++        // temporary solution, we use "/.reserved/.inodes/<inodeid>" as their
++        // paths, so that when loading fsimage we do not put them into the lease
++        // map. In the future, we can remove this hack when we can bump the
++        // layout version.
++        sourceNamesystem.saveFilesUnderConstruction(out, snapshotUCMap);
++
++        context.checkCancelled();
++        sourceNamesystem.saveSecretManagerStateCompat(out, sdPath);
++        context.checkCancelled();
++        sourceNamesystem.getCacheManager().saveStateCompat(out, sdPath);
++        context.checkCancelled();
++        out.flush();
++        context.checkCancelled();
++        fout.getChannel().force(true);
++      } finally {
++        out.close();
++      }
++
++      saved = true;
++      // set md5 of the saved image
++      savedDigest = new MD5Hash(digester.digest());
++
++      LOG.info("Image file " + newFile + " of size " + newFile.length() +
++          " bytes saved in " + (now() - startTime)/1000 + " seconds.");
++    }
++
++    /**
++     * Save children INodes.
++     * @param children The list of children INodes
++     * @param out The DataOutputStream to write
++     * @param inSnapshot Whether the parent directory or its ancestor is in
++     *                   the deleted list of some snapshot (caused by rename or
++     *                   deletion)
++     * @param counter Counter to increment for namenode startup progress
++     * @return Number of children that are directory
++     */
++    private int saveChildren(ReadOnlyList<INode> children,
++        DataOutputStream out, boolean inSnapshot, Counter counter)
++        throws IOException {
++      // Write normal children INode.
++      out.writeInt(children.size());
++      int dirNum = 0;
++      int i = 0;
++      for(INode child : children) {
++        // print all children first
++        // TODO: for HDFS-5428, we cannot change the format/content of fsimage
++        // here, thus even if the parent directory is in snapshot, we still
++        // do not handle INodeUC as those stored in deleted list
++        saveINode2Image(child, out, false, referenceMap, counter);
++        if (child.isDirectory()) {
++          dirNum++;
++        } else if (inSnapshot && child.isFile()
++            && child.asFile().isUnderConstruction()) {
++          this.snapshotUCMap.put(child.getId(), child.asFile());
++        }
++        if (i++ % 50 == 0) {
++          context.checkCancelled();
++        }
++      }
++      return dirNum;
++    }
++
++    /**
++     * Save file tree image starting from the given root.
++     * This is a recursive procedure, which first saves all children and
++     * snapshot diffs of a current directory and then moves inside the
++     * sub-directories.
++     *
++     * @param current The current node
++     * @param out The DataoutputStream to write the image
++     * @param toSaveSubtree Whether or not to save the subtree to fsimage. For
++     *                      reference node, its subtree may already have been
++     *                      saved before.
++     * @param inSnapshot Whether the current directory is in snapshot
++     * @param counter Counter to increment for namenode startup progress
++     */
++    private void saveImage(INodeDirectory current, DataOutputStream out,
++        boolean toSaveSubtree, boolean inSnapshot, Counter counter)
++        throws IOException {
++      // write the inode id of the directory
++      out.writeLong(current.getId());
++
++      if (!toSaveSubtree) {
++        return;
++      }
++
++      final ReadOnlyList<INode> children = current
++          .getChildrenList(Snapshot.CURRENT_STATE_ID);
++      int dirNum = 0;
++      List<INodeDirectory> snapshotDirs = null;
++      DirectoryWithSnapshotFeature sf = current.getDirectoryWithSnapshotFeature();
++      if (sf != null) {
++        snapshotDirs = new ArrayList<INodeDirectory>();
++        sf.getSnapshotDirectory(snapshotDirs);
++        dirNum += snapshotDirs.size();
++      }
++
++      // 2. Write INodeDirectorySnapshottable#snapshotsByNames to record all
++      // Snapshots
++      if (current instanceof INodeDirectorySnapshottable) {
++        INodeDirectorySnapshottable snapshottableNode =
++            (INodeDirectorySnapshottable) current;
++        SnapshotFSImageFormat.saveSnapshots(snapshottableNode, out);
++      } else {
++        out.writeInt(-1); // # of snapshots
++      }
++
++      // 3. Write children INode
++      dirNum += saveChildren(children, out, inSnapshot, counter);
++
++      // 4. Write DirectoryDiff lists, if there is any.
++      SnapshotFSImageFormat.saveDirectoryDiffList(current, out, referenceMap);
++
++      // Write sub-tree of sub-directories, including possible snapshots of
++      // deleted sub-directories
++      out.writeInt(dirNum); // the number of sub-directories
++      for(INode child : children) {
++        if(!child.isDirectory()) {
++          continue;
++        }
++        // make sure we only save the subtree under a reference node once
++        boolean toSave = child.isReference() ?
++            referenceMap.toProcessSubtree(child.getId()) : true;
++        saveImage(child.asDirectory(), out, toSave, inSnapshot, counter);
++      }
++      if (snapshotDirs != null) {
++        for (INodeDirectory subDir : snapshotDirs) {
++          // make sure we only save the subtree under a reference node once
++          boolean toSave = subDir.getParentReference() != null ?
++              referenceMap.toProcessSubtree(subDir.getId()) : true;
++          saveImage(subDir, out, toSave, true, counter);
++        }
++      }
++    }
++
++    /**
++     * Saves inode and increments progress counter.
++     *
++     * @param inode INode to save
++     * @param out DataOutputStream to receive inode
++     * @param writeUnderConstruction boolean true if this is under construction
++     * @param referenceMap ReferenceMap containing reference inodes
++     * @param counter Counter to increment for namenode startup progress
++     * @throws IOException thrown if there is an I/O error
++     */
++    private void saveINode2Image(INode inode, DataOutputStream out,
++        boolean writeUnderConstruction, ReferenceMap referenceMap,
++        Counter counter) throws IOException {
++      FSImageSerialization.saveINode2Image(inode, out, writeUnderConstruction,
++        referenceMap);
++      // Intentionally do not increment counter for reference inodes, because it
++      // is too difficult at this point to assess whether or not this is a
++      // reference that counts toward quota.
++      if (!(inode instanceof INodeReference)) {
++        counter.increment();
++      }
++    }
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+index b863737..4429c52 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+@@ -17,6 +17,11 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode;
+ 
++import java.io.DataInput;
++import java.io.DataOutput;
++import java.io.DataOutputStream;
++import java.io.IOException;
++
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.fs.Path;
+@@ -31,20 +36,21 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstruction;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat.ReferenceMap;
+ import org.apache.hadoop.hdfs.util.XMLUtils;
+ import org.apache.hadoop.hdfs.util.XMLUtils.InvalidXmlException;
+ import org.apache.hadoop.hdfs.util.XMLUtils.Stanza;
+ import org.apache.hadoop.io.IntWritable;
+ import org.apache.hadoop.io.LongWritable;
+ import org.apache.hadoop.io.ShortWritable;
++import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.io.WritableUtils;
+ import org.xml.sax.ContentHandler;
+ import org.xml.sax.SAXException;
+ 
+-import java.io.DataInput;
+-import java.io.DataOutput;
+-import java.io.DataOutputStream;
+-import java.io.IOException;
++import com.google.common.base.Preconditions;
+ 
+ /**
+  * Static utility functions for serializing various pieces of data in the correct
+@@ -82,6 +88,26 @@ protected TLData initialValue() {
+     final ShortWritable U_SHORT = new ShortWritable();
+     final IntWritable U_INT = new IntWritable();
+     final LongWritable U_LONG = new LongWritable();
++    final FsPermission FILE_PERM = new FsPermission((short) 0);
++  }
++
++  private static void writePermissionStatus(INodeAttributes inode,
++      DataOutput out) throws IOException {
++    final FsPermission p = TL_DATA.get().FILE_PERM;
++    p.fromShort(inode.getFsPermissionShort());
++    PermissionStatus.write(out, inode.getUserName(), inode.getGroupName(), p);
++  }
++
++  private static void writeBlocks(final Block[] blocks,
++      final DataOutput out) throws IOException {
++    if (blocks == null) {
++      out.writeInt(0);
++    } else {
++      out.writeInt(blocks.length);
++      for (Block blk : blocks) {
++        blk.write(out);
++      }
++    }
+   }
+ 
+   // Helper function that reads in an INodeUnderConstruction
+@@ -127,6 +153,183 @@ static INodeFile readINodeUnderConstruction(
+     return file;
+   }
+ 
++  // Helper function that writes an INodeUnderConstruction
++  // into the input stream
++  //
++  static void writeINodeUnderConstruction(DataOutputStream out, INodeFile cons,
++      String path) throws IOException {
++    writeString(path, out);
++    out.writeLong(cons.getId());
++    out.writeShort(cons.getFileReplication());
++    out.writeLong(cons.getModificationTime());
++    out.writeLong(cons.getPreferredBlockSize());
++
++    writeBlocks(cons.getBlocks(), out);
++    cons.getPermissionStatus().write(out);
++
++    FileUnderConstructionFeature uc = cons.getFileUnderConstructionFeature();
++    writeString(uc.getClientName(), out);
++    writeString(uc.getClientMachine(), out);
++
++    out.writeInt(0); //  do not store locations of last block
++  }
++
++  /**
++   * Serialize a {@link INodeFile} node
++   * @param node The node to write
++   * @param out The {@link DataOutputStream} where the fields are written
++   * @param writeBlock Whether to write block information
++   */
++  public static void writeINodeFile(INodeFile file, DataOutput out,
++      boolean writeUnderConstruction) throws IOException {
++    writeLocalName(file, out);
++    out.writeLong(file.getId());
++    out.writeShort(file.getFileReplication());
++    out.writeLong(file.getModificationTime());
++    out.writeLong(file.getAccessTime());
++    out.writeLong(file.getPreferredBlockSize());
++
++    writeBlocks(file.getBlocks(), out);
++    SnapshotFSImageFormat.saveFileDiffList(file, out);
++
++    if (writeUnderConstruction) {
++      if (file.isUnderConstruction()) {
++        out.writeBoolean(true);
++        final FileUnderConstructionFeature uc = file.getFileUnderConstructionFeature();
++        writeString(uc.getClientName(), out);
++        writeString(uc.getClientMachine(), out);
++      } else {
++        out.writeBoolean(false);
++      }
++    }
++
++    writePermissionStatus(file, out);
++  }
++
++  /** Serialize an {@link INodeFileAttributes}. */
++  public static void writeINodeFileAttributes(INodeFileAttributes file,
++      DataOutput out) throws IOException {
++    writeLocalName(file, out);
++    writePermissionStatus(file, out);
++    out.writeLong(file.getModificationTime());
++    out.writeLong(file.getAccessTime());
++
++    out.writeShort(file.getFileReplication());
++    out.writeLong(file.getPreferredBlockSize());
++  }
++
++  private static void writeQuota(Quota.Counts quota, DataOutput out)
++      throws IOException {
++    out.writeLong(quota.get(Quota.NAMESPACE));
++    out.writeLong(quota.get(Quota.DISKSPACE));
++  }
++
++  /**
++   * Serialize a {@link INodeDirectory}
++   * @param node The node to write
++   * @param out The {@link DataOutput} where the fields are written
++   */
++  public static void writeINodeDirectory(INodeDirectory node, DataOutput out)
++      throws IOException {
++    writeLocalName(node, out);
++    out.writeLong(node.getId());
++    out.writeShort(0);  // replication
++    out.writeLong(node.getModificationTime());
++    out.writeLong(0);   // access time
++    out.writeLong(0);   // preferred block size
++    out.writeInt(-1);   // # of blocks
++
++    writeQuota(node.getQuotaCounts(), out);
++
++    if (node instanceof INodeDirectorySnapshottable) {
++      out.writeBoolean(true);
++    } else {
++      out.writeBoolean(false);
++      out.writeBoolean(node.isWithSnapshot());
++    }
++
++    writePermissionStatus(node, out);
++  }
++
++  /**
++   * Serialize a {@link INodeDirectory}
++   * @param a The node to write
++   * @param out The {@link DataOutput} where the fields are written
++   */
++  public static void writeINodeDirectoryAttributes(
++      INodeDirectoryAttributes a, DataOutput out) throws IOException {
++    writeLocalName(a, out);
++    writePermissionStatus(a, out);
++    out.writeLong(a.getModificationTime());
++    writeQuota(a.getQuotaCounts(), out);
++  }
++
++  /**
++   * Serialize a {@link INodeSymlink} node
++   * @param node The node to write
++   * @param out The {@link DataOutput} where the fields are written
++   */
++  private static void writeINodeSymlink(INodeSymlink node, DataOutput out)
++      throws IOException {
++    writeLocalName(node, out);
++    out.writeLong(node.getId());
++    out.writeShort(0);  // replication
++    out.writeLong(0);   // modification time
++    out.writeLong(0);   // access time
++    out.writeLong(0);   // preferred block size
++    out.writeInt(-2);   // # of blocks
++
++    Text.writeString(out, node.getSymlinkString());
++    writePermissionStatus(node, out);
++  }
++
++  /** Serialize a {@link INodeReference} node */
++  private static void writeINodeReference(INodeReference ref, DataOutput out,
++      boolean writeUnderConstruction, ReferenceMap referenceMap
++      ) throws IOException {
++    writeLocalName(ref, out);
++    out.writeLong(ref.getId());
++    out.writeShort(0);  // replication
++    out.writeLong(0);   // modification time
++    out.writeLong(0);   // access time
++    out.writeLong(0);   // preferred block size
++    out.writeInt(-3);   // # of blocks
++
++    final boolean isWithName = ref instanceof INodeReference.WithName;
++    out.writeBoolean(isWithName);
++
++    if (!isWithName) {
++      Preconditions.checkState(ref instanceof INodeReference.DstReference);
++      // dst snapshot id
++      out.writeInt(((INodeReference.DstReference) ref).getDstSnapshotId());
++    } else {
++      out.writeInt(((INodeReference.WithName) ref).getLastSnapshotId());
++    }
++
++    final INodeReference.WithCount withCount
++        = (INodeReference.WithCount)ref.getReferredINode();
++    referenceMap.writeINodeReferenceWithCount(withCount, out,
++        writeUnderConstruction);
++  }
++
++  /**
++   * Save one inode's attributes to the image.
++   */
++  public static void saveINode2Image(INode node, DataOutput out,
++      boolean writeUnderConstruction, ReferenceMap referenceMap)
++      throws IOException {
++    if (node.isReference()) {
++      writeINodeReference(node.asReference(), out, writeUnderConstruction,
++          referenceMap);
++    } else if (node.isDirectory()) {
++      writeINodeDirectory(node.asDirectory(), out);
++    } else if (node.isSymlink()) {
++      writeINodeSymlink(node.asSymlink(), out);
++    } else if (node.isFile()) {
++      writeINodeFile(node.asFile(), out, writeUnderConstruction);
++    }
++  }
++
+   // This should be reverted to package private once the ImageLoader
+   // code is moved into this package. This method should not be called
+   // by other code.
+@@ -226,6 +429,12 @@ static void writeShort(short value, DataOutputStream out) throws IOException {
+     in.readFully(createdNodeName);
+     return createdNodeName;
+   }
++
++  private static void writeLocalName(INodeAttributes inode, DataOutput out)
++      throws IOException {
++    final byte[] name = inode.getLocalNameBytes();
++    writeBytes(name, out);
++  }
+   
+   public static void writeBytes(byte[] data, DataOutput out)
+       throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 7e1dde6..d376137 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -87,18 +87,7 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_SUPPORT_APPEND_KEY;
+ import static org.apache.hadoop.util.Time.now;
+ 
+-import java.io.BufferedWriter;
+-import java.io.ByteArrayInputStream;
+-import java.io.DataInput;
+-import java.io.DataInputStream;
+-import java.io.DataOutputStream;
+-import java.io.File;
+-import java.io.FileNotFoundException;
+-import java.io.FileOutputStream;
+-import java.io.IOException;
+-import java.io.OutputStreamWriter;
+-import java.io.PrintWriter;
+-import java.io.StringWriter;
++import java.io.*;
+ import java.lang.management.ManagementFactory;
+ import java.net.InetAddress;
+ import java.net.URI;
+@@ -6031,6 +6020,42 @@ void unprotectedChangeLease(String src, String dst) {
+   }
+ 
+   /**
++   * Serializes leases.
++   */
++  void saveFilesUnderConstruction(DataOutputStream out,
++      Map<Long, INodeFile> snapshotUCMap) throws IOException {
++    // This is run by an inferior thread of saveNamespace, which holds a read
++    // lock on our behalf. If we took the read lock here, we could block
++    // for fairness if a writer is waiting on the lock.
++    synchronized (leaseManager) {
++      Map<String, INodeFile> nodes = leaseManager.getINodesUnderConstruction();
++      for (Map.Entry<String, INodeFile> entry : nodes.entrySet()) {
++        // TODO: for HDFS-5428, because of rename operations, some
++        // under-construction files that are
++        // in the current fs directory can also be captured in the
++        // snapshotUCMap. We should remove them from the snapshotUCMap.
++        snapshotUCMap.remove(entry.getValue().getId());
++      }
++
++      out.writeInt(nodes.size() + snapshotUCMap.size()); // write the size
++      for (Map.Entry<String, INodeFile> entry : nodes.entrySet()) {
++        FSImageSerialization.writeINodeUnderConstruction(
++            out, entry.getValue(), entry.getKey());
++      }
++      for (Map.Entry<Long, INodeFile> entry : snapshotUCMap.entrySet()) {
++        // for those snapshot INodeFileUC, we use "/.reserved/.inodes/<inodeid>"
++        // as their paths
++        StringBuilder b = new StringBuilder();
++        b.append(FSDirectory.DOT_RESERVED_PATH_PREFIX)
++            .append(Path.SEPARATOR).append(FSDirectory.DOT_INODES_STRING)
++            .append(Path.SEPARATOR).append(entry.getValue().getId());
++        FSImageSerialization.writeINodeUnderConstruction(
++            out, entry.getValue(), b.toString());
++      }
++    }
++  }
++
++  /**
+    * @return all the under-construction files in the lease map
+    */
+   Map<String, INodeFile> getFilesUnderConstruction() {
+@@ -6305,6 +6330,15 @@ void cancelDelegationToken(Token<DelegationTokenIdentifier> token)
+     getEditLog().logSync();
+   }
+ 
++  /**
++   * @param out save state of the secret manager
++   * @param sdPath String storage directory path
++   */
++  void saveSecretManagerStateCompat(DataOutputStream out, String sdPath)
++      throws IOException {
++    dtSecretManager.saveSecretManagerStateCompat(out, sdPath);
++  }
++
+   SecretManagerState saveSecretManagerState() {
+     return dtSecretManager.saveSecretManagerState();
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+index 946024b..4f303ce 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+@@ -77,7 +77,8 @@
+     IMAGE_ROLLBACK("fsimage_rollback"),
+     EDITS_NEW ("edits.new"), // from "old" pre-HDFS-1073 format
+     EDITS_INPROGRESS ("edits_inprogress"),
+-    EDITS_TMP ("edits_tmp");
++    EDITS_TMP ("edits_tmp"),
++    IMAGE_LEGACY_OIV ("fsimage_legacy_oiv");  // For pre-PB format
+ 
+     private String fileName = null;
+     private NameNodeFile(String name) { this.fileName = name; }
+@@ -693,6 +694,10 @@ public static String getRollbackImageFileName(long txid) {
+     return getNameNodeFileName(NameNodeFile.IMAGE_ROLLBACK, txid);
+   }
+ 
++  public static String getLegacyOIVImageFileName(long txid) {
++    return getNameNodeFileName(NameNodeFile.IMAGE_LEGACY_OIV, txid);
++  }
++
+   private static String getNameNodeFileName(NameNodeFile nnf, long txid) {
+     return String.format("%s_%019d", nnf.getName(), txid);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorageRetentionManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorageRetentionManager.java
+index 7c3b48c..327f14c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorageRetentionManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorageRetentionManager.java
+@@ -18,11 +18,13 @@
+ package org.apache.hadoop.hdfs.server.namenode;
+ 
+ import java.io.File;
++import java.io.FilenameFilter;
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.Comparator;
+ import java.util.EnumSet;
++import java.util.Iterator;
+ import java.util.List;
+ import java.util.TreeSet;
+ 
+@@ -233,4 +235,58 @@ private static void deleteOrWarn(File file) {
+       }      
+     }
+   }
++
++  /**
++   * Delete old OIV fsimages. Since the target dir is not a full blown
++   * storage directory, we simply list and keep the latest ones. For the
++   * same reason, no storage inspector is used.
++   */
++  void purgeOldLegacyOIVImages(String dir, long txid) {
++    File oivImageDir = new File(dir);
++    final String oivImagePrefix = NameNodeFile.IMAGE_LEGACY_OIV.getName();
++    String filesInStorage[];
++
++    // Get the listing
++    filesInStorage = oivImageDir.list(new FilenameFilter() {
++      @Override
++      public boolean accept(File dir, String name) {
++        return name.matches(oivImagePrefix + "_(\\d+)");
++      }
++    });
++
++    // Check whether there is any work to do.
++    if (filesInStorage.length <= numCheckpointsToRetain) {
++      return;
++    }
++
++    // Create a sorted list of txids from the file names.
++    TreeSet<Long> sortedTxIds = new TreeSet<Long>();
++    for (String fName : filesInStorage) {
++      // Extract the transaction id from the file name.
++      long fTxId;
++      try {
++        fTxId = Long.parseLong(fName.substring(oivImagePrefix.length() + 1));
++      } catch (NumberFormatException nfe) {
++        // This should not happen since we have already filtered it.
++        // Log and continue.
++        LOG.warn("Invalid file name. Skipping " + fName);
++        continue;
++      }
++      sortedTxIds.add(Long.valueOf(fTxId));
++    }
++
++    int numFilesToDelete = sortedTxIds.size() - numCheckpointsToRetain;
++    Iterator<Long> iter = sortedTxIds.iterator();
++    while (numFilesToDelete > 0 && iter.hasNext()) {
++      long txIdVal = iter.next().longValue();
++      String fileName = NNStorage.getLegacyOIVImageFileName(txIdVal);
++      LOG.info("Deleting " + fileName);
++      File fileToDelete = new File(oivImageDir, fileName);
++      if (!fileToDelete.delete()) {
++        // deletion failed.
++        LOG.warn("Failed to delete image file: " + fileToDelete);
++      }
++      numFilesToDelete--;
++    }
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+index 74daadf..a8e7288 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+@@ -64,6 +64,7 @@
+ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
+ import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
+ import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
++import org.apache.hadoop.hdfs.util.Canceler;
+ import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.http.HttpServer2;
+ import org.apache.hadoop.io.MD5Hash;
+@@ -123,6 +124,7 @@
+ 
+   private Thread checkpointThread;
+ 
++  private String legacyOivImageDir;
+ 
+   @Override
+   public String toString() {
+@@ -290,6 +292,9 @@ private void initialize(final Configuration conf,
+           NetUtils.getHostPortString(httpsAddress));
+     }
+ 
++    legacyOivImageDir = conf.get(
++        DFSConfigKeys.DFS_NAMENODE_LEGACY_OIV_IMAGE_DIR_KEY);
++
+     LOG.info("Checkpoint Period   :" + checkpointConf.getPeriod() + " secs "
+         + "(" + checkpointConf.getPeriod() / 60 + " min)");
+     LOG.info("Log Size Trigger    :" + checkpointConf.getTxnCount() + " txns");
+@@ -494,6 +499,7 @@ private URL getInfoServer() throws IOException {
+    * @return if the image is fetched from primary or not
+    */
+   @VisibleForTesting
++  @SuppressWarnings("deprecated")
+   public boolean doCheckpoint() throws IOException {
+     checkpointImage.ensureCurrentDirExists();
+     NNStorage dstStorage = checkpointImage.getStorage();
+@@ -556,11 +562,18 @@ public boolean doCheckpoint() throws IOException {
+ 
+     LOG.warn("Checkpoint done. New Image Size: " 
+              + dstStorage.getFsImageName(txid).length());
+-    
++
++    if (legacyOivImageDir != null && !legacyOivImageDir.isEmpty()) {
++      try {
++        checkpointImage.saveLegacyOIVImage(namesystem, legacyOivImageDir,
++            new Canceler());
++      } catch (IOException e) {
++        LOG.warn("Failed to write legacy OIV image: ", e);
++      }
++    }
+     return loadImage;
+   }
+-  
+-  
++
+   /**
+    * @param opts The parameters passed to this program.
+    * @exception Exception if the filesystem does not exist.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/StandbyCheckpointer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/StandbyCheckpointer.java
+index e329dea..941be97 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/StandbyCheckpointer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/StandbyCheckpointer.java
+@@ -183,6 +183,12 @@ private void doCheckpoint() throws InterruptedException, IOException {
+       txid = img.getStorage().getMostRecentCheckpointTxId();
+       assert txid == thisCheckpointTxId : "expected to save checkpoint at txid=" +
+         thisCheckpointTxId + " but instead saved at txid=" + txid;
++
++      // Save the legacy OIV image, if the output dir is defined.
++      String outputDir = checkpointConf.getLegacyOivImageDir();
++      if (outputDir != null && !outputDir.isEmpty()) {
++        img.saveLegacyOIVImage(namesystem, outputDir, canceler);
++      }
+     } finally {
+       namesystem.longReadUnlock();
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/AbstractINodeDiff.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/AbstractINodeDiff.java
+index 9952317..04e4fc9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/AbstractINodeDiff.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/AbstractINodeDiff.java
+@@ -17,13 +17,17 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode.snapshot;
+ 
+-import com.google.common.base.Preconditions;
++import java.io.DataOutput;
++import java.io.IOException;
++import java.util.List;
++
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+ import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
+ import org.apache.hadoop.hdfs.server.namenode.INodeAttributes;
+ import org.apache.hadoop.hdfs.server.namenode.Quota;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat.ReferenceMap;
+ 
+-import java.util.List;
++import com.google.common.base.Preconditions;
+ 
+ /**
+  * The difference of an inode between in two snapshots.
+@@ -128,4 +132,11 @@ public String toString() {
+     return getClass().getSimpleName() + ": " + this.getSnapshotId() + " (post="
+         + (posteriorDiff == null? null: posteriorDiff.getSnapshotId()) + ")";
+   }
++
++  void writeSnapshot(DataOutput out) throws IOException {
++    out.writeInt(snapshotId);
++  }
++
++  abstract void write(DataOutput out, ReferenceMap referenceMap
++      ) throws IOException;
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectoryWithSnapshotFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectoryWithSnapshotFeature.java
+index 5ee110c..a9cad94 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectoryWithSnapshotFeature.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectoryWithSnapshotFeature.java
+@@ -17,6 +17,8 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode.snapshot;
+ 
++import java.io.DataOutput;
++import java.io.IOException;
+ import java.util.ArrayDeque;
+ import java.util.ArrayList;
+ import java.util.Collections;
+@@ -32,6 +34,7 @@
+ import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport.DiffType;
+ import org.apache.hadoop.hdfs.server.namenode.Content;
+ import org.apache.hadoop.hdfs.server.namenode.ContentSummaryComputationContext;
++import org.apache.hadoop.hdfs.server.namenode.FSImageSerialization;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+ import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+@@ -39,6 +42,7 @@
+ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference;
+ import org.apache.hadoop.hdfs.server.namenode.Quota;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat.ReferenceMap;
+ import org.apache.hadoop.hdfs.util.Diff;
+ import org.apache.hadoop.hdfs.util.Diff.Container;
+ import org.apache.hadoop.hdfs.util.Diff.ListType;
+@@ -120,6 +124,35 @@ private final boolean removeChild(ListType type, final INode child) {
+       return counts;
+     }
+ 
++    /** Serialize {@link #created} */
++    private void writeCreated(DataOutput out) throws IOException {
++      final List<INode> created = getList(ListType.CREATED);
++      out.writeInt(created.size());
++      for (INode node : created) {
++        // For INode in created list, we only need to record its local name
++        byte[] name = node.getLocalNameBytes();
++        out.writeShort(name.length);
++        out.write(name);
++      }
++    }
++
++    /** Serialize {@link #deleted} */
++    private void writeDeleted(DataOutput out,
++        ReferenceMap referenceMap) throws IOException {
++      final List<INode> deleted = getList(ListType.DELETED);
++      out.writeInt(deleted.size());
++      for (INode node : deleted) {
++        FSImageSerialization.saveINode2Image(node, out, true, referenceMap);
++      }
++    }
++
++    /** Serialize to out */
++    private void write(DataOutput out, ReferenceMap referenceMap
++        ) throws IOException {
++      writeCreated(out);
++      writeDeleted(out, referenceMap);
++    }
++
+     /** Get the list of INodeDirectory contained in the deleted list */
+     private void getDirsInDeleted(List<INodeDirectory> dirList) {
+       for (INode node : getList(ListType.DELETED)) {
+@@ -315,6 +348,25 @@ int getChildrenSize() {
+     }
+ 
+     @Override
++    void write(DataOutput out, ReferenceMap referenceMap) throws IOException {
++      writeSnapshot(out);
++      out.writeInt(childrenSize);
++
++      // Write snapshotINode
++      out.writeBoolean(isSnapshotRoot);
++      if (!isSnapshotRoot) {
++        if (snapshotINode != null) {
++          out.writeBoolean(true);
++          FSImageSerialization.writeINodeDirectoryAttributes(snapshotINode, out);
++        } else {
++          out.writeBoolean(false);
++        }
++      }
++      // Write diff. Node need to write poseriorDiff, since diffs is a list.
++      diff.write(out, referenceMap);
++    }
++
++    @Override
+     Quota.Counts destroyDiffAndCollectBlocks(INodeDirectory currentINode,
+         BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes) {
+       // this diff has been deleted
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiff.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiff.java
+index 8bab9f1..919ab56 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiff.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileDiff.java
+@@ -17,13 +17,17 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode.snapshot;
+ 
++import java.io.DataOutput;
++import java.io.IOException;
++import java.util.List;
++
++import org.apache.hadoop.hdfs.server.namenode.FSImageSerialization;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+ import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
+ import org.apache.hadoop.hdfs.server.namenode.Quota;
+-
+-import java.util.List;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat.ReferenceMap;
+ 
+ /**
+  * The difference of an {@link INodeFile} between two snapshots.
+@@ -67,6 +71,20 @@ public String toString() {
+   }
+ 
+   @Override
++  void write(DataOutput out, ReferenceMap referenceMap) throws IOException {
++    writeSnapshot(out);
++    out.writeLong(fileSize);
++
++    // write snapshotINode
++    if (snapshotINode != null) {
++      out.writeBoolean(true);
++      FSImageSerialization.writeINodeFileAttributes(snapshotINode, out);
++    } else {
++      out.writeBoolean(false);
++    }
++  }
++
++  @Override
+   Quota.Counts destroyDiffAndCollectBlocks(INodeFile currentINode,
+       BlocksMapUpdateInfo collectedBlocks, final List<INode> removedINodes) {
+     return currentINode.getFileWithSnapshotFeature()
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
+index 6a80f5d..59f73f3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
+@@ -18,6 +18,7 @@
+ package org.apache.hadoop.hdfs.server.namenode.snapshot;
+ 
+ import java.io.DataInput;
++import java.io.DataOutput;
+ import java.io.IOException;
+ import java.text.SimpleDateFormat;
+ import java.util.Arrays;
+@@ -30,6 +31,7 @@
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.server.namenode.AclFeature;
+ import org.apache.hadoop.hdfs.server.namenode.FSImageFormat;
++import org.apache.hadoop.hdfs.server.namenode.FSImageSerialization;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+ import org.apache.hadoop.hdfs.util.ReadOnlyList;
+@@ -214,4 +216,11 @@ public int hashCode() {
+   public String toString() {
+     return getClass().getSimpleName() + "." + root.getLocalName() + "(id=" + id + ")";
+   }
++
++  /** Serialize the fields to out */
++  void write(DataOutput out) throws IOException {
++    out.writeInt(id);
++    // write root
++    FSImageSerialization.writeINodeDirectory(root, out);
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
+index c0527dd..0194898 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotFSImageFormat.java
+@@ -29,21 +29,75 @@
+ import org.apache.hadoop.hdfs.server.namenode.FSImageFormat;
+ import org.apache.hadoop.hdfs.server.namenode.FSImageSerialization;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
++import org.apache.hadoop.hdfs.server.namenode.INodeAttributes;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectoryAttributes;
++import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiffList;
+ import org.apache.hadoop.hdfs.tools.snapshot.SnapshotDiff;
+ import org.apache.hadoop.hdfs.util.Diff.ListType;
+-import org.apache.hadoop.hdfs.server.namenode.FSImageFormat.Loader;
++import org.apache.hadoop.hdfs.util.ReadOnlyList;
+ 
+ /**
+  * A helper class defining static methods for reading/writing snapshot related
+  * information from/to FSImage.
+  */
+ public class SnapshotFSImageFormat {
++  /**
++   * Save snapshots and snapshot quota for a snapshottable directory.
++   * @param current The directory that the snapshots belongs to.
++   * @param out The {@link DataOutput} to write.
++   * @throws IOException
++   */
++  public static void saveSnapshots(INodeDirectorySnapshottable current,
++      DataOutput out) throws IOException {
++    // list of snapshots in snapshotsByNames
++    ReadOnlyList<Snapshot> snapshots = current.getSnapshotsByNames();
++    out.writeInt(snapshots.size());
++    for (Snapshot s : snapshots) {
++      // write the snapshot id
++      out.writeInt(s.getId());
++    }
++    // snapshot quota
++    out.writeInt(current.getSnapshotQuota());
++  }
++
++  /**
++   * Save SnapshotDiff list for an INodeDirectoryWithSnapshot.
++   * @param sNode The directory that the SnapshotDiff list belongs to.
++   * @param out The {@link DataOutput} to write.
++   */
++  private static <N extends INode, A extends INodeAttributes, D extends AbstractINodeDiff<N, A, D>>
++      void saveINodeDiffs(final AbstractINodeDiffList<N, A, D> diffs,
++      final DataOutput out, ReferenceMap referenceMap) throws IOException {
++    // Record the diffs in reversed order, so that we can find the correct
++    // reference for INodes in the created list when loading the FSImage
++    if (diffs == null) {
++      out.writeInt(-1); // no diffs
++    } else {
++      final List<D> list = diffs.asList();
++      final int size = list.size();
++      out.writeInt(size);
++      for (int i = size - 1; i >= 0; i--) {
++        list.get(i).write(out, referenceMap);
++      }
++    }
++  }
++
++  public static void saveDirectoryDiffList(final INodeDirectory dir,
++      final DataOutput out, final ReferenceMap referenceMap
++      ) throws IOException {
++    saveINodeDiffs(dir.getDiffs(), out, referenceMap);
++  }
++
++  public static void saveFileDiffList(final INodeFile file,
++      final DataOutput out) throws IOException {
++    saveINodeDiffs(file.getDiffs(), out, null);
++  }
++
+   public static FileDiffList loadFileDiffList(DataInput in,
+       FSImageFormat.Loader loader) throws IOException {
+     final int size = in.readInt();
+@@ -264,6 +318,23 @@ private static DirectoryDiff loadDirectoryDiff(INodeDirectory parent,
+      * Used to record whether the subtree of the reference node has been saved 
+      */
+     private final Map<Long, Long> dirMap = new HashMap<Long, Long>();
++
++    public void writeINodeReferenceWithCount(
++        INodeReference.WithCount withCount, DataOutput out,
++        boolean writeUnderConstruction) throws IOException {
++      final INode referred = withCount.getReferredINode();
++      final long id = withCount.getId();
++      final boolean firstReferred = !referenceMap.containsKey(id);
++      out.writeBoolean(firstReferred);
++
++      if (firstReferred) {
++        FSImageSerialization.saveINode2Image(referred, out,
++            writeUnderConstruction, this);
++        referenceMap.put(id, withCount);
++      } else {
++        out.writeLong(id);
++      }
++    }
+     
+     public boolean toProcessSubtree(long id) {
+       if (dirMap.containsKey(id)) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager.java
+index 5147947..4f6a621 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/SnapshotManager.java
+@@ -18,6 +18,7 @@
+ package org.apache.hadoop.hdfs.server.namenode.snapshot;
+ 
+ import java.io.DataInput;
++import java.io.DataOutput;
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.Collections;
+@@ -287,6 +288,22 @@ void setSnapshotCounter(int counter) {
+     return snapshottables.values().toArray(
+         new INodeDirectorySnapshottable[snapshottables.size()]);
+   }
++
++  /**
++   * Write {@link #snapshotCounter}, {@link #numSnapshots},
++   * and all snapshots to the DataOutput.
++   */
++  public void write(DataOutput out) throws IOException {
++    out.writeInt(snapshotCounter);
++    out.writeInt(numSnapshots.get());
++
++    // write all snapshots.
++    for(INodeDirectorySnapshottable snapshottableDir : snapshottables.values()) {
++      for(Snapshot s : snapshottableDir.getSnapshotsByNames()) {
++        s.write(out);
++      }
++    }
++  }
+   
+   /**
+    * Read values of {@link #snapshotCounter}, {@link #numSnapshots}, and
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java
+index fd0ddd9..d8b7e36 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java
+@@ -29,7 +29,7 @@
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo.AdminStates;
+ import org.apache.hadoop.hdfs.protocol.LayoutFlags;
+-import org.apache.hadoop.hdfs.protocol.LayoutVersion;
++import org.apache.hadoop.hdfs.protocol.LayoutVersion.Feature;
+ import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
+ import org.apache.hadoop.hdfs.server.namenode.FSImageSerialization;
+ import org.apache.hadoop.hdfs.server.namenode.INodeId;
+@@ -127,7 +127,7 @@
+                                       new SimpleDateFormat("yyyy-MM-dd HH:mm");
+   private static int[] versions = { -16, -17, -18, -19, -20, -21, -22, -23,
+       -24, -25, -26, -27, -28, -30, -31, -32, -33, -34, -35, -36, -37, -38, -39,
+-      -40, -41, -42, -43, -44, -45, -46, -47, -48, -49, -50, -51, -52 };
++      -40, -41, -42, -43, -44, -45, -46, -47, -48, -49, -50, -51 };
+   private int imageVersion = 0;
+   
+   private final Map<Long, Boolean> subtreeMap = new HashMap<Long, Boolean>();
+@@ -158,8 +158,7 @@ public void loadImage(DataInputStream in, ImageVisitor v,
+       imageVersion = in.readInt();
+       if( !canLoadVersion(imageVersion))
+         throw new IOException("Cannot process fslayout version " + imageVersion);
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.ADD_LAYOUT_FLAGS, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.ADD_LAYOUT_FLAGS, imageVersion)) {
+         LayoutFlags.read(in);
+       }
+ 
+@@ -170,25 +169,22 @@ public void loadImage(DataInputStream in, ImageVisitor v,
+ 
+       v.visit(ImageElement.GENERATION_STAMP, in.readLong());
+ 
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.SEQUENTIAL_BLOCK_ID, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.SEQUENTIAL_BLOCK_ID, imageVersion)) {
+         v.visit(ImageElement.GENERATION_STAMP_V2, in.readLong());
+         v.visit(ImageElement.GENERATION_STAMP_V1_LIMIT, in.readLong());
+         v.visit(ImageElement.LAST_ALLOCATED_BLOCK_ID, in.readLong());
+       }
+ 
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.STORED_TXIDS, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.STORED_TXIDS, imageVersion)) {
+         v.visit(ImageElement.TRANSACTION_ID, in.readLong());
+       }
+       
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.ADD_INODE_ID, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.ADD_INODE_ID, imageVersion)) {
+         v.visit(ImageElement.LAST_INODE_ID, in.readLong());
+       }
+       
+-      boolean supportSnapshot = NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.SNAPSHOT, imageVersion);
++      boolean supportSnapshot = NameNodeLayoutVersion.supports(Feature.SNAPSHOT,
++          imageVersion);
+       if (supportSnapshot) {
+         v.visit(ImageElement.SNAPSHOT_COUNTER, in.readInt());
+         int numSnapshots = in.readInt();
+@@ -198,8 +194,7 @@ public void loadImage(DataInputStream in, ImageVisitor v,
+         }
+       }
+       
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.FSIMAGE_COMPRESSION, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.FSIMAGE_COMPRESSION, imageVersion)) {
+         boolean isCompressed = in.readBoolean();
+         v.visit(ImageElement.IS_COMPRESSED, String.valueOf(isCompressed));
+         if (isCompressed) {
+@@ -221,13 +216,11 @@ public void loadImage(DataInputStream in, ImageVisitor v,
+ 
+       processINodesUC(in, v, skipBlocks);
+ 
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.DELEGATION_TOKEN, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.DELEGATION_TOKEN, imageVersion)) {
+         processDelegationTokens(in, v);
+       }
+       
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.CACHING, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.CACHING, imageVersion)) {
+         processCacheManagerState(in, v);
+       }
+       v.leaveEnclosingElement(); // FSImage
+@@ -330,8 +323,7 @@ private void processINodesUC(DataInputStream in, ImageVisitor v,
+       String n = new String(name, "UTF8");
+       v.visit(ImageElement.INODE_PATH, n);
+       
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.ADD_INODE_ID, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.ADD_INODE_ID, imageVersion)) {
+         long inodeId = in.readLong();
+         v.visit(ImageElement.INODE_ID, inodeId);
+       }
+@@ -451,8 +443,7 @@ private void processINodes(DataInputStream in, ImageVisitor v,
+     v.visitEnclosingElement(ImageElement.INODES,
+         ImageElement.NUM_INODES, numInodes);
+     
+-    if (NameNodeLayoutVersion.supports(
+-        LayoutVersion.Feature.FSIMAGE_NAME_OPTIMIZATION, imageVersion)) {
++    if (NameNodeLayoutVersion.supports(Feature.FSIMAGE_NAME_OPTIMIZATION, imageVersion)) {
+       if (!supportSnapshot) {
+         processLocalNameINodes(in, v, numInodes, skipBlocks);
+       } else {
+@@ -593,8 +584,7 @@ private void processDirectoryDiff(DataInputStream in, ImageVisitor v,
+     if (!useRoot) {
+       if (in.readBoolean()) {
+         v.visitEnclosingElement(ImageElement.SNAPSHOT_INODE_DIRECTORY_ATTRIBUTES);
+-        if (NameNodeLayoutVersion.supports(
+-            LayoutVersion.Feature.OPTIMIZE_SNAPSHOT_INODES, imageVersion)) {
++        if (NameNodeLayoutVersion.supports(Feature.OPTIMIZE_SNAPSHOT_INODES, imageVersion)) {
+           processINodeDirectoryAttributes(in, v, currentINodeName);
+         } else {
+           processINode(in, v, true, currentINodeName, true);
+@@ -688,10 +678,10 @@ private String readINodePath(DataInputStream in, String parentName)
+   private void processINode(DataInputStream in, ImageVisitor v,
+       boolean skipBlocks, String parentName, boolean isSnapshotCopy)
+       throws IOException {
+-    boolean supportSnapshot = NameNodeLayoutVersion.supports(
+-        LayoutVersion.Feature.SNAPSHOT, imageVersion);
+-    boolean supportInodeId = NameNodeLayoutVersion.supports(
+-        LayoutVersion.Feature.ADD_INODE_ID, imageVersion);
++    boolean supportSnapshot = 
++        NameNodeLayoutVersion.supports(Feature.SNAPSHOT, imageVersion);
++    boolean supportInodeId = 
++        NameNodeLayoutVersion.supports(Feature.ADD_INODE_ID, imageVersion);
+     
+     v.visitEnclosingElement(ImageElement.INODE);
+     final String pathName = readINodePath(in, parentName);
+@@ -704,8 +694,7 @@ private void processINode(DataInputStream in, ImageVisitor v,
+     }
+     v.visit(ImageElement.REPLICATION, in.readShort());
+     v.visit(ImageElement.MODIFICATION_TIME, formatDate(in.readLong()));
+-    if(NameNodeLayoutVersion.supports(
+-        LayoutVersion.Feature.FILE_ACCESS_TIME, imageVersion))
++    if(NameNodeLayoutVersion.supports(Feature.FILE_ACCESS_TIME, imageVersion))
+       v.visit(ImageElement.ACCESS_TIME, formatDate(in.readLong()));
+     v.visit(ImageElement.BLOCK_SIZE, in.readLong());
+     int numBlocks = in.readInt();
+@@ -734,8 +723,7 @@ private void processINode(DataInputStream in, ImageVisitor v,
+         dirNodeMap.put(inodeId, pathName);
+       }
+       v.visit(ImageElement.NS_QUOTA, numBlocks == -1 ? in.readLong() : -1);
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.DISKSPACE_QUOTA, imageVersion))
++      if (NameNodeLayoutVersion.supports(Feature.DISKSPACE_QUOTA, imageVersion))
+         v.visit(ImageElement.DS_QUOTA, numBlocks == -1 ? in.readLong() : -1);
+       if (supportSnapshot) {
+         boolean snapshottable = in.readBoolean();
+@@ -783,8 +771,7 @@ private void processINodeFileAttributes(DataInputStream in, ImageVisitor v,
+     v.visit(ImageElement.INODE_PATH, pathName);
+     processPermission(in, v);
+     v.visit(ImageElement.MODIFICATION_TIME, formatDate(in.readLong()));
+-    if(NameNodeLayoutVersion.supports(
+-        LayoutVersion.Feature.FILE_ACCESS_TIME, imageVersion)) {
++    if(NameNodeLayoutVersion.supports(Feature.FILE_ACCESS_TIME, imageVersion)) {
+       v.visit(ImageElement.ACCESS_TIME, formatDate(in.readLong()));
+     }
+ 
+@@ -813,8 +800,7 @@ private void processFileDiff(DataInputStream in, ImageVisitor v,
+     v.visit(ImageElement.SNAPSHOT_FILE_SIZE, in.readLong());
+     if (in.readBoolean()) {
+       v.visitEnclosingElement(ImageElement.SNAPSHOT_INODE_FILE_ATTRIBUTES);
+-      if (NameNodeLayoutVersion.supports(
+-          LayoutVersion.Feature.OPTIMIZE_SNAPSHOT_INODES, imageVersion)) {
++      if (NameNodeLayoutVersion.supports(Feature.OPTIMIZE_SNAPSHOT_INODES, imageVersion)) {
+         processINodeFileAttributes(in, v, currentINodeName);
+       } else {
+         processINode(in, v, true, currentINodeName, true);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java
+index f3c5cbb..4663e37 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewer.java
+@@ -81,7 +81,7 @@
+     "     analyzed (128GB by default).\n" +
+     "    -step defines the granularity of the distribution. (2MB by default)\n" +
+     "  * NameDistribution: This processor analyzes the file names\n" +
+-    "    in the image and prints total number of file names and how frequently" +
++    "    in the image and prints total number of file names and how frequently\n" +
+     "    file names are reused.\n" +
+     "\n" + 
+     "Required command line arguments:\n" +
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCheckpoint.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCheckpoint.java
+index c02be0b..3b56045 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCheckpoint.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCheckpoint.java
+@@ -44,6 +44,7 @@
+ import java.util.List;
+ import java.util.Random;
+ 
++import com.google.common.io.Files;
+ import org.apache.commons.cli.ParseException;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -2402,6 +2403,46 @@ public void testCommandLineParsing() throws ParseException {
+     }
+   }
+ 
++  @Test
++  public void testLegacyOivImage() throws Exception {
++    MiniDFSCluster cluster = null;
++    SecondaryNameNode secondary = null;
++    File tmpDir = Files.createTempDir();
++    Configuration conf = new HdfsConfiguration();
++    conf.set(DFSConfigKeys.DFS_NAMENODE_LEGACY_OIV_IMAGE_DIR_KEY,
++        tmpDir.getAbsolutePath());
++    conf.set(DFSConfigKeys.DFS_NAMENODE_NUM_CHECKPOINTS_RETAINED_KEY,
++        "2");
++
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0)
++              .format(true).build();
++
++      secondary = startSecondaryNameNode(conf);
++
++      // Checkpoint once
++      secondary.doCheckpoint();
++      String files1[] = tmpDir.list();
++      assertEquals("Only one file is expected", 1, files1.length);
++
++      // Perform more checkpointngs and check whether retention management
++      // is working.
++      secondary.doCheckpoint();
++      secondary.doCheckpoint();
++      String files2[] = tmpDir.list();
++      assertEquals("Two files are expected", 2, files2.length);
++
++      // Verify that the first file is deleted.
++      for (String fName : files2) {
++        assertFalse(fName.equals(files1[0]));
++      }
++    } finally {
++      cleanup(secondary);
++      cleanup(cluster);
++      tmpDir.delete();
++    }
++  }
++
+   private static void cleanup(SecondaryNameNode snn) {
+     if (snn != null) {
+       try {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestStandbyCheckpoints.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestStandbyCheckpoints.java
+index 67a5905..3813319 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestStandbyCheckpoints.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestStandbyCheckpoints.java
+@@ -66,24 +66,28 @@
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableSet;
+ import com.google.common.collect.Lists;
+-
++import com.google.common.io.Files;
+ 
+ public class TestStandbyCheckpoints {
+   private static final int NUM_DIRS_IN_LOG = 200000;
+   protected MiniDFSCluster cluster;
+   protected NameNode nn0, nn1;
+   protected FileSystem fs;
++  protected File tmpOivImgDir;
+   
+   private static final Log LOG = LogFactory.getLog(TestStandbyCheckpoints.class);
+ 
+   @SuppressWarnings("rawtypes")
+   @Before
+   public void setupCluster() throws Exception {
++    tmpOivImgDir = Files.createTempDir();
+     Configuration conf = new Configuration();
+     conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_CHECK_PERIOD_KEY, 1);
+     conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_TXNS_KEY, 5);
+     conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
+-    
++    conf.set(DFSConfigKeys.DFS_NAMENODE_LEGACY_OIV_IMAGE_DIR_KEY,
++        tmpOivImgDir.getAbsolutePath());
++
+     // Dial down the retention of extra edits and checkpoints. This is to
+     // help catch regressions of HDFS-4238 (SBN should not purge shared edits)
+     conf.setInt(DFSConfigKeys.DFS_NAMENODE_NUM_CHECKPOINTS_RETAINED_KEY, 1);
+@@ -129,6 +133,9 @@ public void testSBNCheckpoints() throws Exception {
+     // Once the standby catches up, it should notice that it needs to
+     // do a checkpoint and save one to its local directories.
+     HATestUtil.waitForCheckpoint(cluster, 1, ImmutableList.of(12));
++
++    // It should have saved the oiv image too.
++    assertEquals("One file is expected", 1, tmpOivImgDir.list().length);
+     
+     // It should also upload it back to the active.
+     HATestUtil.waitForCheckpoint(cluster, 0, ImmutableList.of(12));
+-- 
+1.7.0.4
+

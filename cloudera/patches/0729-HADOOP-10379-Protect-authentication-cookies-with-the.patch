@@ -1,0 +1,647 @@
+From 3082e73b59332ac7da9eb56ef930e15c1082d264 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 3 Jun 2014 00:26:35 -0700
+Subject: [PATCH 729/795] HADOOP-10379 Protect authentication cookies with the HttpOnly and Secure flags
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1574284 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../server/AuthenticationFilter.java               |   66 ++++--
+ .../server/TestAuthenticationFilter.java           |  252 +++++++++-----------
+ .../java/org/apache/hadoop/http/HttpServer2.java   |    9 +
+ .../org/apache/hadoop/http/TestHttpCookieFlag.java |  141 +++++++++++
+ 4 files changed, 308 insertions(+), 160 deletions(-)
+ create mode 100644 hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpCookieFlag.java
+
+diff --git a/hadoop-common-project/hadoop-auth/src/main/java/org/apache/hadoop/security/authentication/server/AuthenticationFilter.java b/hadoop-common-project/hadoop-auth/src/main/java/org/apache/hadoop/security/authentication/server/AuthenticationFilter.java
+index 0bd78f5..9acc4dd 100644
+--- a/hadoop-common-project/hadoop-auth/src/main/java/org/apache/hadoop/security/authentication/server/AuthenticationFilter.java
++++ b/hadoop-common-project/hadoop-auth/src/main/java/org/apache/hadoop/security/authentication/server/AuthenticationFilter.java
+@@ -13,6 +13,8 @@
+  */
+ package org.apache.hadoop.security.authentication.server;
+ 
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
+ import org.apache.hadoop.security.authentication.client.AuthenticationException;
+ import org.apache.hadoop.security.authentication.util.Signer;
+@@ -32,9 +34,8 @@
+ import javax.servlet.http.HttpServletResponse;
+ import java.io.IOException;
+ import java.security.Principal;
+-import java.util.Enumeration;
+-import java.util.Properties;
+-import java.util.Random;
++import java.text.SimpleDateFormat;
++import java.util.*;
+ 
+ /**
+  * The {@link AuthenticationFilter} enables protecting web application resources with different (pluggable)
+@@ -69,6 +70,9 @@
+  * the prefix from it and it will pass them to the the authentication handler for initialization. Properties that do
+  * not start with the prefix will not be passed to the authentication handler initialization.
+  */
++
++@InterfaceAudience.Private
++@InterfaceStability.Unstable
+ public class AuthenticationFilter implements Filter {
+ 
+   private static Logger LOG = LoggerFactory.getLogger(AuthenticationFilter.class);
+@@ -331,6 +335,7 @@ public void doFilter(ServletRequest request, ServletResponse response, FilterCha
+     String unauthorizedMsg = "";
+     HttpServletRequest httpRequest = (HttpServletRequest) request;
+     HttpServletResponse httpResponse = (HttpServletResponse) response;
++    boolean isHttps = "https".equals(httpRequest.getScheme());
+     try {
+       boolean newToken = false;
+       AuthenticationToken token;
+@@ -378,8 +383,8 @@ public Principal getUserPrincipal() {
+           };
+           if (newToken && !token.isExpired() && token != AuthenticationToken.ANONYMOUS) {
+             String signedToken = signer.sign(token.toString());
+-            Cookie cookie = createCookie(signedToken);
+-            httpResponse.addCookie(cookie);
++            createAuthCookie(httpResponse, signedToken, getCookieDomain(),
++                    getCookiePath(), token.getExpires(), isHttps);
+           }
+           filterChain.doFilter(httpRequest, httpResponse);
+         }
+@@ -392,31 +397,52 @@ public Principal getUserPrincipal() {
+     }
+     if (unauthorizedResponse) {
+       if (!httpResponse.isCommitted()) {
+-        Cookie cookie = createCookie("");
+-        cookie.setMaxAge(0);
+-        httpResponse.addCookie(cookie);
+-        httpResponse.sendError(HttpServletResponse.SC_UNAUTHORIZED, unauthorizedMsg);
++        createAuthCookie(httpResponse, "", getCookieDomain(),
++                getCookiePath(), 0, isHttps);
++        httpResponse.sendError(HttpServletResponse.SC_UNAUTHORIZED,
++                unauthorizedMsg);
+       }
+     }
+   }
+ 
+   /**
+-   * Creates the Hadoop authentiation HTTP cookie.
+-   * <p/>
+-   * It sets the domain and path specified in the configuration.
++   * Creates the Hadoop authentication HTTP cookie.
+    *
+    * @param token authentication token for the cookie.
++   * @param expires UNIX timestamp that indicates the expire date of the
++   *                cookie. It has no effect if its value < 0.
+    *
+-   * @return the HTTP cookie.
++   * XXX the following code duplicate some logic in Jetty / Servlet API,
++   * because of the fact that Hadoop is stuck at servlet 3.0 and jetty 6
++   * right now.
+    */
+-  protected Cookie createCookie(String token) {
+-    Cookie cookie = new Cookie(AuthenticatedURL.AUTH_COOKIE, token);
+-    if (getCookieDomain() != null) {
+-      cookie.setDomain(getCookieDomain());
++  public static void createAuthCookie(HttpServletResponse resp, String token,
++                                      String domain, String path, long expires,
++                                      boolean isSecure) {
++    StringBuilder sb = new StringBuilder(AuthenticatedURL.AUTH_COOKIE).append
++            ("=").append(token);
++
++    if (path != null) {
++      sb.append("; Path=").append(path);
+     }
+-    if (getCookiePath() != null) {
+-      cookie.setPath(getCookiePath());
++
++    if (domain != null) {
++      sb.append("; Domain=").append(domain);
+     }
+-    return cookie;
++
++    if (expires >= 0) {
++      Date date = new Date(expires);
++      SimpleDateFormat df = new SimpleDateFormat("EEE, " +
++              "dd-MMM-yyyy HH:mm:ss zzz");
++      df.setTimeZone(TimeZone.getTimeZone("GMT"));
++      sb.append("; Expires=").append(df.format(date));
++    }
++
++    if (isSecure) {
++      sb.append("; Secure");
++    }
++
++    sb.append("; HttpOnly");
++    resp.addHeader("Set-Cookie", sb.toString());
+   }
+ }
+diff --git a/hadoop-common-project/hadoop-auth/src/test/java/org/apache/hadoop/security/authentication/server/TestAuthenticationFilter.java b/hadoop-common-project/hadoop-auth/src/test/java/org/apache/hadoop/security/authentication/server/TestAuthenticationFilter.java
+index 6820151..dcadf15 100644
+--- a/hadoop-common-project/hadoop-auth/src/test/java/org/apache/hadoop/security/authentication/server/TestAuthenticationFilter.java
++++ b/hadoop-common-project/hadoop-auth/src/test/java/org/apache/hadoop/security/authentication/server/TestAuthenticationFilter.java
+@@ -18,6 +18,7 @@
+ import org.apache.hadoop.security.authentication.util.Signer;
+ import org.junit.Assert;
+ import org.junit.Test;
++import org.mockito.Mock;
+ import org.mockito.Mockito;
+ import org.mockito.invocation.InvocationOnMock;
+ import org.mockito.stubbing.Answer;
+@@ -31,9 +32,7 @@
+ import javax.servlet.http.HttpServletRequest;
+ import javax.servlet.http.HttpServletResponse;
+ import java.io.IOException;
+-import java.util.Arrays;
+-import java.util.Properties;
+-import java.util.Vector;
++import java.util.*;
+ 
+ public class TestAuthenticationFilter {
+ 
+@@ -400,103 +399,87 @@ private void _testDoFilterAuthentication(boolean withDomainPath,
+                                            boolean invalidToken,
+                                            boolean expired) throws Exception {
+     AuthenticationFilter filter = new AuthenticationFilter();
+-    try {
+-      FilterConfig config = Mockito.mock(FilterConfig.class);
+-      Mockito.when(config.getInitParameter("management.operation.return")).
+-        thenReturn("true");
+-      Mockito.when(config.getInitParameter("expired.token")).
+-        thenReturn(Boolean.toString(expired));
+-      Mockito.when(config.getInitParameter(AuthenticationFilter.AUTH_TYPE)).thenReturn(
+-        DummyAuthenticationHandler.class.getName());
+-      Mockito.when(config.getInitParameter(AuthenticationFilter.AUTH_TOKEN_VALIDITY)).thenReturn("1000");
+-      Mockito.when(config.getInitParameter(AuthenticationFilter.SIGNATURE_SECRET)).thenReturn("secret");
+-      Mockito.when(config.getInitParameterNames()).thenReturn(
+-        new Vector<String>(Arrays.asList(AuthenticationFilter.AUTH_TYPE,
+-                                 AuthenticationFilter.AUTH_TOKEN_VALIDITY,
+-                                 AuthenticationFilter.SIGNATURE_SECRET,
+-                                 "management.operation.return",
+-                                 "expired.token")).elements());
+-
+-      if (withDomainPath) {
+-        Mockito.when(config.getInitParameter(AuthenticationFilter.COOKIE_DOMAIN)).thenReturn(".foo.com");
+-        Mockito.when(config.getInitParameter(AuthenticationFilter.COOKIE_PATH)).thenReturn("/bar");
+-        Mockito.when(config.getInitParameterNames()).thenReturn(
+-          new Vector<String>(Arrays.asList(AuthenticationFilter.AUTH_TYPE,
+-                                   AuthenticationFilter.AUTH_TOKEN_VALIDITY,
+-                                   AuthenticationFilter.SIGNATURE_SECRET,
+-                                   AuthenticationFilter.COOKIE_DOMAIN,
+-                                   AuthenticationFilter.COOKIE_PATH,
+-                                   "management.operation.return")).elements());
+-      }
+-
+-      filter.init(config);
+-
+-      HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+-      Mockito.when(request.getParameter("authenticated")).thenReturn("true");
+-      Mockito.when(request.getRequestURL()).thenReturn(new StringBuffer("http://foo:8080/bar"));
+-      Mockito.when(request.getQueryString()).thenReturn("authenticated=true");
+-
+-      if (invalidToken) {
+-        Mockito.when(request.getCookies()).thenReturn(
+-          new Cookie[] { new Cookie(AuthenticatedURL.AUTH_COOKIE, "foo")}
+-        );
+-      }
++    FilterConfig config = Mockito.mock(FilterConfig.class);
++    Mockito.when(config.getInitParameter("management.operation.return")).
++            thenReturn("true");
++    Mockito.when(config.getInitParameter("expired.token")).
++            thenReturn(Boolean.toString(expired));
++    Mockito.when(config.getInitParameter(AuthenticationFilter.AUTH_TYPE))
++            .thenReturn(DummyAuthenticationHandler.class.getName());
++    Mockito.when(config.getInitParameter(AuthenticationFilter
++            .AUTH_TOKEN_VALIDITY)).thenReturn("1000");
++    Mockito.when(config.getInitParameter(AuthenticationFilter
++            .SIGNATURE_SECRET)).thenReturn("secret");
++    Mockito.when(config.getInitParameterNames()).thenReturn(new
++            Vector<String>(Arrays.asList(AuthenticationFilter.AUTH_TYPE,
++            AuthenticationFilter.AUTH_TOKEN_VALIDITY,
++            AuthenticationFilter.SIGNATURE_SECRET, "management.operation" +
++            ".return", "expired.token")).elements());
++
++    if (withDomainPath) {
++      Mockito.when(config.getInitParameter(AuthenticationFilter
++              .COOKIE_DOMAIN)).thenReturn(".foo.com");
++      Mockito.when(config.getInitParameter(AuthenticationFilter.COOKIE_PATH))
++              .thenReturn("/bar");
++      Mockito.when(config.getInitParameterNames()).thenReturn(new
++              Vector<String>(Arrays.asList(AuthenticationFilter.AUTH_TYPE,
++              AuthenticationFilter.AUTH_TOKEN_VALIDITY,
++              AuthenticationFilter.SIGNATURE_SECRET,
++              AuthenticationFilter.COOKIE_DOMAIN, AuthenticationFilter
++              .COOKIE_PATH, "management.operation.return")).elements());
++    }
+ 
+-      HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
++    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
++    Mockito.when(request.getParameter("authenticated")).thenReturn("true");
++    Mockito.when(request.getRequestURL()).thenReturn(new StringBuffer
++            ("http://foo:8080/bar"));
++    Mockito.when(request.getQueryString()).thenReturn("authenticated=true");
+ 
+-      FilterChain chain = Mockito.mock(FilterChain.class);
++    if (invalidToken) {
++      Mockito.when(request.getCookies()).thenReturn(new Cookie[]{new Cookie
++              (AuthenticatedURL.AUTH_COOKIE, "foo")});
++    }
+ 
+-      final boolean[] calledDoFilter = new boolean[1];
++    HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
++    FilterChain chain = Mockito.mock(FilterChain.class);
+ 
+-      Mockito.doAnswer(
+-        new Answer<Object>() {
+-          @Override
+-          public Object answer(InvocationOnMock invocation) throws Throwable {
+-            calledDoFilter[0] = true;
+-            return null;
+-          }
+-        }
+-      ).when(chain).doFilter(Mockito.<ServletRequest>anyObject(), Mockito.<ServletResponse>anyObject());
+-
+-      final Cookie[] setCookie = new Cookie[1];
+-      Mockito.doAnswer(
+-        new Answer<Object>() {
+-          @Override
+-          public Object answer(InvocationOnMock invocation) throws Throwable {
+-            Object[] args = invocation.getArguments();
+-            setCookie[0] = (Cookie) args[0];
+-            return null;
+-          }
+-        }
+-      ).when(response).addCookie(Mockito.<Cookie>anyObject());
++    final HashMap<String, String> cookieMap = new HashMap<String, String>();
++    Mockito.doAnswer(new Answer<Object>() {
++      @Override
++      public Object answer(InvocationOnMock invocation) throws Throwable {
++        String cookieHeader = (String)invocation.getArguments()[1];
++        parseCookieMap(cookieHeader, cookieMap);
++        return null;
++      }
++    }).when(response).addHeader(Mockito.eq("Set-Cookie"), Mockito.anyString());
+ 
++    try {
++      filter.init(config);
+       filter.doFilter(request, response, chain);
+ 
+       if (expired) {
+         Mockito.verify(response, Mockito.never()).
+           addCookie(Mockito.any(Cookie.class));
+       } else {
+-        Assert.assertNotNull(setCookie[0]);
+-        Assert.assertEquals(AuthenticatedURL.AUTH_COOKIE, setCookie[0].getName());
+-        Assert.assertTrue(setCookie[0].getValue().contains("u="));
+-        Assert.assertTrue(setCookie[0].getValue().contains("p="));
+-        Assert.assertTrue(setCookie[0].getValue().contains("t="));
+-        Assert.assertTrue(setCookie[0].getValue().contains("e="));
+-        Assert.assertTrue(setCookie[0].getValue().contains("s="));
+-        Assert.assertTrue(calledDoFilter[0]);
++        String v = cookieMap.get(AuthenticatedURL.AUTH_COOKIE);
++        Assert.assertNotNull(v);
++        Assert.assertTrue(v.contains("u=") && v.contains("p=") && v.contains
++                ("t=") && v.contains("e=") && v.contains("s="));
++        Mockito.verify(chain).doFilter(Mockito.any(ServletRequest.class),
++                Mockito.any(ServletResponse.class));
+ 
+         Signer signer = new Signer("secret".getBytes());
+-        String value = signer.verifyAndExtract(setCookie[0].getValue());
++        String value = signer.verifyAndExtract(v);
+         AuthenticationToken token = AuthenticationToken.parse(value);
+         Assert.assertEquals(System.currentTimeMillis() + 1000 * 1000,
+                      token.getExpires(), 100);
+ 
+         if (withDomainPath) {
+-          Assert.assertEquals(".foo.com", setCookie[0].getDomain());
+-          Assert.assertEquals("/bar", setCookie[0].getPath());
++          Assert.assertEquals(".foo.com", cookieMap.get("Domain"));
++          Assert.assertEquals("/bar", cookieMap.get("Path"));
+         } else {
+-          Assert.assertNull(setCookie[0].getDomain());
+-          Assert.assertNull(setCookie[0].getPath());
++          Assert.assertFalse(cookieMap.containsKey("Domain"));
++          Assert.assertFalse(cookieMap.containsKey("Path"));
+         }
+       }
+     } finally {
+@@ -504,6 +487,26 @@ public Object answer(InvocationOnMock invocation) throws Throwable {
+     }
+   }
+ 
++  private static void parseCookieMap(String cookieHeader, HashMap<String,
++          String> cookieMap) {
++    for (String pair : cookieHeader.split(";")) {
++      String p = pair.trim();
++      int idx = p.indexOf('=');
++      final String k, v;
++      if (idx == -1) {
++        k = p;
++        v = null;
++      } else if (idx == p.length()) {
++        k = p.substring(0, idx - 1);
++        v = null;
++      } else {
++        k = p.substring(0, idx);
++        v = p.substring(idx + 1);
++      }
++      cookieMap.put(k, v);
++    }
++  }
++
+   @Test
+   public void testDoFilterAuthentication() throws Exception {
+     _testDoFilterAuthentication(false, false, false);
+@@ -601,41 +604,39 @@ public void testDoFilterAuthenticatedExpired() throws Exception {
+       Mockito.when(request.getCookies()).thenReturn(new Cookie[]{cookie});
+ 
+       HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+-
+       FilterChain chain = Mockito.mock(FilterChain.class);
+ 
+-      Mockito.doAnswer(
+-        new Answer<Object>() {
+-          @Override
+-          public Object answer(InvocationOnMock invocation) throws Throwable {
+-            Assert.fail();
+-            return null;
+-          }
+-        }
+-      ).when(chain).doFilter(Mockito.<ServletRequest>anyObject(), Mockito.<ServletResponse>anyObject());
++      verifyUnauthorized(filter, request, response, chain);
++    } finally {
++      filter.destroy();
++    }
++  }
+ 
+-      final Cookie[] setCookie = new Cookie[1];
+-      Mockito.doAnswer(
+-        new Answer<Object>() {
+-          @Override
+-          public Object answer(InvocationOnMock invocation) throws Throwable {
+-            Object[] args = invocation.getArguments();
+-            setCookie[0] = (Cookie) args[0];
+-            return null;
+-          }
+-        }
+-      ).when(response).addCookie(Mockito.<Cookie>anyObject());
++  private static void verifyUnauthorized(AuthenticationFilter filter,
++                                         HttpServletRequest request,
++                                         HttpServletResponse response,
++                                         FilterChain chain) throws
++                                                            IOException,
++                                                            ServletException {
++    final HashMap<String, String> cookieMap = new HashMap<String, String>();
++    Mockito.doAnswer(new Answer<Object>() {
++      @Override
++      public Object answer(InvocationOnMock invocation) throws Throwable {
++        String cookieHeader = (String) invocation.getArguments()[1];
++        parseCookieMap(cookieHeader, cookieMap);
++        return null;
++      }
++    }).when(response).addHeader(Mockito.eq("Set-Cookie"), Mockito.anyString());
+ 
+-      filter.doFilter(request, response, chain);
++    filter.doFilter(request, response, chain);
+ 
+-      Mockito.verify(response).sendError(Mockito.eq(HttpServletResponse.SC_UNAUTHORIZED), Mockito.anyString());
++    Mockito.verify(response).sendError(Mockito.eq(HttpServletResponse
++            .SC_UNAUTHORIZED), Mockito.anyString());
++    Mockito.verify(chain, Mockito.never()).doFilter(Mockito.any
++            (ServletRequest.class), Mockito.any(ServletResponse.class));
+ 
+-      Assert.assertNotNull(setCookie[0]);
+-      Assert.assertEquals(AuthenticatedURL.AUTH_COOKIE, setCookie[0].getName());
+-      Assert.assertEquals("", setCookie[0].getValue());
+-    } finally {
+-      filter.destroy();
+-    }
++    Assert.assertTrue(cookieMap.containsKey(AuthenticatedURL.AUTH_COOKIE));
++    Assert.assertEquals("", cookieMap.get(AuthenticatedURL.AUTH_COOKIE));
+   }
+ 
+   @Test
+@@ -665,38 +666,9 @@ public void testDoFilterAuthenticatedInvalidType() throws Exception {
+       Mockito.when(request.getCookies()).thenReturn(new Cookie[]{cookie});
+ 
+       HttpServletResponse response = Mockito.mock(HttpServletResponse.class);
+-
+       FilterChain chain = Mockito.mock(FilterChain.class);
+ 
+-      Mockito.doAnswer(
+-        new Answer<Object>() {
+-          @Override
+-          public Object answer(InvocationOnMock invocation) throws Throwable {
+-            Assert.fail();
+-            return null;
+-          }
+-        }
+-      ).when(chain).doFilter(Mockito.<ServletRequest>anyObject(), Mockito.<ServletResponse>anyObject());
+-
+-      final Cookie[] setCookie = new Cookie[1];
+-      Mockito.doAnswer(
+-        new Answer<Object>() {
+-          @Override
+-          public Object answer(InvocationOnMock invocation) throws Throwable {
+-            Object[] args = invocation.getArguments();
+-            setCookie[0] = (Cookie) args[0];
+-            return null;
+-          }
+-        }
+-      ).when(response).addCookie(Mockito.<Cookie>anyObject());
+-
+-      filter.doFilter(request, response, chain);
+-
+-      Mockito.verify(response).sendError(Mockito.eq(HttpServletResponse.SC_UNAUTHORIZED), Mockito.anyString());
+-
+-      Assert.assertNotNull(setCookie[0]);
+-      Assert.assertEquals(AuthenticatedURL.AUTH_COOKIE, setCookie[0].getName());
+-      Assert.assertEquals("", setCookie[0].getValue());
++      verifyUnauthorized(filter, request, response, chain);
+     } finally {
+       filter.destroy();
+     }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer2.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer2.java
+index 478f046..67b89e1 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer2.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer2.java
+@@ -67,12 +67,14 @@
+ import org.mortbay.jetty.MimeTypes;
+ import org.mortbay.jetty.RequestLog;
+ import org.mortbay.jetty.Server;
++import org.mortbay.jetty.SessionManager;
+ import org.mortbay.jetty.handler.ContextHandler;
+ import org.mortbay.jetty.handler.ContextHandlerCollection;
+ import org.mortbay.jetty.handler.HandlerCollection;
+ import org.mortbay.jetty.handler.RequestLogHandler;
+ import org.mortbay.jetty.nio.SelectChannelConnector;
+ import org.mortbay.jetty.security.SslSocketConnector;
++import org.mortbay.jetty.servlet.AbstractSessionManager;
+ import org.mortbay.jetty.servlet.Context;
+ import org.mortbay.jetty.servlet.DefaultServlet;
+ import org.mortbay.jetty.servlet.FilterHolder;
+@@ -356,6 +358,13 @@ private void initializeWebServer(String name, String hostName,
+     threadPool.setDaemon(true);
+     webServer.setThreadPool(threadPool);
+ 
++    SessionManager sm = webAppContext.getSessionHandler().getSessionManager();
++    if (sm instanceof AbstractSessionManager) {
++      AbstractSessionManager asm = (AbstractSessionManager)sm;
++      asm.setHttpOnly(true);
++      asm.setSecureCookies(true);
++    }
++
+     ContextHandlerCollection contexts = new ContextHandlerCollection();
+     RequestLog requestLog = HttpRequestLog.getRequestLog(name);
+ 
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpCookieFlag.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpCookieFlag.java
+new file mode 100644
+index 0000000..c0aaf64
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpCookieFlag.java
+@@ -0,0 +1,141 @@
++/**
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License. See accompanying LICENSE file.
++ */
++package org.apache.hadoop.http;
++
++import junit.framework.Assert;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FileUtil;
++import org.apache.hadoop.net.NetUtils;
++import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
++import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
++import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
++import org.apache.hadoop.security.ssl.SSLFactory;
++import org.junit.AfterClass;
++import org.junit.BeforeClass;
++import org.junit.Test;
++
++import javax.net.ssl.HttpsURLConnection;
++import javax.servlet.*;
++import javax.servlet.http.Cookie;
++import javax.servlet.http.HttpServletResponse;
++import java.io.File;
++import java.io.IOException;
++import java.net.HttpURLConnection;
++import java.net.MalformedURLException;
++import java.net.URI;
++import java.net.URL;
++import java.security.GeneralSecurityException;
++
++public class TestHttpCookieFlag {
++  private static final String BASEDIR = System.getProperty("test.build.dir",
++          "target/test-dir") + "/" + TestHttpCookieFlag.class.getSimpleName();
++  private static String keystoresDir;
++  private static String sslConfDir;
++  private static SSLFactory clientSslFactory;
++  private static HttpServer2 server;
++
++  public static class DummyAuthenticationFilter implements Filter {
++
++    @Override
++    public void init(FilterConfig filterConfig) throws ServletException {
++    }
++
++    @Override
++    public void doFilter(ServletRequest request, ServletResponse response,
++                         FilterChain chain) throws IOException,
++                                                   ServletException {
++      HttpServletResponse resp = (HttpServletResponse) response;
++      boolean isHttps = "https".equals(request.getScheme());
++      AuthenticationFilter.createAuthCookie(resp, "token", null, null, -1,
++              isHttps);
++      chain.doFilter(request, resp);
++    }
++
++    @Override
++    public void destroy() {
++    }
++  }
++  public static class DummyFilterInitializer extends FilterInitializer {
++    @Override
++    public void initFilter(FilterContainer container, Configuration conf) {
++      container.addFilter("DummyAuth", DummyAuthenticationFilter.class
++              .getName(), null);
++    }
++  }
++
++  @BeforeClass
++  public static void setUp() throws Exception {
++    Configuration conf = new Configuration();
++    conf.set(HttpServer2.FILTER_INITIALIZER_PROPERTY,
++            DummyFilterInitializer.class.getName());
++
++    File base = new File(BASEDIR);
++    FileUtil.fullyDelete(base);
++    base.mkdirs();
++    keystoresDir = new File(BASEDIR).getAbsolutePath();
++    sslConfDir = KeyStoreTestUtil.getClasspathDir(TestSSLHttpServer.class);
++
++    KeyStoreTestUtil.setupSSLConfig(keystoresDir, sslConfDir, conf, false);
++    Configuration sslConf = new Configuration(false);
++    sslConf.addResource("ssl-server.xml");
++    sslConf.addResource("ssl-client.xml");
++
++    clientSslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, sslConf);
++    clientSslFactory.init();
++
++    server = new HttpServer2.Builder()
++            .setName("test")
++            .addEndpoint(new URI("http://localhost"))
++            .addEndpoint(new URI("https://localhost"))
++            .setConf(conf)
++            .keyPassword(sslConf.get("ssl.server.keystore.keypassword"))
++            .keyStore(sslConf.get("ssl.server.keystore.location"),
++                    sslConf.get("ssl.server.keystore.password"),
++                    sslConf.get("ssl.server.keystore.type", "jks"))
++            .trustStore(sslConf.get("ssl.server.truststore.location"),
++                    sslConf.get("ssl.server.truststore.password"),
++                    sslConf.get("ssl.server.truststore.type", "jks")).build();
++    server.addServlet("echo", "/echo", TestHttpServer.EchoServlet.class);
++    server.start();
++  }
++
++  @Test
++  public void testHttpCookie() throws IOException {
++    URL base = new URL("http://" + NetUtils.getHostPortString(server
++            .getConnectorAddress(0)));
++    HttpURLConnection conn = (HttpURLConnection) new URL(base,
++            "/echo").openConnection();
++    Assert.assertEquals(AuthenticatedURL.AUTH_COOKIE + "=token; " +
++            "HttpOnly", conn.getHeaderField("Set-Cookie"));
++  }
++
++  @Test
++  public void testHttpsCookie() throws IOException, GeneralSecurityException {
++    URL base = new URL("https://" + NetUtils.getHostPortString(server
++            .getConnectorAddress(1)));
++    HttpsURLConnection conn = (HttpsURLConnection) new URL(base,
++            "/echo").openConnection();
++    conn.setSSLSocketFactory(clientSslFactory.createSSLSocketFactory());
++    Assert.assertEquals(AuthenticatedURL.AUTH_COOKIE + "=token; " +
++            "Secure; HttpOnly", conn.getHeaderField("Set-Cookie"));
++  }
++
++  @AfterClass
++  public static void cleanup() throws Exception {
++    server.stop();
++    FileUtil.fullyDelete(new File(BASEDIR));
++    KeyStoreTestUtil.cleanupSSLConfig(keystoresDir, sslConfDir);
++    clientSslFactory.destroy();
++  }
++}
+-- 
+1.7.0.4
+

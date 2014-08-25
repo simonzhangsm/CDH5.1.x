@@ -1,0 +1,51 @@
+From af907125cdffa31c69b99c8ea5375e808fc7d609 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Mon, 21 Apr 2014 00:16:20 +0000
+Subject: [PATCH 739/795] HDFS-6245: Merging r1588842 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1588843 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 81f95b17d842be5fdcaf334e5452311451673fc6)
+---
+ .../hadoop/hdfs/server/datanode/DataNode.java      |   11 +++++++++--
+ .../hdfs/server/datanode/StorageLocation.java      |    3 ++-
+ 2 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index c5b9d37..0cdfc85 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -1819,8 +1819,15 @@ public static DataNode instantiateDataNode(String args [], Configuration conf,
+       try {
+         location = StorageLocation.parse(locationString);
+       } catch (IOException ioe) {
+-        throw new IllegalArgumentException("Failed to parse conf property "
+-            + DFS_DATANODE_DATA_DIR_KEY + ": " + locationString, ioe);
++        LOG.error("Failed to initialize storage directory " + locationString
++            + ". Exception details: " + ioe);
++        // Ignore the exception.
++        continue;
++      } catch (SecurityException se) {
++        LOG.error("Failed to initialize storage directory " + locationString
++                     + ". Exception details: " + se);
++        // Ignore the exception.
++        continue;
+       }
+ 
+       locations.add(location);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/StorageLocation.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/StorageLocation.java
+index 66ab18f..f85fcb1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/StorageLocation.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/StorageLocation.java
+@@ -78,7 +78,8 @@ public File getFile() {
+    * @return A StorageLocation object if successfully parsed, null otherwise.
+    *         Does not throw any exceptions.
+    */
+-  static StorageLocation parse(String rawLocation) throws IOException {
++  static StorageLocation parse(String rawLocation)
++      throws IOException, SecurityException {
+     Matcher matcher = regex.matcher(rawLocation);
+     StorageType storageType = StorageType.DEFAULT;
+     String location = rawLocation;
+-- 
+1.7.0.4
+

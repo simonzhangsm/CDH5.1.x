@@ -1,0 +1,235 @@
+From ee48a9d6a7770a8883fe93d332e0e67c0c0cbf8e Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Fri, 21 Feb 2014 02:53:44 +0000
+Subject: [PATCH 400/795] HDFS-5988. Bad fsimage always generated after upgrade. (wang)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570431 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit eda0485621b536e0a0903884984365a0a50935f4)
+---
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |    3 +-
+ .../hdfs/tools/offlineImageViewer/LsrPBImage.java  |   43 ++++++++++++++
+ .../hadoop/hdfs/TestDFSUpgradeFromImage.java       |   59 +++++++++++--------
+ 3 files changed, 78 insertions(+), 27 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index 7b45b08..8f16e9c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -695,8 +695,7 @@ public INode loadINodeWithLocalName(boolean isSnapshotINode,
+       localName =
+           renameReservedComponentOnUpgrade(localName, getLayoutVersion());
+       INode inode = loadINode(localName, isSnapshotINode, in, counter);
+-      if (updateINodeMap
+-          && LayoutVersion.supports(Feature.ADD_INODE_ID, getLayoutVersion())) {
++      if (updateINodeMap) {
+         namesystem.dir.addToInodeMap(inode);
+       }
+       return inode;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
+index f176c26..273ab6f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
+@@ -28,6 +28,8 @@
+ import java.util.Comparator;
+ import java.util.HashMap;
+ 
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.permission.PermissionStatus;
+ import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
+@@ -75,6 +77,9 @@
+  *
+  */
+ final class LsrPBImage {
++
++  private static final Log LOG = LogFactory.getLog(LsrPBImage.class);
++
+   private final Configuration conf;
+   private final PrintWriter out;
+   private String[] stringTable;
+@@ -145,6 +150,10 @@ public int compare(FileSummary.Section s1, FileSummary.Section s2) {
+ 
+   private void list(String parent, long dirId) {
+     INode inode = inodes.get(dirId);
++    if (LOG.isTraceEnabled()) {
++      LOG.trace("Listing directory id " + dirId + " parent '" + parent
++          + "' (INode is " + inode + ")");
++    }
+     listINode(parent.isEmpty() ? "/" : parent, inode);
+     long[] children = dirmap.get(dirId);
+     if (children == null) {
+@@ -200,6 +209,9 @@ private long getFileSize(INodeFile f) {
+   }
+ 
+   private void loadINodeDirectorySection(InputStream in) throws IOException {
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("Loading directory section");
++    }
+     while (true) {
+       INodeDirectorySection.DirEntry e = INodeDirectorySection.DirEntry
+           .parseDelimitedFrom(in);
+@@ -216,10 +228,21 @@ private void loadINodeDirectorySection(InputStream in) throws IOException {
+         l[i] = refList.get(refId).getReferredId();
+       }
+       dirmap.put(e.getParent(), l);
++      if (LOG.isDebugEnabled()) {
++        LOG.debug("Loaded directory (parent " + e.getParent()
++            + ") with " + e.getChildrenCount() + " children and "
++            + e.getRefChildrenCount() + " reference children");
++      }
++    }
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("Loaded " + dirmap.size() + " directories");
+     }
+   }
+ 
+   private void loadINodeReferenceSection(InputStream in) throws IOException {
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("Loading inode reference section");
++    }
+     while (true) {
+       INodeReferenceSection.INodeReference e = INodeReferenceSection
+           .INodeReference.parseDelimitedFrom(in);
+@@ -227,24 +250,44 @@ private void loadINodeReferenceSection(InputStream in) throws IOException {
+         break;
+       }
+       refList.add(e);
++      if (LOG.isTraceEnabled()) {
++        LOG.trace("Loaded inode reference named '" + e.getName()
++            + "' referring to id " + e.getReferredId() + "");
++      }
++    }
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("Loaded " + refList.size() + " inode references");
+     }
+   }
+ 
+   private void loadINodeSection(InputStream in) throws IOException {
+     INodeSection s = INodeSection.parseDelimitedFrom(in);
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("Found " + s.getNumInodes() + " inodes in inode section");
++    }
+     for (int i = 0; i < s.getNumInodes(); ++i) {
+       INodeSection.INode p = INodeSection.INode.parseDelimitedFrom(in);
+       inodes.put(p.getId(), p);
++      if (LOG.isTraceEnabled()) {
++        LOG.trace("Loaded inode id " + p.getId() + " type " + p.getType()
++            + " name '" + p.getName().toStringUtf8() + "'");
++      }
+     }
+   }
+ 
+   private void loadStringTable(InputStream in) throws IOException {
+     StringTableSection s = StringTableSection.parseDelimitedFrom(in);
++    if (LOG.isDebugEnabled()) {
++      LOG.debug("Found " + s.getNumEntry() + " strings in string section");
++    }
+     stringTable = new String[s.getNumEntry() + 1];
+     for (int i = 0; i < s.getNumEntry(); ++i) {
+       StringTableSection.Entry e = StringTableSection.Entry
+           .parseDelimitedFrom(in);
+       stringTable[e.getId()] = e.getStr();
++      if (LOG.isTraceEnabled()) {
++        LOG.trace("Loaded string " + e.getStr());
++      }
+     }
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUpgradeFromImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUpgradeFromImage.java
+index fda4e83..802c4a6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUpgradeFromImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUpgradeFromImage.java
+@@ -330,13 +330,14 @@ public void testUpgradeFromCorruptRel22Image() throws IOException {
+    * paths to test renaming on upgrade
+    */
+   @Test
+-  public void testUpgradeFromRel2ReservedImage() throws IOException {
++  public void testUpgradeFromRel2ReservedImage() throws Exception {
+     unpackStorage(HADOOP2_RESERVED_IMAGE);
+     MiniDFSCluster cluster = null;
+     // Try it once without setting the upgrade flag to ensure it fails
++    final Configuration conf = new Configuration();
+     try {
+       cluster =
+-          new MiniDFSCluster.Builder(new Configuration())
++          new MiniDFSCluster.Builder(conf)
+               .format(false)
+               .startupOption(StartupOption.UPGRADE)
+               .numDataNodes(0).build();
+@@ -355,28 +356,15 @@ public void testUpgradeFromRel2ReservedImage() throws IOException {
+           ".snapshot=.user-snapshot," +
+           ".reserved=.my-reserved");
+       cluster =
+-          new MiniDFSCluster.Builder(new Configuration())
++          new MiniDFSCluster.Builder(conf)
+               .format(false)
+               .startupOption(StartupOption.UPGRADE)
+               .numDataNodes(0).build();
+-      // Make sure the paths were renamed as expected
+       DistributedFileSystem dfs = cluster.getFileSystem();
+-      ArrayList<Path> toList = new ArrayList<Path>();
+-      ArrayList<String> found = new ArrayList<String>();
+-      toList.add(new Path("/"));
+-      while (!toList.isEmpty()) {
+-        Path p = toList.remove(0);
+-        FileStatus[] statuses = dfs.listStatus(p);
+-        for (FileStatus status: statuses) {
+-          final String path = status.getPath().toUri().getPath();
+-          System.out.println("Found path " + path);
+-          found.add(path);
+-          if (status.isDirectory()) {
+-            toList.add(status.getPath());
+-          }
+-        }
+-      }
+-      String[] expected = new String[] {
++      // Make sure the paths were renamed as expected
++      // Also check that paths are present after a restart, checks that the
++      // upgraded fsimage has the same state.
++      final String[] expected = new String[] {
+           "/edits",
+           "/edits/.reserved",
+           "/edits/.user-snapshot",
+@@ -393,12 +381,33 @@ public void testUpgradeFromRel2ReservedImage() throws IOException {
+           "/.my-reserved/edits-touch",
+           "/.my-reserved/image-touch"
+       };
+-
+-      for (String s: expected) {
+-        assertTrue("Did not find expected path " + s, found.contains(s));
++      for (int i=0; i<2; i++) {
++        // Restart the second time through this loop
++        if (i==1) {
++          cluster.finalizeCluster(conf);
++          cluster.restartNameNode(true);
++        }
++        ArrayList<Path> toList = new ArrayList<Path>();
++        toList.add(new Path("/"));
++        ArrayList<String> found = new ArrayList<String>();
++        while (!toList.isEmpty()) {
++          Path p = toList.remove(0);
++          FileStatus[] statuses = dfs.listStatus(p);
++          for (FileStatus status: statuses) {
++            final String path = status.getPath().toUri().getPath();
++            System.out.println("Found path " + path);
++            found.add(path);
++            if (status.isDirectory()) {
++              toList.add(status.getPath());
++            }
++          }
++        }
++        for (String s: expected) {
++          assertTrue("Did not find expected path " + s, found.contains(s));
++        }
++        assertEquals("Found an unexpected path while listing filesystem",
++            found.size(), expected.length);
+       }
+-      assertEquals("Found an unexpected path while listing filesystem",
+-          found.size(), expected.length);
+     } finally {
+       if (cluster != null) {
+         cluster.shutdown();
+-- 
+1.7.0.4
+

@@ -1,0 +1,26 @@
+From 2a5f30209c6ba2d071f308b1807713e7bebc5ec8 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Fri, 31 Jan 2014 20:17:55 +0000
+Subject: [PATCH 435/795] HADOOP-10320. Merging change r1563237 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1563245 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 83bbb44bec7732df7173ef3d0b17beb6b253f983)
+---
+ .../hadoop/classification/InterfaceStability.java  |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-annotations/src/main/java/org/apache/hadoop/classification/InterfaceStability.java b/hadoop-common-project/hadoop-annotations/src/main/java/org/apache/hadoop/classification/InterfaceStability.java
+index 0ebf949..0712241 100644
+--- a/hadoop-common-project/hadoop-annotations/src/main/java/org/apache/hadoop/classification/InterfaceStability.java
++++ b/hadoop-common-project/hadoop-annotations/src/main/java/org/apache/hadoop/classification/InterfaceStability.java
+@@ -22,6 +22,7 @@
+ /**
+  * Annotation to inform users of how much to rely on a particular package,
+  * class or method not changing over time.
++ * </ul>
+  */
+ @InterfaceAudience.Public
+ @InterfaceStability.Evolving
+-- 
+1.7.0.4
+

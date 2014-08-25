@@ -1,0 +1,176 @@
+From 2e21ba84a82cddc33c967e84f23347c522a4d052 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Tue, 4 Mar 2014 04:42:58 +0000
+Subject: [PATCH 516/795] HDFS-6041. Downgrade/Finalize should rename the rollback image instead of purging it. Contributed by Jing Zhao.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1573851 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8a8dd419cc2c4c72a1050d0d39d175a933b6f367)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    2 +
+ .../hdfs/server/namenode/FSEditLogLoader.java      |    3 +-
+ .../hadoop/hdfs/server/namenode/FSImage.java       |   48 +++++++++++++-------
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    3 +-
+ .../hadoop/hdfs/TestRollingUpgradeDowngrade.java   |   12 +++++-
+ 5 files changed, 48 insertions(+), 20 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index 1bc6d03..7d7d87c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -137,3 +137,5 @@ HDFS-5535 subtasks:
+     HDFS-6042. Fix rolling upgrade documentation and error messages. (szetszwo
+     via Arpit Agarwal)
+ 
++    HDFS-6041. Downgrade/Finalize should rename the rollback image instead of
++    purging it. (jing9)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+index f5a21f6..f37b706 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+@@ -740,7 +740,8 @@ private long applyEditLogOp(FSEditLogOp op, FSDirectory fsDir,
+     case OP_ROLLING_UPGRADE_FINALIZE: {
+       final long finalizeTime = ((RollingUpgradeOp) op).getTime();
+       fsNamesys.finalizeRollingUpgradeInternal(finalizeTime);
+-      fsNamesys.getFSImage().purgeCheckpoints(NameNodeFile.IMAGE_ROLLBACK);
++      fsNamesys.getFSImage().renameCheckpoint(NameNodeFile.IMAGE_ROLLBACK,
++          NameNodeFile.IMAGE);
+       break;
+     }
+     case OP_ADD_CACHE_DIRECTIVE: {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index 6fc11d5..5ac498a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -663,8 +663,8 @@ private boolean loadFSImage(FSNamesystem target, StartupOption startOpt,
+       needToSave |= needsResaveBasedOnStaleCheckpoint(imageFile.getFile(),
+           txnsAdvanced);
+       if (RollingUpgradeStartupOption.DOWNGRADE.matches(startOpt)) {
+-        // purge rollback image if it is downgrade
+-        archivalManager.purgeCheckpoints(NameNodeFile.IMAGE_ROLLBACK);
++        // rename rollback image if it is downgrade
++        renameCheckpoint(NameNodeFile.IMAGE_ROLLBACK, NameNodeFile.IMAGE);
+       }
+     } else {
+       // Trigger the rollback for rolling upgrade. Here lastAppliedTxId equals
+@@ -1101,18 +1101,7 @@ void purgeOldStorage(NameNodeFile nnf) {
+   }
+ 
+   /**
+-   * Purge all the checkpoints with the name style.
+-   */
+-  void purgeCheckpoints(NameNodeFile nnf) {
+-    try {
+-      archivalManager.purgeCheckpoints(nnf);
+-    } catch (Exception e) {
+-      LOG.warn("Unable to purge checkpoints with name " + nnf.getName(), e);
+-    }
+-  }
+-
+-  /**
+-   * Rename FSImage
++   * Rename FSImage with the specific txid
+    */
+   private void renameCheckpoint(long txid, NameNodeFile fromNnf,
+       NameNodeFile toNnf, boolean renameMD5) throws IOException {
+@@ -1131,7 +1120,33 @@ private void renameCheckpoint(long txid, NameNodeFile fromNnf,
+     }
+     if(al != null) storage.reportErrorsOnDirectories(al);
+   }
+-  
++
++  /**
++   * Rename all the fsimage files with the specific NameNodeFile type. The
++   * associated checksum files will also be renamed.
++   */
++  void renameCheckpoint(NameNodeFile fromNnf, NameNodeFile toNnf)
++      throws IOException {
++    ArrayList<StorageDirectory> al = null;
++    FSImageTransactionalStorageInspector inspector =
++        new FSImageTransactionalStorageInspector(EnumSet.of(fromNnf));
++    storage.inspectStorageDirs(inspector);
++    for (FSImageFile image : inspector.getFoundImages()) {
++      try {
++        renameImageFileInDir(image.sd, fromNnf, toNnf, image.txId, true);
++      } catch (IOException ioe) {
++        LOG.warn("Unable to rename checkpoint in " + image.sd, ioe);
++        if (al == null) {
++          al = Lists.newArrayList();
++        }
++        al.add(image.sd);
++      }
++    }
++    if(al != null) {
++      storage.reportErrorsOnDirectories(al);
++    }
++  }
++
+   /**
+    * Deletes the checkpoint file in every storage directory,
+    * since the checkpoint was cancelled.
+@@ -1153,8 +1168,7 @@ private void renameImageFileInDir(StorageDirectory sd, NameNodeFile fromNnf,
+       NameNodeFile toNnf, long txid, boolean renameMD5) throws IOException {
+     final File fromFile = NNStorage.getStorageFile(sd, fromNnf, txid);
+     final File toFile = NNStorage.getStorageFile(sd, toNnf, txid);
+-    // renameTo fails on Windows if the destination file 
+-    // already exists.
++    // renameTo fails on Windows if the destination file already exists.
+     if(LOG.isDebugEnabled()) {
+       LOG.debug("renaming  " + fromFile.getAbsolutePath() 
+                 + " to " + toFile.getAbsolutePath());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index d3ffea0..e29e7b0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -7275,7 +7275,8 @@ RollingUpgradeInfo finalizeRollingUpgrade() throws IOException {
+       returnInfo = finalizeRollingUpgradeInternal(now());
+       getEditLog().logFinalizeRollingUpgrade(returnInfo.getFinalizeTime());
+       getFSImage().saveNamespace(this);
+-      getFSImage().purgeCheckpoints(NameNodeFile.IMAGE_ROLLBACK);
++      getFSImage().renameCheckpoint(NameNodeFile.IMAGE_ROLLBACK,
++          NameNodeFile.IMAGE);
+     } finally {
+       writeUnlock();
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgradeDowngrade.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgradeDowngrade.java
+index 545b8e1..22efd6e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgradeDowngrade.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgradeDowngrade.java
+@@ -37,7 +37,7 @@
+ public class TestRollingUpgradeDowngrade {
+ 
+   @Test(timeout = 300000)
+-  public void testDowngrade() throws IOException {
++  public void testDowngrade() throws Exception {
+     final Configuration conf = new HdfsConfiguration();
+     MiniQJMHACluster cluster = null;
+     final Path foo = new Path("/foo");
+@@ -48,6 +48,11 @@ public void testDowngrade() throws IOException {
+       MiniDFSCluster dfsCluster = cluster.getDfsCluster();
+       dfsCluster.waitActive();
+ 
++      // let NN1 tail editlog every 1s
++      dfsCluster.getConfiguration(1).setInt(
++          DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
++      dfsCluster.restartNameNode(1);
++
+       dfsCluster.transitionToActive(0);
+       DistributedFileSystem dfs = dfsCluster.getFileSystem(0);
+       dfs.mkdirs(foo);
+@@ -57,9 +62,14 @@ public void testDowngrade() throws IOException {
+           .rollingUpgrade(RollingUpgradeAction.PREPARE);
+       Assert.assertTrue(info.isStarted());
+       dfs.mkdirs(bar);
++
++      TestRollingUpgrade.queryForPreparation(dfs);
+       dfs.close();
+ 
+       dfsCluster.restartNameNode(0, true, "-rollingUpgrade", "downgrade");
++      // Once downgraded, there should be no more fsimage for rollbacks.
++      Assert.assertFalse(dfsCluster.getNamesystem(0).getFSImage()
++          .hasRollbackFSImage());
+       // shutdown NN1
+       dfsCluster.shutdownNameNode(1);
+       dfsCluster.transitionToActive(0);
+-- 
+1.7.0.4
+

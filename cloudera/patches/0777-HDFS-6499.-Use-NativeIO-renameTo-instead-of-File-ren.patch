@@ -1,0 +1,67 @@
+From 8d69a1fb8829387fd359d7ebf195721765053051 Mon Sep 17 00:00:00 2001
+From: Aaron Myers <atm@apache.org>
+Date: Sat, 14 Jun 2014 02:14:46 +0000
+Subject: [PATCH 777/795] HDFS-6499. Use NativeIO#renameTo instead of File#renameTo in FileJournalManager. Contributed by Yongjun Zhang.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1602542 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hdfs/server/namenode/FileJournalManager.java   |   23 ++++++++++++++-----
+ 1 files changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
+index 9899271..bcb61c0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
+@@ -43,6 +43,8 @@
+ import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeFile;
+ import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
+ import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
++import org.apache.hadoop.io.nativeio.NativeIO;
++
+ import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.base.Joiner;
+ import com.google.common.base.Preconditions;
+@@ -132,10 +134,14 @@ synchronized public void finalizeLogSegment(long firstTxId, long lastTxId)
+     Preconditions.checkState(!dstFile.exists(),
+         "Can't finalize edits file " + inprogressFile + " since finalized file " +
+         "already exists");
+-    if (!inprogressFile.renameTo(dstFile)) {
++
++    try {
++      NativeIO.renameTo(inprogressFile, dstFile);
++    } catch (IOException e) {
+       errorReporter.reportErrorOnFile(dstFile);
+-      throw new IllegalStateException("Unable to finalize edits file " + inprogressFile);
++      throw new IllegalStateException("Unable to finalize edits file " + inprogressFile, e);
+     }
++
+     if (inprogressFile.equals(currentInProgress)) {
+       currentInProgress = null;
+     }
+@@ -507,11 +513,16 @@ private void renameSelf(String newSuffix) throws IOException {
+       File src = file;
+       File dst = new File(src.getParent(), src.getName() + newSuffix);
+       // renameTo fails on Windows if the destination file already exists.
+-      if (!src.renameTo(dst)) {
+-        if (!dst.delete() || !src.renameTo(dst)) {
+-          throw new IOException(
+-            "Couldn't rename log " + src + " to " + dst);
++      try {
++        if (dst.exists()) {
++          if (!dst.delete()) {
++            throw new IOException("Couldn't delete " + dst);
++          }
+         }
++        NativeIO.renameTo(src, dst);
++      } catch (IOException e) {
++        throw new IOException(
++            "Couldn't rename log " + src + " to " + dst, e);
+       }
+       file = dst;
+     }
+-- 
+1.7.0.4
+

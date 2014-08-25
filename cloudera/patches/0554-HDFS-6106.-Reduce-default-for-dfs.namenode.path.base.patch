@@ -1,0 +1,64 @@
+From bfe39b50af5bc6e5fd99dbc25f28e3ac51d21759 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Sat, 15 Mar 2014 07:52:19 +0000
+Subject: [PATCH 554/795] HDFS-6106. Reduce default for dfs.namenode.path.based.cache.refresh.interval.ms (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1577798 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0b9a9f907517f4a774b4c63b760a9d6788ba77bb)
+---
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    4 ++--
+ .../src/main/resources/hdfs-default.xml            |    6 +++---
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 630462d..e278063 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -243,7 +243,7 @@
+   public static final int     DFS_NAMENODE_LIST_CACHE_DIRECTIVES_NUM_RESPONSES_DEFAULT = 100;
+   public static final String  DFS_NAMENODE_PATH_BASED_CACHE_REFRESH_INTERVAL_MS =
+       "dfs.namenode.path.based.cache.refresh.interval.ms";
+-  public static final long    DFS_NAMENODE_PATH_BASED_CACHE_REFRESH_INTERVAL_MS_DEFAULT = 300000L;
++  public static final long    DFS_NAMENODE_PATH_BASED_CACHE_REFRESH_INTERVAL_MS_DEFAULT = 30000L;
+ 
+   // Whether to enable datanode's stale state detection and usage for reads
+   public static final String DFS_NAMENODE_AVOID_STALE_DATANODE_FOR_READ_KEY = "dfs.namenode.avoid.read.stale.datanode";
+@@ -372,7 +372,7 @@
+   public static final String  DFS_HEARTBEAT_INTERVAL_KEY = "dfs.heartbeat.interval";
+   public static final long    DFS_HEARTBEAT_INTERVAL_DEFAULT = 3;
+   public static final String  DFS_NAMENODE_PATH_BASED_CACHE_RETRY_INTERVAL_MS = "dfs.namenode.path.based.cache.retry.interval.ms";
+-  public static final long    DFS_NAMENODE_PATH_BASED_CACHE_RETRY_INTERVAL_MS_DEFAULT = 60000L;
++  public static final long    DFS_NAMENODE_PATH_BASED_CACHE_RETRY_INTERVAL_MS_DEFAULT = 30000L;
+   public static final String  DFS_NAMENODE_DECOMMISSION_INTERVAL_KEY = "dfs.namenode.decommission.interval";
+   public static final int     DFS_NAMENODE_DECOMMISSION_INTERVAL_DEFAULT = 30;
+   public static final String  DFS_NAMENODE_DECOMMISSION_NODES_PER_INTERVAL_KEY = "dfs.namenode.decommission.nodes.per.interval";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index ef9cd0f..9cbd7ea 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -1662,19 +1662,19 @@
+ 
+ <property>
+   <name>dfs.namenode.path.based.cache.refresh.interval.ms</name>
+-  <value>300000</value>
++  <value>30000</value>
+   <description>
+     The amount of milliseconds between subsequent path cache rescans.  Path
+     cache rescans are when we calculate which blocks should be cached, and on
+     what datanodes.
+ 
+-    By default, this parameter is set to 300000, which is five minutes.
++    By default, this parameter is set to 30 seconds.
+   </description>
+ </property>
+ 
+ <property>
+   <name>dfs.namenode.path.based.cache.retry.interval.ms</name>
+-  <value>60000</value>
++  <value>30000</value>
+   <description>
+     When the NameNode needs to uncache something that is cached, or cache
+     something that is not cached, it must direct the DataNodes to do so by
+-- 
+1.7.0.4
+

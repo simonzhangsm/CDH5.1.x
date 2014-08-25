@@ -1,0 +1,149 @@
+From 941a0bf3376b252232c9eacdb79b5afd6e840e13 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Thu, 10 Jul 2014 04:07:14 +0000
+Subject: [PATCH 794/795] HDFS-6622. Rename and AddBlock may race and produce invalid edits (kihwal via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1609386 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit bcca54506ff3b37e3479d644b6035d988a49a84f)
+(cherry picked from commit deecf1d6bb2ffdc6c3ef427da71d9241f6ea39ec)
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   25 +++++++--
+ .../hdfs/server/namenode/TestDeleteRace.java       |   58 ++++++++++++++++++++
+ 2 files changed, 77 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index aa6a832..15615f4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -2677,9 +2677,10 @@ LocatedBlock getAdditionalBlock(String src, long fileId, String clientName,
+       checkOperation(OperationCategory.READ);
+       src = FSDirectory.resolvePath(src, pathComponents, dir);
+       LocatedBlock[] onRetryBlock = new LocatedBlock[1];
+-      final INodeFile pendingFile = analyzeFileState(
++      FileState fileState = analyzeFileState(
+           src, fileId, clientName, previous, onRetryBlock);
+-      src = pendingFile.getFullPathName();
++      final INodeFile pendingFile = fileState.inode;
++      src = fileState.path;
+ 
+       if (onRetryBlock[0] != null && onRetryBlock[0].getLocations().length > 0) {
+         // This is a retry. Just return the last block if having locations.
+@@ -2713,8 +2714,10 @@ LocatedBlock getAdditionalBlock(String src, long fileId, String clientName,
+       // Run the full analysis again, since things could have changed
+       // while chooseTarget() was executing.
+       LocatedBlock[] onRetryBlock = new LocatedBlock[1];
+-      final INodeFile pendingFile =
++      FileState fileState = 
+           analyzeFileState(src, fileId, clientName, previous, onRetryBlock);
++      final INodeFile pendingFile = fileState.inode;
++      src = fileState.path;
+ 
+       if (onRetryBlock[0] != null) {
+         if (onRetryBlock[0].getLocations().length > 0) {
+@@ -2750,7 +2753,17 @@ LocatedBlock getAdditionalBlock(String src, long fileId, String clientName,
+     return makeLocatedBlock(newBlock, targets, offset);
+   }
+ 
+-  INodeFile analyzeFileState(String src,
++  static class FileState {
++    public final INodeFile inode;
++    public final String path;
++
++    public FileState(INodeFile inode, String fullPath) {
++      this.inode = inode;
++      this.path = fullPath;
++    }
++  }
++
++  FileState analyzeFileState(String src,
+                                 long fileId,
+                                 String clientName,
+                                 ExtendedBlock previous,
+@@ -2838,7 +2851,7 @@ INodeFile analyzeFileState(String src,
+         onRetryBlock[0] = makeLocatedBlock(lastBlockInFile,
+             ((BlockInfoUnderConstruction)lastBlockInFile).getExpectedStorageLocations(),
+             offset);
+-        return pendingFile;
++        return new FileState(pendingFile, src);
+       } else {
+         // Case 3
+         throw new IOException("Cannot allocate block in " + src + ": " +
+@@ -2851,7 +2864,7 @@ INodeFile analyzeFileState(String src,
+     if (!checkFileProgress(pendingFile, false)) {
+       throw new NotReplicatedYetException("Not replicated yet: " + src);
+     }
+-    return pendingFile;
++    return new FileState(pendingFile, src);
+   }
+ 
+   LocatedBlock makeLocatedBlock(Block blk, DatanodeStorageInfo[] locs,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeleteRace.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeleteRace.java
+index cf4b29f..d78e3a3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeleteRace.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeleteRace.java
+@@ -146,4 +146,62 @@ public void run() {
+       }
+     }
+   }
++
++  private class RenameThread extends Thread {
++    private FileSystem fs;
++    private Path from;
++    private Path to;
++
++    RenameThread(FileSystem fs, Path from, Path to) {
++      this.fs = fs;
++      this.from = from;
++      this.to = to;
++    }
++
++    @Override
++    public void run() {
++      try {
++        Thread.sleep(1000);
++        LOG.info("Renaming " + from + " to " + to);
++
++        fs.rename(from, to);
++        LOG.info("Renamed " + from + " to " + to);
++      } catch (Exception e) {
++        LOG.info(e);
++      }
++    }
++  }
++
++  @Test
++  public void testRenameRace() throws Exception {
++    try {
++      conf.setClass(DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_KEY,
++          SlowBlockPlacementPolicy.class, BlockPlacementPolicy.class);
++      cluster = new MiniDFSCluster.Builder(conf).build();
++      FileSystem fs = cluster.getFileSystem();
++      Path dirPath1 = new Path("/testRenameRace1");
++      Path dirPath2 = new Path("/testRenameRace2");
++      Path filePath = new Path("/testRenameRace1/file1");
++      
++
++      fs.mkdirs(dirPath1);
++      FSDataOutputStream out = fs.create(filePath);
++      Thread renameThread = new RenameThread(fs, dirPath1, dirPath2);
++      renameThread.start();
++
++      // write data and close to make sure a block is allocated.
++      out.write(new byte[32], 0, 32);
++      out.close();
++
++      // Restart name node so that it replays edit. If old path was
++      // logged in edit, it will fail to come up.
++      cluster.restartNameNode(0);
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++
++
++  }
+ }
+-- 
+1.7.0.4
+

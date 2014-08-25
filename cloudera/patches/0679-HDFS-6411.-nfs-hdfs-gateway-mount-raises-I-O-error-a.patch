@@ -1,0 +1,100 @@
+From 3b552750f8b2a37c7945d4efab1675e4a973faec Mon Sep 17 00:00:00 2001
+From: Stephen Chu <schu@cloudera.com>
+Date: Mon, 2 Jun 2014 15:49:06 -0700
+Subject: [PATCH 679/795] HDFS-6411. nfs-hdfs-gateway mount raises I/O error and hangs when a unauthorized user attempts to access it. Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1597895 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 27216a06197df875ee5bd6a5e6c6176048573588)
+---
+ .../hadoop/nfs/nfs3/response/ACCESS3Response.java  |    6 ++-
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |   34 ++++++++++++++++++++
+ 2 files changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/ACCESS3Response.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/ACCESS3Response.java
+index 8ba07aa..5720fc6 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/ACCESS3Response.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/response/ACCESS3Response.java
+@@ -46,10 +46,12 @@ public ACCESS3Response(int status, Nfs3FileAttributes postOpAttr, int access) {
+   @Override
+   public XDR writeHeaderAndResponse(XDR out, int xid, Verifier verifier) {
+     super.writeHeaderAndResponse(out, xid, verifier);
+-    out.writeBoolean(true);
+-    postOpAttr.serialize(out);
+     if (this.getStatus() == Nfs3Status.NFS3_OK) {
++      out.writeBoolean(true);
++      postOpAttr.serialize(out);
+       out.writeInt(access);
++    } else {
++      out.writeBoolean(false);
+     }
+     return out;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index fdcc749..9c546c2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -123,6 +123,7 @@
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.SecurityUtil;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.authorize.AuthorizationException;
+ import org.jboss.netty.buffer.ChannelBuffer;
+ import org.jboss.netty.buffer.ChannelBuffers;
+ import org.jboss.netty.channel.Channel;
+@@ -261,6 +262,17 @@ public GETATTR3Response getattr(XDR xdr, SecurityHandler securityHandler,
+     Nfs3FileAttributes attrs = null;
+     try {
+       attrs = writeManager.getFileAttr(dfsClient, handle, iug);
++    } catch (RemoteException r) {
++      LOG.warn("Exception ", r);
++      IOException io = r.unwrapRemoteException();
++      /**
++       * AuthorizationException can be thrown if the user can't be proxy'ed.
++       */
++      if (io instanceof AuthorizationException) {
++        return new GETATTR3Response(Nfs3Status.NFS3ERR_ACCES);
++      } else {
++        return new GETATTR3Response(Nfs3Status.NFS3ERR_IO);
++      }
+     } catch (IOException e) {
+       LOG.info("Can't get file attribute, fileId=" + handle.getFileId(), e);
+       response.setStatus(Nfs3Status.NFS3ERR_IO);
+@@ -490,6 +502,17 @@ public ACCESS3Response access(XDR xdr, SecurityHandler securityHandler,
+           securityHandler.getUid(), securityHandler.getGid(), attrs);
+       
+       return new ACCESS3Response(Nfs3Status.NFS3_OK, attrs, access);
++    } catch (RemoteException r) {
++      LOG.warn("Exception ", r);
++      IOException io = r.unwrapRemoteException();
++      /**
++       * AuthorizationException can be thrown if the user can't be proxy'ed.
++       */
++      if (io instanceof AuthorizationException) {
++        return new ACCESS3Response(Nfs3Status.NFS3ERR_ACCES);
++      } else {
++        return new ACCESS3Response(Nfs3Status.NFS3ERR_IO);
++      }
+     } catch (IOException e) {
+       LOG.warn("Exception ", e);
+       return new ACCESS3Response(Nfs3Status.NFS3ERR_IO);
+@@ -1670,6 +1693,17 @@ public FSSTAT3Response fsstat(XDR xdr, SecurityHandler securityHandler,
+       
+       return new FSSTAT3Response(Nfs3Status.NFS3_OK, attrs, totalBytes,
+           freeBytes, freeBytes, maxFsObjects, maxFsObjects, maxFsObjects, 0);
++    } catch (RemoteException r) {
++      LOG.warn("Exception ", r);
++      IOException io = r.unwrapRemoteException();
++      /**
++       * AuthorizationException can be thrown if the user can't be proxy'ed.
++       */
++      if (io instanceof AuthorizationException) {
++        return new FSSTAT3Response(Nfs3Status.NFS3ERR_ACCES);
++      } else {
++        return new FSSTAT3Response(Nfs3Status.NFS3ERR_IO);
++      }
+     } catch (IOException e) {
+       LOG.warn("Exception ", e);
+       return new FSSTAT3Response(Nfs3Status.NFS3ERR_IO);
+-- 
+1.7.0.4
+

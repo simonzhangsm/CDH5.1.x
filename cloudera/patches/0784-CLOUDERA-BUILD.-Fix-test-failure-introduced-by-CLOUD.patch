@@ -1,0 +1,46 @@
+From 2570e34feb1028b68d2c22f21c9fa434a6516799 Mon Sep 17 00:00:00 2001
+From: adhoot@cloudera.com <adhoot@adhoot-MBP.local>
+Date: Sun, 22 Jun 2014 23:22:57 -0700
+Subject: [PATCH 784/795] CLOUDERA BUILD. Fix test failure introduced by CLOUDERA-BUILD. JobHistoryServer has no information about failed MR applications (CDH-13222) is failing the test
+ The TemporaryFolder code needs to be a public variable annoatated with @Rule otherwise it fails to create temp folders.
+
+(cherry picked from commit 5adb0731b23ed512565b3752b1cc25bd97d9f1f9)
+---
+ .../rmapp/TestRMAppTransitions.java                |    7 +++++--
+ 1 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+index 6e9ba25..204dd30 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/TestRMAppTransitions.java
+@@ -70,6 +70,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.security.NMTokenSecretManagerInRM;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
+ import org.junit.Before;
++import org.junit.Rule;
+ import org.junit.Test;
+ import org.junit.rules.TemporaryFolder;
+ import org.junit.runner.RunWith;
+@@ -167,7 +168,10 @@ public void handle(SchedulerEvent event) {
+   public TestRMAppTransitions(boolean isSecurityEnabled) {
+     this.isSecurityEnabled = isSecurityEnabled;
+   }
+-  
++
++  @Rule
++  public TemporaryFolder tf = new TemporaryFolder();
++
+   @Before
+   public void setUp() throws Exception {
+     conf = new YarnConfiguration();
+@@ -208,7 +212,6 @@ public void setUp() throws Exception {
+     rmDispatcher.init(conf);
+     rmDispatcher.start();
+ 
+-    TemporaryFolder tf = new TemporaryFolder();
+     killedHistoryFlagDir = new Path(tf.newFolder().toURI());
+     conf.set(YarnConfiguration.YARN_AM_FAILURE_FLAG_DIR,
+         killedHistoryFlagDir.toString());
+-- 
+1.7.0.4
+

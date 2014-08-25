@@ -1,0 +1,137 @@
+From e51d2e780d02f1ddf324a30eccc4cfd5e5e6eb17 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Fri, 9 May 2014 02:01:37 +0000
+Subject: [PATCH 711/795] HDFS-6313. WebHdfs may use the wrong NN when configured for multiple HA NNs. Contributed by Kihwal Lee.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1593475 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../apache/hadoop/hdfs/web/WebHdfsFileSystem.java  |   14 +++++++---
+ .../java/org/apache/hadoop/hdfs/DFSTestUtil.java   |   28 ++++++++++++++++++-
+ .../apache/hadoop/hdfs/web/TestWebHDFSForHA.java   |   26 ++++++++++++++++++
+ 3 files changed, 62 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+index 09d5045..55537e1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+@@ -101,6 +101,7 @@
+ import org.apache.hadoop.util.Progressable;
+ import org.mortbay.util.ajax.JSON;
+ 
++import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.base.Charsets;
+ import com.google.common.collect.Lists;
+ 
+@@ -1121,10 +1122,10 @@ public MD5MD5CRC32FileChecksum getFileChecksum(final Path p
+       Map<String, Map<String, InetSocketAddress>> addresses = DFSUtil
+           .getHaNnWebHdfsAddresses(conf, scheme);
+ 
+-      for (Map<String, InetSocketAddress> addrs : addresses.values()) {
+-        for (InetSocketAddress addr : addrs.values()) {
+-          ret.add(addr);
+-        }
++      // Extract the entry corresponding to the logical name.
++      Map<String, InetSocketAddress> addrs = addresses.get(uri.getHost());
++      for (InetSocketAddress addr : addrs.values()) {
++        ret.add(addr);
+       }
+     }
+ 
+@@ -1137,4 +1138,9 @@ public String getCanonicalServiceName() {
+     return tokenServiceName == null ? super.getCanonicalServiceName()
+         : tokenServiceName.toString();
+   }
++
++  @VisibleForTesting
++  InetSocketAddress[] getResolvedNNAddr() {
++    return nnAddrs;
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
+index e1c375c..962dc75 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
+@@ -148,16 +148,40 @@ public static void formatNameNode(Configuration conf) throws IOException {
+    */
+   public static Configuration newHAConfiguration(final String logicalName) {
+     Configuration conf = new Configuration();
+-    conf.set(DFSConfigKeys.DFS_NAMESERVICES, logicalName);
++    addHAConfiguration(conf, logicalName);
++    return conf;
++  }
++
++  /**
++   * Add a new HA configuration.
++   */
++  public static void addHAConfiguration(Configuration conf,
++      final String logicalName) {
++    String nsIds = conf.get(DFSConfigKeys.DFS_NAMESERVICES);
++    if (nsIds == null) {
++      conf.set(DFSConfigKeys.DFS_NAMESERVICES, logicalName);
++    } else { // append the nsid
++      conf.set(DFSConfigKeys.DFS_NAMESERVICES, nsIds + "," + logicalName);
++    }
+     conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX,
+             logicalName), "nn1,nn2");
+     conf.set(DFSConfigKeys.DFS_CLIENT_FAILOVER_PROXY_PROVIDER_KEY_PREFIX + "" +
+             "." + logicalName,
+             ConfiguredFailoverProxyProvider.class.getName());
+     conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
+-    return conf;
+   }
+ 
++  public static void setFakeHttpAddresses(Configuration conf,
++      final String logicalName) {
++    conf.set(DFSUtil.addKeySuffixes(
++        DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY,
++        logicalName, "nn1"), "127.0.0.1:12345");
++    conf.set(DFSUtil.addKeySuffixes(
++        DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY,
++        logicalName, "nn2"), "127.0.0.1:12346");
++  }
++
++
+   /** class MyFile contains enough information to recreate the contents of
+    * a single file.
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
+index 8ff3398..772e367 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
+@@ -156,4 +156,30 @@ public void testFailoverAfterOpen() throws IOException {
+       }
+     }
+   }
++
++  @Test
++  public void testMultipleNamespacesConfigured() throws Exception {
++    Configuration conf = DFSTestUtil.newHAConfiguration(LOGICAL_NAME);
++    MiniDFSCluster cluster = null;
++    WebHdfsFileSystem fs = null;
++
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).nnTopology(topo)
++              .numDataNodes(1).build();
++
++      HATestUtil.setFailoverConfigurations(cluster, conf, LOGICAL_NAME);
++
++      cluster.waitActive();
++      DFSTestUtil.addHAConfiguration(conf, LOGICAL_NAME + "remote");
++      DFSTestUtil.setFakeHttpAddresses(conf, LOGICAL_NAME + "remote");
++
++      fs = (WebHdfsFileSystem)FileSystem.get(WEBHDFS_URI, conf);
++      Assert.assertEquals(2, fs.getResolvedNNAddr().length);
++    } finally {
++      IOUtils.cleanup(null, fs);
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
+ }
+-- 
+1.7.0.4
+

@@ -1,0 +1,35 @@
+From bd8ce57796af7998fc520d4b847e236b19f2a254 Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Fri, 4 Apr 2014 18:42:35 +0000
+Subject: [PATCH 624/795] YARN-1837. Fixed TestMoveApplication#testMoveRejectedByScheduler failure. Contributed by Hong Zhiguo
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1584862 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 59449c369c72095f9967f95c112a18bd019dee4b)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../resourcemanager/TestMoveApplication.java       |    7 +++++++
+ 1 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestMoveApplication.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestMoveApplication.java
+index 1b60fce..8bf0879 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestMoveApplication.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestMoveApplication.java
+@@ -72,6 +72,13 @@ public void testMoveRejectedByScheduler() throws Exception {
+     Application application = new Application("user1", resourceManager);
+     application.submit();
+ 
++    // Wait for app to be accepted
++    RMApp app = resourceManager.rmContext.getRMApps()
++            .get(application.getApplicationId());
++    while (app.getState() != RMAppState.ACCEPTED) {
++      Thread.sleep(100);
++    }
++
+     ClientRMService clientRMService = resourceManager.getClientRMService();
+     try {
+       // FIFO scheduler does not support moves
+-- 
+1.7.0.4
+

@@ -1,0 +1,75 @@
+From 174bd199d89fc9c19f0b17cac85a932fee7a403b Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Wed, 26 Feb 2014 23:20:42 +0000
+Subject: [PATCH 477/795] HDFS-6024. Test whether the NN will reject the downgrade if it has a fsimage from a newer release. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1572338 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8f1054c768df69ca39a00f8adf7c88d5932c3d5d)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    3 ++
+ .../org/apache/hadoop/hdfs/TestRollingUpgrade.java |   38 --------------------
+ 2 files changed, 3 insertions(+), 38 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index 7eb6e79..a9dc4a5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -111,3 +111,6 @@ HDFS-5535 subtasks:
+ 
+     HDFS-6023. Test whether the standby NN continues to checkpoint after the
+     prepare stage. (Haohui Mai via jing9)
++
++    HDFS-6024. Test whether the NN will reject the downgrade if it has a
++    fsimage from a newer release. (Haohui Mai via jing9)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+index cf31106..1ee101f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+@@ -347,44 +347,6 @@ public void testDFSAdminDatanodeUpgradeControlCommands() throws Exception {
+     }
+   }
+ 
+-  @Test
+-  public void testDowngrade() throws Exception {
+-    final Configuration conf = new HdfsConfiguration();
+-    MiniQJMHACluster cluster = null;
+-    final Path foo = new Path("/foo");
+-    final Path bar = new Path("/bar");
+-
+-    try {
+-      cluster = new MiniQJMHACluster.Builder(conf).build();
+-      MiniDFSCluster dfsCluster = cluster.getDfsCluster();
+-      dfsCluster.waitActive();
+-
+-      dfsCluster.transitionToActive(0);
+-      DistributedFileSystem dfs = dfsCluster.getFileSystem(0);
+-      dfs.mkdirs(foo);
+-
+-      // start rolling upgrade
+-      RollingUpgradeInfo info = dfs
+-          .rollingUpgrade(RollingUpgradeAction.PREPARE);
+-      Assert.assertTrue(info.isStarted());
+-      dfs.mkdirs(bar);
+-      dfs.close();
+-
+-      dfsCluster.restartNameNode(0, true, "-rollingUpgrade", "downgrade");
+-      // shutdown NN1
+-      dfsCluster.shutdownNameNode(1);
+-      dfsCluster.transitionToActive(0);
+-
+-      dfs = dfsCluster.getFileSystem(0);
+-      Assert.assertTrue(dfs.exists(foo));
+-      Assert.assertTrue(dfs.exists(bar));
+-    } finally {
+-      if (cluster != null) {
+-        cluster.shutdown();
+-      }
+-    }
+-  }
+-
+   @Test (timeout = 300000)
+   public void testFinalize() throws Exception {
+     final Configuration conf = new HdfsConfiguration();
+-- 
+1.7.0.4
+

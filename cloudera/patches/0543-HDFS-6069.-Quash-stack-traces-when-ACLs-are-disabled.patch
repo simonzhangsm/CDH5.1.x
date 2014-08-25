@@ -1,0 +1,36 @@
+From 02fbb3e9c36875252b229cda8de7eaaeb9754f3e Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Fri, 7 Mar 2014 06:06:12 +0000
+Subject: [PATCH 543/795] HDFS-6069. Quash stack traces when ACLs are disabled. Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1575184 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b14c30656079a0d2121595fb6bfad517e24ed713)
+---
+ .../hdfs/server/namenode/NameNodeRpcServer.java    |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+index fa35046..894c415 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+@@ -62,6 +62,7 @@
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.DFSUtil;
+ import org.apache.hadoop.hdfs.HDFSPolicyProvider;
++import org.apache.hadoop.hdfs.protocol.AclException;
+ import org.apache.hadoop.hdfs.protocol.AlreadyBeingCreatedException;
+ import org.apache.hadoop.hdfs.protocol.Block;
+ import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
+@@ -339,7 +340,8 @@ public NameNodeRpcServer(Configuration conf, NameNode nn)
+         InvalidToken.class,
+         LeaseExpiredException.class,
+         NSQuotaExceededException.class,
+-        DSQuotaExceededException.class);
++        DSQuotaExceededException.class,
++        AclException.class);
+  }
+ 
+   /** Allow access to the client RPC server for testing */
+-- 
+1.7.0.4
+

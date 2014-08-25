@@ -1,0 +1,206 @@
+From e6c8f0ab2e632cfc0ec5e27a96ba79b3394f7ce1 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Thu, 13 Mar 2014 21:07:14 +0000
+Subject: [PATCH 658/795] HDFS-6080. Merging change r1577319 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1577320 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1d4e4f40a6eca93f0e65cd9e8dad9e384799a367)
+
+Conflicts:
+
+	hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+---
+ .../org/apache/hadoop/nfs/nfs3/Nfs3Constant.java   |    6 ++
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |   22 +++++---
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |   57 ++++++++++++++++---
+ 3 files changed, 68 insertions(+), 17 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Constant.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Constant.java
+index b49aef4..77e67a1 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Constant.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Constant.java
+@@ -206,6 +206,12 @@ public static WriteStableHow fromValue(int id) {
+   public static final String FILE_DUMP_DIR_DEFAULT = "/tmp/.hdfs-nfs";
+   public static final String ENABLE_FILE_DUMP_KEY = "dfs.nfs3.enableDump";
+   public static final boolean ENABLE_FILE_DUMP_DEFAULT = true;
++  public static final String MAX_READ_TRANSFER_SIZE_KEY = "dfs.nfs.rtmax";
++  public static final int MAX_READ_TRANSFER_SIZE_DEFAULT = 1024 * 1024;
++  public static final String MAX_WRITE_TRANSFER_SIZE_KEY = "dfs.nfs.wtmax";
++  public static final int MAX_WRITE_TRANSFER_SIZE_DEFAULT = 1024 * 1024;
++  public static final String MAX_READDIR_TRANSFER_SIZE_KEY = "dfs.nfs.dtmax";
++  public static final int MAX_READDIR_TRANSFER_SIZE_DEFAULT = 64 * 1024;
+   public static final String MAX_OPEN_FILES = "dfs.nfs3.max.open.files";
+   public static final int MAX_OPEN_FILES_DEFAULT = 256;
+   public static final String OUTPUT_STREAM_TIMEOUT = "dfs.nfs3.stream.timeout";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 0c4f6c4..fdcc749 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -142,9 +142,6 @@
+       (short) DEFAULT_UMASK);
+   
+   static final Log LOG = LogFactory.getLog(RpcProgramNfs3.class);
+-  private static final int MAX_READ_TRANSFER_SIZE = 64 * 1024;
+-  private static final int MAX_WRITE_TRANSFER_SIZE = 64 * 1024;
+-  private static final int MAX_READDIR_TRANSFER_SIZE = 64 * 1024;
+ 
+   private final Configuration config = new Configuration();
+   private final WriteManager writeManager;
+@@ -547,7 +544,11 @@ public READLINK3Response readlink(XDR xdr, SecurityHandler securityHandler,
+             + handle.getFileId());
+         return new READLINK3Response(Nfs3Status.NFS3ERR_SERVERFAULT);
+       }
+-      if (MAX_READ_TRANSFER_SIZE < target.getBytes().length) {
++      int rtmax = config.getInt(Nfs3Constant.MAX_READ_TRANSFER_SIZE_KEY,
++              Nfs3Constant.MAX_READ_TRANSFER_SIZE_DEFAULT);
++      if (rtmax < target.getBytes().length) {
++        LOG.error("Link size: " + target.getBytes().length
++            + " is larger than max transfer size: " + rtmax);
+         return new READLINK3Response(Nfs3Status.NFS3ERR_IO, postOpAttr,
+             new byte[0]);
+       }
+@@ -641,7 +642,9 @@ public READ3Response read(XDR xdr, SecurityHandler securityHandler,
+     }
+ 
+     try {
+-      int buffSize = Math.min(MAX_READ_TRANSFER_SIZE, count);
++      int rtmax = config.getInt(Nfs3Constant.MAX_READ_TRANSFER_SIZE_KEY,
++              Nfs3Constant.MAX_READ_TRANSFER_SIZE_DEFAULT);
++      int buffSize = Math.min(rtmax, count);
+       byte[] readbuffer = new byte[buffSize];
+ 
+       int readCount = 0;
+@@ -1703,9 +1706,12 @@ public FSINFO3Response fsinfo(XDR xdr, SecurityHandler securityHandler,
+     }
+ 
+     try {
+-      int rtmax = MAX_READ_TRANSFER_SIZE;
+-      int wtmax = MAX_WRITE_TRANSFER_SIZE;
+-      int dtperf = MAX_READDIR_TRANSFER_SIZE;
++      int rtmax = config.getInt(Nfs3Constant.MAX_READ_TRANSFER_SIZE_KEY,
++              Nfs3Constant.MAX_READ_TRANSFER_SIZE_DEFAULT);
++      int wtmax = config.getInt(Nfs3Constant.MAX_WRITE_TRANSFER_SIZE_KEY,
++              Nfs3Constant.MAX_WRITE_TRANSFER_SIZE_DEFAULT);
++      int dtperf = config.getInt(Nfs3Constant.MAX_READDIR_TRANSFER_SIZE_KEY,
++              Nfs3Constant.MAX_READDIR_TRANSFER_SIZE_DEFAULT);
+ 
+       Nfs3FileAttributes attrs = Nfs3Utils.getFileAttr(dfsClient,
+           Nfs3Utils.getFileIdPath(handle), iug);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index b61d767..280f636 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -48,23 +48,31 @@ HDFS NFS Gateway
+ 
+    The user running the NFS-gateway must be able to proxy all the users using the NFS mounts. 
+    For instance, if user 'nfsserver' is running the gateway, and users belonging to the groups 'nfs-users1'
+-   and 'nfs-users2' use the NFS mounts, then in core-site.xml of the namenode, the following must be set:
++   and 'nfs-users2' use the NFS mounts, then in core-site.xml of the namenode, the following must be set
++   (NOTE: replace 'nfsserver' with the user name starting the gateway in your cluster):
++
+ ----
+ <property>
+   <name>hadoop.proxyuser.nfsserver.groups</name>
+   <value>nfs-users1,nfs-users2</value>
+   <description>
+-         The 'nfsserver' user is allowed to proxy all members of the 'nfs-users1' and 'nfs-users2' groups. Set this to '*' to allow nfsserver user to proxy any group.
++         The 'nfsserver' user is allowed to proxy all members of the 'nfs-users1' and 
++         'nfs-users2' groups. Set this to '*' to allow nfsserver user to proxy any group.
+   </description>
+ </property>
++----
++
++----
+ <property>
+   <name>hadoop.proxyuser.nfsserver.hosts</name>
+   <value>nfs-client-host1.com</value>
+   <description>
+-         This is the host where the nfs gateway is running. Set this to '*' to allow requests from any hosts to be proxied.
++         This is the host where the nfs gateway is running. Set this to '*' to allow
++         requests from any hosts to be proxied.
+   </description>
+ </property>
+ ----
++
+    The above are the only required configuration for the NFS gateway in non-secure mode. For Kerberized
+    hadoop clusters, the following configurations need to be added to hdfs-site.xml:
+ 
+@@ -81,6 +89,7 @@ HDFS NFS Gateway
+     <value>nfsserver/_HOST@YOUR-REALM.COM</value>
+   </property>
+ ----
++
+    It's strongly recommended for the users to update a few configuration properties based on their use
+    cases. All the related configuration properties can be added or updated in hdfs-site.xml.
+   
+@@ -94,31 +103,61 @@ HDFS NFS Gateway
+ <property>
+   <name>dfs.namenode.accesstime.precision</name>
+   <value>3600000</value>
+-  <description>The access time for HDFS file is precise upto this value. 
++  <description>The access time for HDFS file is precise upto this value.
+     The default value is 1 hour. Setting a value of 0 disables
+     access times for HDFS.
+   </description>
+ </property>
+ ----
+ 
+-   * Users are expected to update the file dump directory. NFS client often 
++   * Users are expected to update the file dump directory. NFS client often
+       reorders writes. Sequential writes can arrive at the NFS gateway at random
+       order. This directory is used to temporarily save out-of-order writes
+-      before writing to HDFS. For each file, the out-of-order writes are dumped after 
++      before writing to HDFS. For each file, the out-of-order writes are dumped after
+       they are accumulated to exceed certain threshold (e.g., 1MB) in memory.
+       One needs to make sure the directory has enough
+-      space. For example, if the application uploads 10 files with each having 
++      space. For example, if the application uploads 10 files with each having
+       100MB, it is recommended for this directory to have roughly 1GB space in case if a
+-      worst-case write reorder happens to every file. Only NFS gateway needs to restart after 
++      worst-case write reorder happens to every file. Only NFS gateway needs to restart after
+       this property is updated.
+ 
+ ----
+   <property>    
+-    <name>dfs.nfs3.dump.dir</name>    
++    <name>dfs.nfs3.dump.dir</name>
+     <value>/tmp/.hdfs-nfs</value>
+   </property>
+ ---- 
+ 
++   * For optimal performance, it is recommended that rtmax be updated to
++     1MB. However, note that this 1MB is a per client allocation, and not
++     from a shared memory pool, and therefore a larger value may adversely 
++     affect small reads, consuming a lot of memory. The maximum value of 
++     this property is 1MB.
++
++----
++<property>
++  <name>dfs.nfs.rtmax</name>
++  <value>1048576</value>
++  <description>This is the maximum size in bytes of a READ request
++    supported by the NFS gateway. If you change this, make sure you
++    also update the nfs mount's rsize(add rsize= # of bytes to the 
++    mount directive).
++  </description>
++</property>
++----
++
++----
++<property>
++  <name>dfs.nfs.wtmax</name>
++  <value>65536</value>
++  <description>This is the maximum size in bytes of a WRITE request
++    supported by the NFS gateway. If you change this, make sure you
++    also update the nfs mount's wsize(add wsize= # of bytes to the 
++    mount directive).
++  </description>
++</property>
++----
++
+   * By default, the export can be mounted by any client. To better control the access,
+     users can update the following property. The value string contains machine name and
+     access privilege, separated by whitespace
+-- 
+1.7.0.4
+

@@ -1,0 +1,254 @@
+From 6810437583106b9902c38e3a41a51a2fd3454c70 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Fri, 14 Feb 2014 21:29:36 +0000
+Subject: [PATCH 361/795] HDFS-3128. Unit tests should not use a test root in /tmp. (wang)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568527 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 06d93e77690e3bbb896499f1794aff4c7b3ae3f6)
+---
+ .../apache/hadoop/fs/FSMainOperationsBaseTest.java |    4 ----
+ .../apache/hadoop/fs/FileContextTestHelper.java    |    2 +-
+ .../org/apache/hadoop/fs/FileSystemTestHelper.java |    2 +-
+ .../apache/hadoop/fs/TestFcHdfsCreateMkdir.java    |    2 +-
+ .../org/apache/hadoop/fs/TestFcHdfsPermission.java |    2 +-
+ .../org/apache/hadoop/fs/TestFcHdfsSetUMask.java   |    2 +-
+ .../fs/TestHDFSFileContextMainOperations.java      |    2 +-
+ .../apache/hadoop/fs/TestResolveHdfsSymlink.java   |    7 ++++---
+ .../apache/hadoop/fs/TestSymlinkHdfsDisable.java   |    3 +--
+ .../fs/viewfs/TestViewFileSystemAtHdfsRoot.java    |    2 +-
+ .../hadoop/fs/viewfs/TestViewFileSystemHdfs.java   |    2 +-
+ .../hadoop/fs/viewfs/TestViewFsAtHdfsRoot.java     |    2 +-
+ .../apache/hadoop/fs/viewfs/TestViewFsHdfs.java    |    2 +-
+ .../hdfs/web/TestFSMainOperationsWebHdfs.java      |    2 +-
+ .../java/org/apache/hadoop/test/PathUtils.java     |    6 +++++-
+ 15 files changed, 21 insertions(+), 21 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FSMainOperationsBaseTest.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FSMainOperationsBaseTest.java
+index e862db4..0df0fe7 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FSMainOperationsBaseTest.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FSMainOperationsBaseTest.java
+@@ -90,10 +90,6 @@ public boolean accept(Path file) {
+   public FSMainOperationsBaseTest() {
+   }
+   
+-  public FSMainOperationsBaseTest(String testRootDir) {
+-      super(testRootDir);
+-  }
+-  
+   @Before
+   public void setUp() throws Exception {
+     fSys = createFileSystem();
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextTestHelper.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextTestHelper.java
+index f3753c3..0074b01 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextTestHelper.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextTestHelper.java
+@@ -49,7 +49,7 @@ public FileContextTestHelper() {
+   /**
+    * Create a context with the given test root
+    */
+-  public FileContextTestHelper(String testRootDir) {
++  private FileContextTestHelper(String testRootDir) {
+     this.testRootDir = testRootDir;
+   }
+   
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileSystemTestHelper.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileSystemTestHelper.java
+index a5d8403..fc058ca 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileSystemTestHelper.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileSystemTestHelper.java
+@@ -52,7 +52,7 @@ public FileSystemTestHelper() {
+   /**
+    * Create helper with the specified test root dir
+    */
+-  public FileSystemTestHelper(String testRootDir) {
++  private FileSystemTestHelper(String testRootDir) {
+       this.testRootDir = testRootDir;
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsCreateMkdir.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsCreateMkdir.java
+index 40dbc4e..6ef7d6b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsCreateMkdir.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsCreateMkdir.java
+@@ -40,7 +40,7 @@
+   
+   @Override
+   protected FileContextTestHelper createFileContextHelper() {
+-    return new FileContextTestHelper("/tmp/TestFcHdfsCreateMkdir");
++    return new FileContextTestHelper();
+   }
+ 
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsPermission.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsPermission.java
+index 4f72e4e..8cf1fce 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsPermission.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsPermission.java
+@@ -36,7 +36,7 @@
+ public class TestFcHdfsPermission extends FileContextPermissionBase {
+   
+   private static final FileContextTestHelper fileContextTestHelper =
+-      new FileContextTestHelper("/tmp/TestFcHdfsPermission");
++      new FileContextTestHelper();
+   private static FileContext fc;
+ 
+   private static MiniDFSCluster cluster;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsSetUMask.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsSetUMask.java
+index b6833da..e9d6a5c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsSetUMask.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestFcHdfsSetUMask.java
+@@ -43,7 +43,7 @@
+ public class TestFcHdfsSetUMask {
+   
+   private static FileContextTestHelper fileContextTestHelper =
+-      new FileContextTestHelper("/tmp/TestFcHdfsSetUMask");
++      new FileContextTestHelper();
+   private static MiniDFSCluster cluster;
+   private static Path defaultWorkingDirectory;
+   private static FileContext fc;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestHDFSFileContextMainOperations.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestHDFSFileContextMainOperations.java
+index 80e180b..5f63ec9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestHDFSFileContextMainOperations.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestHDFSFileContextMainOperations.java
+@@ -49,7 +49,7 @@
+   
+   @Override
+   protected FileContextTestHelper createFileContextHelper() {
+-    return new FileContextTestHelper("/tmp/TestHDFSFileContextMainOperations");
++    return new FileContextTestHelper();
+   }
+ 
+   @BeforeClass
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestResolveHdfsSymlink.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestResolveHdfsSymlink.java
+index cfd4a8d..a243fe9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestResolveHdfsSymlink.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestResolveHdfsSymlink.java
+@@ -50,7 +50,7 @@
+  * underlying file system as Hdfs.
+  */
+ public class TestResolveHdfsSymlink {
+-  private static File TEST_ROOT_DIR = PathUtils.getTestDir(TestResolveHdfsSymlink.class);
++  private static FileContextTestHelper helper = new FileContextTestHelper();
+   private static MiniDFSCluster cluster = null;
+ 
+   @BeforeClass
+@@ -82,13 +82,14 @@ public void testFcResolveAfs() throws IOException, InterruptedException {
+     FileContext fcHdfs = FileContext.getFileContext(cluster.getFileSystem()
+         .getUri());
+ 
++    final String localTestRoot = helper.getAbsoluteTestRootDir(fcLocal);
+     Path alphaLocalPath = new Path(fcLocal.getDefaultFileSystem().getUri()
+-        .toString(), new File(TEST_ROOT_DIR, "alpha").getAbsolutePath());
++        .toString(), new File(localTestRoot, "alpha").getAbsolutePath());
+     DFSTestUtil.createFile(FileSystem.getLocal(conf), alphaLocalPath, 16,
+         (short) 1, 2);
+ 
+     Path linkTarget = new Path(fcLocal.getDefaultFileSystem().getUri()
+-        .toString(), TEST_ROOT_DIR.getAbsolutePath());
++        .toString(), localTestRoot);
+     Path hdfsLink = new Path(fcHdfs.getDefaultFileSystem().getUri().toString(),
+         "/tmp/link");
+     fcHdfs.createSymlink(linkTarget, hdfsLink, true);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestSymlinkHdfsDisable.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestSymlinkHdfsDisable.java
+index e5a5133..2ba8911 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestSymlinkHdfsDisable.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestSymlinkHdfsDisable.java
+@@ -42,8 +42,7 @@ public void testSymlinkHdfsDisable() throws Exception {
+     DistributedFileSystem dfs = cluster.getFileSystem();
+     FileContext fc = FileContext.getFileContext(cluster.getURI(0), conf);
+     // Create test files/links
+-    FileContextTestHelper helper = new FileContextTestHelper(
+-        "/tmp/TestSymlinkHdfsDisable");
++    FileContextTestHelper helper = new FileContextTestHelper();
+     Path root = helper.getTestRootPath(fc);
+     Path target = new Path(root, "target");
+     Path link = new Path(root, "link");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFileSystemAtHdfsRoot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFileSystemAtHdfsRoot.java
+index a0722f7..72ce532 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFileSystemAtHdfsRoot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFileSystemAtHdfsRoot.java
+@@ -45,7 +45,7 @@
+   
+   @Override
+   protected FileSystemTestHelper createFileSystemHelper() {
+-    return new FileSystemTestHelper("/tmp/TestViewFileSystemAtHdfsRoot");
++    return new FileSystemTestHelper();
+   }
+   
+   @BeforeClass
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFileSystemHdfs.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFileSystemHdfs.java
+index 013d8a6..3fc4a56 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFileSystemHdfs.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFileSystemHdfs.java
+@@ -52,7 +52,7 @@
+   
+   @Override
+   protected FileSystemTestHelper createFileSystemHelper() {
+-    return new FileSystemTestHelper("/tmp/TestViewFileSystemHdfs");
++    return new FileSystemTestHelper();
+   }
+ 
+   @BeforeClass
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFsAtHdfsRoot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFsAtHdfsRoot.java
+index 27020d8..ac0a267 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFsAtHdfsRoot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFsAtHdfsRoot.java
+@@ -46,7 +46,7 @@
+   
+   @Override
+   protected FileContextTestHelper createFileContextHelper() {
+-    return new FileContextTestHelper("/tmp/TestViewFsAtHdfsRoot");
++    return new FileContextTestHelper();
+   }
+ 
+   @BeforeClass
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFsHdfs.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFsHdfs.java
+index 8761762..f1da506 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFsHdfs.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/viewfs/TestViewFsHdfs.java
+@@ -42,7 +42,7 @@
+   
+   @Override
+   protected FileContextTestHelper createFileContextHelper() {
+-    return new FileContextTestHelper("/tmp/TestViewFsHdfs");
++    return new FileContextTestHelper();
+   }
+ 
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestFSMainOperationsWebHdfs.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestFSMainOperationsWebHdfs.java
+index 7a13240..3f96bdd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestFSMainOperationsWebHdfs.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestFSMainOperationsWebHdfs.java
+@@ -52,7 +52,7 @@
+   private static FileSystem fileSystem;
+   
+   public TestFSMainOperationsWebHdfs() {
+-    super("/tmp/TestFSMainOperationsWebHdfs");
++    super();
+   }
+ 
+   @Override
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/test/PathUtils.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/test/PathUtils.java
+index 2ee4aa1..ac0f632 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/test/PathUtils.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/test/PathUtils.java
+@@ -19,6 +19,7 @@
+ 
+ import java.io.File;
+ 
++import org.apache.commons.lang.RandomStringUtils;
+ import org.apache.hadoop.fs.Path;
+ 
+ public class PathUtils {
+@@ -36,7 +37,10 @@ public static File getTestDir(Class<?> caller) {
+   }
+   
+   public static File getTestDir(Class<?> caller, boolean create) {
+-    File dir = new File(System.getProperty("test.build.data", "/tmp"), caller.getSimpleName());
++    File dir =
++        new File(System.getProperty("test.build.data", "target/test/data")
++            + "/" + RandomStringUtils.randomAlphanumeric(10),
++            caller.getSimpleName());
+     if (create) {
+       dir.mkdirs();
+     }
+-- 
+1.7.0.4
+

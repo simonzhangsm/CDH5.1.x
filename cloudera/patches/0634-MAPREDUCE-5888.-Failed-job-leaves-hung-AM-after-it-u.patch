@@ -1,0 +1,63 @@
+From bc78c0b057b03bdaa6138d265c3f758265f79d2e Mon Sep 17 00:00:00 2001
+From: Jonathan Turner Eagles <jeagles@apache.org>
+Date: Tue, 13 May 2014 18:28:07 +0000
+Subject: [PATCH 634/795] MAPREDUCE-5888. Failed job leaves hung AM after it unregisters (Jason Lowe via jeagles)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1594318 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d1eb5b13b4419ab92f0252afd5703e7c3c2a58e9)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../hadoop/mapreduce/v2/app/job/impl/JobImpl.java  |   14 ++++++++++++--
+ 1 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
+index 36bfca7..2bcea5c 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
+@@ -32,6 +32,7 @@
+ import java.util.Set;
+ import java.util.concurrent.ScheduledFuture;
+ import java.util.concurrent.ScheduledThreadPoolExecutor;
++import java.util.concurrent.ThreadFactory;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.locks.Lock;
+ import java.util.concurrent.locks.ReadWriteLock;
+@@ -129,6 +130,8 @@
+ import org.apache.hadoop.yarn.state.StateMachineFactory;
+ import org.apache.hadoop.yarn.util.Clock;
+ 
++import com.google.common.util.concurrent.ThreadFactoryBuilder;
++
+ /** Implementation of Job interface. Maintains the state machines of Job.
+  * The read and write calls use ReadWriteLock for concurrency.
+  */
+@@ -641,8 +644,8 @@
+   
+   private JobStateInternal forcedState = null;
+ 
+-  //Executor used for running future tasks. Setting thread pool size to 1
+-  private ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1);
++  //Executor used for running future tasks.
++  private ScheduledThreadPoolExecutor executor;
+   private ScheduledFuture failWaitTriggerScheduledFuture;
+ 
+   private JobState lastNonFinalState = JobState.NEW;
+@@ -684,6 +687,13 @@ public JobImpl(JobId jobId, ApplicationAttemptId applicationAttemptId,
+     this.aclsManager = new JobACLsManager(conf);
+     this.username = System.getProperty("user.name");
+     this.jobACLs = aclsManager.constructJobACLs(conf);
++
++    ThreadFactory threadFactory = new ThreadFactoryBuilder()
++      .setNameFormat("Job Fail Wait Timeout Monitor #%d")
++      .setDaemon(true)
++      .build();
++    this.executor = new ScheduledThreadPoolExecutor(1, threadFactory);
++
+     // This "this leak" is okay because the retained pointer is in an
+     //  instance variable.
+     stateMachine = stateMachineFactory.make(this);
+-- 
+1.7.0.4
+

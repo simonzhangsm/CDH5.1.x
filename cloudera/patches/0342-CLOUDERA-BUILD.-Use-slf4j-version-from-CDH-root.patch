@@ -1,0 +1,32 @@
+From 368867927e39909209d97b81989488596cbba539 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@cloudera.com>
+Date: Mon, 9 Sep 2013 17:22:48 +0200
+Subject: [PATCH 342/795] CLOUDERA-BUILD. Use slf4j version from CDH root
+
+(cherry picked from commit a52090bb9381fff42b4d360496f7dcdf07444356)
+---
+ hadoop-project/pom.xml |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-project/pom.xml b/hadoop-project/pom.xml
+index 69cc07e..eddc603 100644
+--- a/hadoop-project/pom.xml
++++ b/hadoop-project/pom.xml
+@@ -605,12 +605,12 @@
+       <dependency>
+         <groupId>org.slf4j</groupId>
+         <artifactId>slf4j-api</artifactId>
+-        <version>1.7.5</version>
++        <version>${cdh.slf4j.version}</version>
+       </dependency>
+       <dependency>
+         <groupId>org.slf4j</groupId>
+         <artifactId>slf4j-log4j12</artifactId>
+-        <version>1.7.5</version>
++        <version>${cdh.slf4j.version}</version>
+       </dependency>
+       <dependency>
+         <groupId>org.eclipse.jdt</groupId>
+-- 
+1.7.0.4
+

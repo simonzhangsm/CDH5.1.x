@@ -1,0 +1,47 @@
+From d235244e29c87bb0f01e08766c3c742d65b07a2e Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org =  cnauroth = Chris Nauroth cnauroth@apache.org@apache.org>
+Date: Mon, 14 Apr 2014 23:52:21 +0000
+Subject: [PATCH 717/795] HADOOP-10500. Merging change r1587361 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1587362 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 631462d375844d5107f558b4f57e6ff91ecca6a3)
+---
+ .../hadoop/security/TestDoAsEffectiveUser.java     |    7 ++++++-
+ 1 files changed, 6 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
+index dfbee76..6626e8b 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
+@@ -74,8 +74,9 @@
+   }
+ 
+   @Before
+-  public void setMasterConf() {
++  public void setMasterConf() throws IOException {
+     UserGroupInformation.setConfiguration(masterConf);
++    refreshConf(masterConf);
+   }
+ 
+   private void configureSuperUserIPAddresses(Configuration conf,
+@@ -297,6 +298,8 @@ public void testRealUserIPNotSpecified() throws IOException {
+         .setInstance(new TestImpl()).setBindAddress(ADDRESS).setPort(0)
+         .setNumHandlers(2).setVerbose(false).build();
+ 
++    refreshConf(conf);
++
+     try {
+       server.start();
+ 
+@@ -379,6 +382,8 @@ public void testRealUserGroupAuthorizationFailure() throws IOException {
+         .setInstance(new TestImpl()).setBindAddress(ADDRESS).setPort(0)
+         .setNumHandlers(2).setVerbose(false).build();
+     
++    refreshConf(conf);
++
+     try {
+       server.start();
+ 
+-- 
+1.7.0.4
+

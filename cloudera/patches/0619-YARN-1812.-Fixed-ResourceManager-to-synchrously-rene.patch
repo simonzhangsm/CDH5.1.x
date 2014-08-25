@@ -1,0 +1,515 @@
+From ef6403f84474b61cb4320e8e3d68cb318bcab9bc Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Wed, 12 Mar 2014 18:26:53 +0000
+Subject: [PATCH 619/795] YARN-1812. Fixed ResourceManager to synchrously renew tokens after recovery and thus recover app itself synchronously and avoid races with resyncing NodeManagers. Contributed by Jian He.
+ svn merge --ignore-ancestry -c 1576843 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1576844 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 548eaa5abf9845b5ea0a2b7f19e428a4507b620d)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/RMHATestBase.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+---
+ .../server/resourcemanager/ClientRMService.java    |    2 +-
+ .../yarn/server/resourcemanager/RMAppManager.java  |   88 ++++++++++++--------
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |    4 +-
+ .../security/DelegationTokenRenewer.java           |   46 +++++------
+ .../hadoop/yarn/server/resourcemanager/MockRM.java |    2 +-
+ .../server/resourcemanager/TestAppManager.java     |    2 +-
+ .../hadoop/yarn/server/resourcemanager/TestRM.java |    2 +-
+ .../yarn/server/resourcemanager/TestRMRestart.java |   57 +++++++++++++
+ .../applicationsmanager/TestAMRestart.java         |    2 +-
+ .../security/TestDelegationTokenRenewer.java       |   16 ++--
+ 10 files changed, 147 insertions(+), 74 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
+index 7715add..84a6b7b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
+@@ -337,7 +337,7 @@ public SubmitApplicationResponse submitApplication(
+     try {
+       // call RMAppManager to submit application directly
+       rmAppManager.submitApplication(submissionContext,
+-          System.currentTimeMillis(), user, false, null);
++          System.currentTimeMillis(), user);
+ 
+       LOG.info("Application with id " + applicationId.getId() + 
+           " submitted by user " + user);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
+index 7855042..e4bcd4f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/RMAppManager.java
+@@ -263,48 +263,75 @@ protected synchronized void checkAppNumCompletedLimit() {
+   @SuppressWarnings("unchecked")
+   protected void submitApplication(
+       ApplicationSubmissionContext submissionContext, long submitTime,
+-      String user, boolean isRecovered, RMState state) throws YarnException {
++      String user) throws YarnException {
+     ApplicationId applicationId = submissionContext.getApplicationId();
+ 
+     RMAppImpl application =
+         createAndPopulateNewRMApp(submissionContext, submitTime, user);
++    ApplicationId appId = submissionContext.getApplicationId();
+ 
+-    if (isRecovered) {
+-      recoverApplication(state, application);
+-      RMAppState rmAppState =
+-          state.getApplicationState().get(applicationId).getState();
+-      if (isApplicationInFinalState(rmAppState)) {
+-        // We are synchronously moving the application into final state so that
+-        // momentarily client will not see this application in NEW state. Also
+-        // for finished applications we will avoid renewing tokens.
+-        application
+-            .handle(new RMAppEvent(applicationId, RMAppEventType.RECOVER));
+-        return;
+-      }
+-    }
+-    
+     if (UserGroupInformation.isSecurityEnabled()) {
+       Credentials credentials = null;
+       try {
+         credentials = parseCredentials(submissionContext);
++        this.rmContext.getDelegationTokenRenewer().addApplicationAsync(appId,
++          credentials, submissionContext.getCancelTokensWhenComplete());
+       } catch (Exception e) {
+-        LOG.warn(
+-            "Unable to parse credentials.", e);
++        LOG.warn("Unable to parse credentials.", e);
+         // Sending APP_REJECTED is fine, since we assume that the
+         // RMApp is in NEW state and thus we haven't yet informed the
+         // scheduler about the existence of the application
+         assert application.getState() == RMAppState.NEW;
+-        this.rmContext.getDispatcher().getEventHandler().handle(
+-            new RMAppRejectedEvent(applicationId, e.getMessage()));
++        this.rmContext.getDispatcher().getEventHandler()
++          .handle(new RMAppRejectedEvent(applicationId, e.getMessage()));
+         throw RPCUtil.getRemoteException(e);
+       }
+-      this.rmContext.getDelegationTokenRenewer().addApplication(
+-          applicationId, credentials,
+-          submissionContext.getCancelTokensWhenComplete(), isRecovered);
+     } else {
++      // Dispatcher is not yet started at this time, so these START events
++      // enqueued should be guaranteed to be first processed when dispatcher
++      // gets started.
+       this.rmContext.getDispatcher().getEventHandler()
+-          .handle(new RMAppEvent(applicationId,
+-              isRecovered ? RMAppEventType.RECOVER : RMAppEventType.START));
++        .handle(new RMAppEvent(applicationId, RMAppEventType.START));
++    }
++  }
++
++  @SuppressWarnings("unchecked")
++  protected void
++      recoverApplication(ApplicationState appState, RMState rmState)
++          throws Exception {
++    ApplicationSubmissionContext appContext =
++        appState.getApplicationSubmissionContext();
++    ApplicationId appId = appState.getAppId();
++
++    // create and recover app.
++    RMAppImpl application =
++        createAndPopulateNewRMApp(appContext, appState.getSubmitTime(),
++          appState.getUser());
++    application.recover(rmState);
++    if (isApplicationInFinalState(appState.getState())) {
++      // We are synchronously moving the application into final state so that
++      // momentarily client will not see this application in NEW state. Also
++      // for finished applications we will avoid renewing tokens.
++      application.handle(new RMAppEvent(appId, RMAppEventType.RECOVER));
++      return;
++    }
++
++    if (UserGroupInformation.isSecurityEnabled()) {
++      Credentials credentials = null;
++      try {
++        credentials = parseCredentials(appContext);
++        // synchronously renew delegation token on recovery.
++        rmContext.getDelegationTokenRenewer().addApplicationSync(appId,
++          credentials, appContext.getCancelTokensWhenComplete());
++        application.handle(new RMAppEvent(appId, RMAppEventType.RECOVER));
++      } catch (Exception e) {
++        LOG.warn("Unable to parse and renew delegation tokens.", e);
++        this.rmContext.getDispatcher().getEventHandler()
++          .handle(new RMAppRejectedEvent(appId, e.getMessage()));
++        throw e;
++      }
++    } else {
++      application.handle(new RMAppEvent(appId, RMAppEventType.RECOVER));
+     }
+   }
+ 
+@@ -363,16 +390,6 @@ private void validateResourceRequest(
+     }
+   }
+ 
+-  private void recoverApplication(RMState state, RMAppImpl application)
+-      throws YarnException {
+-    try {
+-      application.recover(state);
+-    } catch (Exception e) {
+-      LOG.error("Error recovering application", e);
+-      throw new YarnException(e);
+-    }
+-  }
+-
+   private boolean isApplicationInFinalState(RMAppState rmAppState) {
+     if (rmAppState == RMAppState.FINISHED || rmAppState == RMAppState.FAILED
+         || rmAppState == RMAppState.KILLED) {
+@@ -403,8 +420,7 @@ public void recover(RMState state) throws Exception {
+     Map<ApplicationId, ApplicationState> appStates = state.getApplicationState();
+     LOG.info("Recovering " + appStates.size() + " applications");
+     for (ApplicationState appState : appStates.values()) {
+-      submitApplication(appState.getApplicationSubmissionContext(),
+-        appState.getSubmitTime(), appState.getUser(), true, state);
++      recoverApplication(appState, state);
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index 77d4d1e..8009c4b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -739,7 +739,9 @@ public RMAppState transition(RMAppImpl app, RMAppEvent event) {
+        * Therefore we should wait for it to finish.
+        */
+       for (RMAppAttempt attempt : app.getAppAttempts().values()) {
+-        app.dispatcher.getEventHandler().handle(
++        // synchronously recover attempt to ensure any incoming external events
++        // to be processed after the attempt processes the recover event.
++        attempt.handle(
+           new RMAppAttemptEvent(attempt.getAppAttemptId(),
+             RMAppAttemptEventType.RECOVER));
+       }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/DelegationTokenRenewer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/DelegationTokenRenewer.java
+index ce9f7ae..82464cf 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/DelegationTokenRenewer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/DelegationTokenRenewer.java
+@@ -114,6 +114,7 @@ protected synchronized void serviceInit(Configuration conf) throws Exception {
+             YarnConfiguration.DEFAULT_RM_NM_EXPIRY_INTERVAL_MS);
+     renewerService = createNewThreadPoolService(conf);
+     pendingEventQueue = new LinkedBlockingQueue<DelegationTokenRenewerEvent>();
++    renewalTimer = new Timer(true);
+     super.serviceInit(conf);
+   }
+ 
+@@ -136,7 +137,6 @@ protected ThreadPoolExecutor createNewThreadPoolService(Configuration conf) {
+   @Override
+   protected void serviceStart() throws Exception {
+     dtCancelThread.start();
+-    renewalTimer = new Timer(true);
+     if (tokenKeepAliveEnabled) {
+       delayedRemovalThread =
+           new Thread(new DelayedTokenRemovalRunnable(getConfig()),
+@@ -151,12 +151,12 @@ protected void serviceStart() throws Exception {
+     isServiceStarted = true;
+     serviceStateLock.writeLock().unlock();
+     while(!pendingEventQueue.isEmpty()) {
+-      processDelegationTokenRewewerEvent(pendingEventQueue.take());
++      processDelegationTokenRenewerEvent(pendingEventQueue.take());
+     }
+     super.serviceStart();
+   }
+ 
+-  private void processDelegationTokenRewewerEvent(
++  private void processDelegationTokenRenewerEvent(
+       DelegationTokenRenewerEvent evt) {
+     serviceStateLock.readLock().lock();
+     try {
+@@ -325,19 +325,26 @@ private void addTokenToList(DelegationTokenToRenew t) {
+   }
+ 
+   /**
+-   * Add application tokens for renewal.
++   * Asynchronously add application tokens for renewal.
+    * @param applicationId added application
+    * @param ts tokens
+    * @param shouldCancelAtEnd true if tokens should be canceled when the app is
+    * done else false. 
+    * @throws IOException
+    */
+-  public void addApplication(
+-      ApplicationId applicationId, Credentials ts, boolean shouldCancelAtEnd,
+-      boolean isApplicationRecovered) {
+-    processDelegationTokenRewewerEvent(new DelegationTokenRenewerAppSubmitEvent(
+-        applicationId, ts,
+-        shouldCancelAtEnd, isApplicationRecovered));
++  public void addApplicationAsync(ApplicationId applicationId, Credentials ts,
++      boolean shouldCancelAtEnd) {
++    processDelegationTokenRenewerEvent(new DelegationTokenRenewerAppSubmitEvent(
++      applicationId, ts, shouldCancelAtEnd));
++  }
++
++  /**
++   * Synchronously renew delegation tokens.
++   */
++  public void addApplicationSync(ApplicationId applicationId, Credentials ts,
++      boolean shouldCancelAtEnd) throws IOException{
++    handleAppSubmitEvent(new DelegationTokenRenewerAppSubmitEvent(
++      applicationId, ts, shouldCancelAtEnd));
+   }
+ 
+   private void handleAppSubmitEvent(DelegationTokenRenewerAppSubmitEvent evt)
+@@ -493,7 +500,7 @@ private void removeFailedDelegationToken(DelegationTokenToRenew t) {
+    * @param applicationId completed application
+    */
+   public void applicationFinished(ApplicationId applicationId) {
+-    processDelegationTokenRewewerEvent(new DelegationTokenRenewerEvent(
++    processDelegationTokenRenewerEvent(new DelegationTokenRenewerEvent(
+         applicationId,
+         DelegationTokenRenewerEventType.FINISH_APPLICATION));
+   }
+@@ -638,9 +645,7 @@ private void handleDTRenewerAppSubmitEvent(
+         // Setup tokens for renewal
+         DelegationTokenRenewer.this.handleAppSubmitEvent(event);
+         rmContext.getDispatcher().getEventHandler()
+-            .handle(new RMAppEvent(event.getApplicationId(),
+-                event.isApplicationRecovered() ? RMAppEventType.RECOVER
+-                    : RMAppEventType.START));
++            .handle(new RMAppEvent(event.getApplicationId(), RMAppEventType.START));
+       } catch (Throwable t) {
+         LOG.warn(
+             "Unable to add the application to the delegation token renewer.",
+@@ -654,20 +659,17 @@ private void handleDTRenewerAppSubmitEvent(
+     }
+   }
+   
+-  class DelegationTokenRenewerAppSubmitEvent extends
++  private static class DelegationTokenRenewerAppSubmitEvent extends
+       DelegationTokenRenewerEvent {
+ 
+     private Credentials credentials;
+     private boolean shouldCancelAtEnd;
+-    private boolean isAppRecovered;
+ 
+     public DelegationTokenRenewerAppSubmitEvent(ApplicationId appId,
+-        Credentials credentails, boolean shouldCancelAtEnd,
+-        boolean isApplicationRecovered) {
++        Credentials credentails, boolean shouldCancelAtEnd) {
+       super(appId, DelegationTokenRenewerEventType.VERIFY_AND_START_APPLICATION);
+       this.credentials = credentails;
+       this.shouldCancelAtEnd = shouldCancelAtEnd;
+-      this.isAppRecovered = isApplicationRecovered;
+     }
+ 
+     public Credentials getCredentials() {
+@@ -677,10 +679,6 @@ public Credentials getCredentials() {
+     public boolean shouldCancelAtEnd() {
+       return shouldCancelAtEnd;
+     }
+-
+-    public boolean isApplicationRecovered() {
+-      return isAppRecovered;
+-    }
+   }
+   
+   enum DelegationTokenRenewerEventType {
+@@ -688,7 +686,7 @@ public boolean isApplicationRecovered() {
+     FINISH_APPLICATION
+   }
+   
+-  class DelegationTokenRenewerEvent extends
++  private static class DelegationTokenRenewerEvent extends
+       AbstractEvent<DelegationTokenRenewerEventType> {
+ 
+     private ApplicationId appId;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
+index 32085fb..962d5d7 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
+@@ -483,7 +483,7 @@ protected void startWepApp() {
+     // override to disable webapp
+   }
+ 
+-  public static void finishApplicationMaster(RMApp rmApp, MockRM rm, MockNM nm,
++  public static void finishAMAndVerifyAppState(RMApp rmApp, MockRM rm, MockNM nm,
+       MockAM am) throws Exception {
+     FinishApplicationMasterRequest req =
+         FinishApplicationMasterRequest.newInstance(
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestAppManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestAppManager.java
+index 0a37382..76aac21 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestAppManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestAppManager.java
+@@ -176,7 +176,7 @@ public void submitApplication(
+         ApplicationSubmissionContext submissionContext, String user)
+             throws YarnException {
+       super.submitApplication(submissionContext, System.currentTimeMillis(),
+-          user, false, null);
++        user);
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
+index 42d8394..ad1253a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
+@@ -469,7 +469,7 @@ public void testInvalidateAMHostPortWhenAMFailedOrKilled() throws Exception {
+         new MockNM("127.0.0.1:1234", 15120, rm1.getResourceTrackerService());
+     nm1.registerNode();
+     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
+-    MockRM.finishApplicationMaster(app1, rm1, nm1, am1);
++    MockRM.finishAMAndVerifyAppState(app1, rm1, nm1, am1);
+ 
+     // a failed app
+     RMApp app2 = rm1.submitApp(200);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+index d50f0d7..bb9c06d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMRestart.java
+@@ -1666,6 +1666,63 @@ private void assertQueueMetrics(QueueMetrics qm, int appsSubmitted,
+         appsCompleted + appsCompletedCarryOn);
+   }
+ 
++  // Test Delegation token is renewed synchronously so that recover events
++  // can be processed before any other external incoming events, specifically
++  // the ContainerFinished event on NM re-registraton.
++  @Test (timeout = 20000)
++  public void testSynchronouslyRenewDTOnRecovery() throws Exception {
++    conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 2);
++    conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION,
++      "kerberos");
++    MemoryRMStateStore memStore = new MemoryRMStateStore();
++    memStore.init(conf);
++
++    // start RM
++    MockRM rm1 = new MockRM(conf, memStore);
++    rm1.start();
++    final MockNM nm1 =
++        new MockNM("127.0.0.1:1234", 15120, rm1.getResourceTrackerService());
++    nm1.registerNode();
++    RMApp app0 = rm1.submitApp(200);
++    final MockAM am0 = MockRM.launchAndRegisterAM(app0, rm1, nm1);
++
++    MockRM rm2 = new MockRM(conf, memStore) {
++      @Override
++      protected ResourceTrackerService createResourceTrackerService() {
++        return new ResourceTrackerService(this.rmContext,
++          this.nodesListManager, this.nmLivelinessMonitor,
++          this.rmContext.getContainerTokenSecretManager(),
++          this.rmContext.getNMTokenSecretManager()) {
++          @Override
++          protected void serviceStart() throws Exception {
++            // send the container_finished event as soon as the
++            // ResourceTrackerService is started.
++            super.serviceStart();
++            nm1.setResourceTrackerService(getResourceTrackerService());
++            List<ContainerStatus> status = new ArrayList<ContainerStatus>();
++            ContainerId amContainer =
++                ContainerId.newInstance(am0.getApplicationAttemptId(), 1);
++            status.add(ContainerStatus.newInstance(amContainer,
++              ContainerState.COMPLETE, "AM container exit", 143));
++            nm1.registerNode(status);
++          }
++        };
++      }
++    };
++    // Re-start RM
++    rm2.start();
++
++    // wait for the 2nd attempt to be started.
++    RMApp loadedApp0 =
++        rm2.getRMContext().getRMApps().get(app0.getApplicationId());
++    int timeoutSecs = 0;
++    while (loadedApp0.getAppAttempts().size() != 2 && timeoutSecs++ < 40) {
++      Thread.sleep(200);
++    }
++    MockAM am1 = MockRM.launchAndRegisterAM(loadedApp0, rm2, nm1);
++    MockRM.finishAMAndVerifyAppState(loadedApp0, rm2, nm1, am1);
++  }
++
+   public class TestMemoryRMStateStore extends MemoryRMStateStore {
+     int count = 0;
+     public int updateApp = 0;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/applicationsmanager/TestAMRestart.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/applicationsmanager/TestAMRestart.java
+index 66d7acb..d2f3538 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/applicationsmanager/TestAMRestart.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/applicationsmanager/TestAMRestart.java
+@@ -223,7 +223,7 @@ public void testAMRestartWithExistingContainers() throws Exception {
+         ((CapacityScheduler) rm1.getResourceScheduler())
+           .getCurrentAttemptForContainer(containerId2);
+     // finish this application
+-    MockRM.finishApplicationMaster(app1, rm1, nm1, am2);
++    MockRM.finishAMAndVerifyAppState(app1, rm1, nm1, am2);
+ 
+     // the 2nd attempt released the 1st attempt's running container, when the
+     // 2nd attempt finishes.
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/security/TestDelegationTokenRenewer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/security/TestDelegationTokenRenewer.java
+index a6ad9b6..786552e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/security/TestDelegationTokenRenewer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/security/TestDelegationTokenRenewer.java
+@@ -353,7 +353,7 @@ public void testDTRenewal () throws Exception {
+     // register the tokens for renewal
+     ApplicationId applicationId_0 = 
+         BuilderUtils.newApplicationId(0, 0);
+-    delegationTokenRenewer.addApplication(applicationId_0, ts, true, false);
++    delegationTokenRenewer.addApplicationAsync(applicationId_0, ts, true);
+     waitForEventsToGetProcessed(delegationTokenRenewer);
+ 
+     // first 3 initial renewals + 1 real
+@@ -393,7 +393,7 @@ public void testDTRenewal () throws Exception {
+     
+ 
+     ApplicationId applicationId_1 = BuilderUtils.newApplicationId(0, 1);
+-    delegationTokenRenewer.addApplication(applicationId_1, ts, true, false);
++    delegationTokenRenewer.addApplicationAsync(applicationId_1, ts, true);
+     waitForEventsToGetProcessed(delegationTokenRenewer);
+     delegationTokenRenewer.applicationFinished(applicationId_1);
+     waitForEventsToGetProcessed(delegationTokenRenewer);
+@@ -429,7 +429,7 @@ public void testAppRejectionWithCancelledDelegationToken() throws Exception {
+     
+     // register the tokens for renewal
+     ApplicationId appId =  BuilderUtils.newApplicationId(0, 0);
+-    delegationTokenRenewer.addApplication(appId, ts, true, false);
++    delegationTokenRenewer.addApplicationAsync(appId, ts, true);
+     int waitCnt = 20;
+     while (waitCnt-- >0) {
+       if (!eventQueue.isEmpty()) {
+@@ -473,7 +473,7 @@ public void testDTRenewalWithNoCancel () throws Exception {
+     
+ 
+     ApplicationId applicationId_1 = BuilderUtils.newApplicationId(0, 1);
+-    delegationTokenRenewer.addApplication(applicationId_1, ts, false, false);
++    delegationTokenRenewer.addApplicationAsync(applicationId_1, ts, false);
+     waitForEventsToGetProcessed(delegationTokenRenewer);
+     delegationTokenRenewer.applicationFinished(applicationId_1);
+     waitForEventsToGetProcessed(delegationTokenRenewer);
+@@ -540,7 +540,7 @@ public void testDTKeepAlive1 () throws Exception {
+ 
+     // register the tokens for renewal
+     ApplicationId applicationId_0 =  BuilderUtils.newApplicationId(0, 0);
+-    localDtr.addApplication(applicationId_0, ts, true, false);
++    localDtr.addApplicationAsync(applicationId_0, ts, true);
+     waitForEventsToGetProcessed(localDtr);
+     if (!eventQueue.isEmpty()){
+       Event evt = eventQueue.take();
+@@ -617,7 +617,7 @@ public void testDTKeepAlive2() throws Exception {
+ 
+     // register the tokens for renewal
+     ApplicationId applicationId_0 =  BuilderUtils.newApplicationId(0, 0);
+-    localDtr.addApplication(applicationId_0, ts, true, false);
++    localDtr.addApplicationAsync(applicationId_0, ts, true);
+     localDtr.applicationFinished(applicationId_0);
+     waitForEventsToGetProcessed(delegationTokenRenewer);
+     //Send another keep alive.
+@@ -718,14 +718,14 @@ public Long answer(InvocationOnMock invocation)
+     Thread submitThread = new Thread() {                                       
+       @Override                                                                
+       public void run() {
+-        dtr.addApplication(mock(ApplicationId.class), creds1, false, false);        
++        dtr.addApplicationAsync(mock(ApplicationId.class), creds1, false);
+       }                                                                        
+     };                                                                         
+     submitThread.start();                                                      
+                                                                                
+     // wait till 1st submit blocks, then submit another
+     startBarrier.await();                           
+-    dtr.addApplication(mock(ApplicationId.class), creds2, false, false);              
++    dtr.addApplicationAsync(mock(ApplicationId.class), creds2, false);
+     // signal 1st to complete                                                  
+     endBarrier.await();                                                        
+     submitThread.join(); 
+-- 
+1.7.0.4
+

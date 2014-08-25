@@ -1,0 +1,106 @@
+From 4ca809273b26e12af2e4547d819117562e127d93 Mon Sep 17 00:00:00 2001
+From: Aaron Myers <atm@apache.org>
+Date: Thu, 19 Jun 2014 05:20:23 +0000
+Subject: [PATCH 766/795] HDFS-6563. NameNode cannot save fsimage in certain circumstances when snapshots are in use. Contributed by Aaron T. Myers.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1603713 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 50960c9c143bf8340f9c158be0178ffee570394f)
+(cherry picked from commit 99974caadded7ebe4375d1cbadc9d5c34a362ca8)
+---
+ .../hdfs/server/namenode/FSImageFormatPBINode.java |    6 ++-
+ .../namenode/snapshot/FileWithSnapshotFeature.java |    2 +-
+ .../namenode/snapshot/TestSnapshotBlocksMap.java   |   37 ++++++++++++++++++++
+ 3 files changed, 42 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
+index 3c3ca49..744ef44 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
+@@ -457,8 +457,10 @@ private void save(OutputStream out, INodeFile n) throws IOException {
+       INodeSection.INodeFile.Builder b = buildINodeFile(n,
+           parent.getSaverContext());
+ 
+-      for (Block block : n.getBlocks()) {
+-        b.addBlocks(PBHelper.convert(block));
++      if (n.getBlocks() != null) {
++        for (Block block : n.getBlocks()) {
++          b.addBlocks(PBHelper.convert(block));
++        }
+       }
+ 
+       FileUnderConstructionFeature uc = n.getFileUnderConstructionFeature();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshotFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshotFeature.java
+index e32f78a..52adfc6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshotFeature.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FileWithSnapshotFeature.java
+@@ -159,7 +159,7 @@ private void collectBlocksBeyondMax(final INodeFile file, final long max,
+         // resize the array.  
+         final BlockInfo[] newBlocks;
+         if (n == 0) {
+-          newBlocks = null;
++          newBlocks = BlockInfo.EMPTY_ARRAY;
+         } else {
+           newBlocks = new BlockInfo[n];
+           System.arraycopy(oldBlocks, 0, newBlocks, 0, n);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotBlocksMap.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotBlocksMap.java
+index fba48fc..c7b6b7f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotBlocksMap.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotBlocksMap.java
+@@ -28,12 +28,14 @@
+ import java.io.IOException;
+ 
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FSDataOutputStream;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.DFSTestUtil;
+ import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
++import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+@@ -396,4 +398,39 @@ public void testDeletionWithZeroSizeBlock3() throws Exception {
+     assertEquals(1, blks.length);
+     assertEquals(BLOCKSIZE, blks[0].getNumBytes());
+   }
++  
++  /**
++   * Make sure that a delete of a non-zero-length file which results in a
++   * zero-length file in a snapshot works.
++   */
++  @Test
++  public void testDeletionOfLaterBlocksWithZeroSizeFirstBlock() throws Exception {
++    final Path foo = new Path("/foo");
++    final Path bar = new Path(foo, "bar");
++    final byte[] testData = "foo bar baz".getBytes();
++    
++    // Create a zero-length file.
++    DFSTestUtil.createFile(hdfs, bar, 0, REPLICATION, 0L);
++    assertEquals(0, fsdir.getINode4Write(bar.toString()).asFile().getBlocks().length);
++
++    // Create a snapshot that includes that file.
++    SnapshotTestHelper.createSnapshot(hdfs, foo, "s0");
++    
++    // Extend that file.
++    FSDataOutputStream out = hdfs.append(bar);
++    out.write(testData);
++    out.close();
++    INodeFile barNode = fsdir.getINode4Write(bar.toString()).asFile();
++    BlockInfo[] blks = barNode.getBlocks();
++    assertEquals(1, blks.length);
++    assertEquals(testData.length, blks[0].getNumBytes());
++    
++    // Delete the file.
++    hdfs.delete(bar, true);
++    
++    // Now make sure that the NN can still save an fsimage successfully.
++    cluster.getNameNode().getRpcServer().setSafeMode(
++        SafeModeAction.SAFEMODE_ENTER, false);
++    cluster.getNameNode().getRpcServer().saveNamespace();
++  }
+ }
+-- 
+1.7.0.4
+

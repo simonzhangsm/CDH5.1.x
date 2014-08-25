@@ -1,0 +1,66 @@
+From a9bf7dbce1bf964e2a298e6b12bde2ff2b97705f Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Mon, 27 Jan 2014 19:05:04 +0000
+Subject: [PATCH 437/795] HDFS-5781. Merge change r1561788 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1561796 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e99d9c5e0e1be9b4f1644ed6509dda62c2f63624)
+---
+ .../hdfs/server/namenode/FSEditLogOpCodes.java     |   26 ++++++++++++++-----
+ 1 files changed, 19 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOpCodes.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOpCodes.java
+index 0f49695..03e2025 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOpCodes.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOpCodes.java
+@@ -68,7 +68,7 @@
+   OP_REMOVE_CACHE_POOL                    ((byte) 38),
+   OP_MODIFY_CACHE_DIRECTIVE    ((byte) 39),
+ 
+-  // Note that fromByte(..) depends on OP_INVALID being at the last position.  
++  // Note that the current range of the valid OP code is 0~127
+   OP_INVALID                    ((byte) -1);
+ 
+   private final byte opCode;
+@@ -91,7 +91,22 @@ public byte getOpCode() {
+     return opCode;
+   }
+ 
+-  private static final FSEditLogOpCodes[] VALUES = FSEditLogOpCodes.values();
++  private static FSEditLogOpCodes[] VALUES;
++  
++  static {
++    byte max = 0;
++    for (FSEditLogOpCodes code : FSEditLogOpCodes.values()) {
++      if (code.getOpCode() > max) {
++        max = code.getOpCode();
++      }
++    }
++    VALUES = new FSEditLogOpCodes[max + 1];
++    for (FSEditLogOpCodes code : FSEditLogOpCodes.values()) {
++      if (code.getOpCode() >= 0) {
++        VALUES[code.getOpCode()] = code;
++      }
++    }
++  }
+ 
+   /**
+    * Converts byte to FSEditLogOpCodes enum value
+@@ -100,12 +115,9 @@ public byte getOpCode() {
+    * @return enum with byte value of opCode
+    */
+   public static FSEditLogOpCodes fromByte(byte opCode) {
+-    if (opCode == -1) {
+-      return OP_INVALID;
+-    }
+-    if (opCode >= 0 && opCode < OP_INVALID.ordinal()) {
++    if (opCode >= 0 && opCode < VALUES.length) {
+       return VALUES[opCode];
+     }
+-    return null;
++    return opCode == -1 ? OP_INVALID : null;
+   }
+ }
+-- 
+1.7.0.4
+

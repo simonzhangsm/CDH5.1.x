@@ -1,0 +1,160 @@
+From 4a2cd5a57338f3bd64250e92b3843beb28b5a329 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Thu, 8 May 2014 22:20:37 +0000
+Subject: [PATCH 686/795] HDFS-6340.DN can't finalize upgrade. (Contributed by Rahul Singhal)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1593436 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b4c1f82fa9f68c25c108f07205a3ebeae23a2b42)
+---
+ .../hdfs/server/namenode/NameNodeRpcServer.java    |    6 +-
+ .../org/apache/hadoop/hdfs/TestDFSFinalize.java    |   73 +++++++++++++++++---
+ 2 files changed, 65 insertions(+), 14 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+index b8ce7a7..1f2c9ec 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+@@ -998,16 +998,16 @@ public DatanodeCommand blockReport(DatanodeRegistration nodeReg,
+            + "from " + nodeReg + ", reports.length=" + reports.length);
+     }
+     final BlockManager bm = namesystem.getBlockManager(); 
+-    boolean hasStaleStorages = true;
++    boolean noStaleStorages = false;
+     for(StorageBlockReport r : reports) {
+       final BlockListAsLongs blocks = new BlockListAsLongs(r.getBlocks());
+-      hasStaleStorages = bm.processReport(nodeReg, r.getStorage(), poolId, blocks);
++      noStaleStorages = bm.processReport(nodeReg, r.getStorage(), poolId, blocks);
+       metrics.incrStorageBlockReportOps();
+     }
+ 
+     if (nn.getFSImage().isUpgradeFinalized() &&
+         !nn.isStandbyState() &&
+-        !hasStaleStorages) {
++        noStaleStorages) {
+       return new FinalizeCommand(poolId);
+     }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSFinalize.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSFinalize.java
+index 28ecf69..6a99449 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSFinalize.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSFinalize.java
+@@ -30,6 +30,8 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
++import org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage;
++import org.apache.hadoop.hdfs.server.datanode.DataStorage;
+ import org.junit.After;
+ import org.junit.Test;
+ 
+@@ -61,11 +63,9 @@ void log(String label, int numDirs) {
+    * Verify that the current directory exists and that the previous directory
+    * does not exist.  Verify that current hasn't been modified by comparing 
+    * the checksum of all it's containing files with their original checksum.
+-   * Note that we do not check that previous is removed on the DataNode
+-   * because its removal is asynchronous therefore we have no reliable
+-   * way to know when it will happen.  
+    */
+-  static void checkResult(String[] nameNodeDirs, String[] dataNodeDirs) throws Exception {
++  static void checkResult(String[] nameNodeDirs, String[] dataNodeDirs,
++    String bpid) throws Exception {
+     List<File> dirs = Lists.newArrayList();
+     for (int i = 0; i < nameNodeDirs.length; i++) {
+       File curDir = new File(nameNodeDirs[i], "current");
+@@ -76,15 +76,30 @@ static void checkResult(String[] nameNodeDirs, String[] dataNodeDirs) throws Exc
+     FSImageTestUtil.assertParallelFilesAreIdentical(
+         dirs, Collections.<String>emptySet());
+     
++    File dnCurDirs[] = new File[dataNodeDirs.length];
+     for (int i = 0; i < dataNodeDirs.length; i++) {
+-      assertEquals(
+-                   UpgradeUtilities.checksumContents(
+-                                                     DATA_NODE, new File(dataNodeDirs[i],"current")),
++      dnCurDirs[i] = new File(dataNodeDirs[i],"current");
++      assertEquals(UpgradeUtilities.checksumContents(DATA_NODE, dnCurDirs[i]),
+                    UpgradeUtilities.checksumMasterDataNodeContents());
+     }
+     for (int i = 0; i < nameNodeDirs.length; i++) {
+       assertFalse(new File(nameNodeDirs[i],"previous").isDirectory());
+     }
++
++    if (bpid == null) {
++      for (int i = 0; i < dataNodeDirs.length; i++) {
++        assertFalse(new File(dataNodeDirs[i],"previous").isDirectory());
++      }
++    } else {
++      for (int i = 0; i < dataNodeDirs.length; i++) {
++        File bpRoot = BlockPoolSliceStorage.getBpRoot(bpid, dnCurDirs[i]);
++        assertFalse(new File(bpRoot,"previous").isDirectory());
++        
++        File bpCurFinalizeDir = new File(bpRoot,"current/"+DataStorage.STORAGE_DIR_FINALIZED);
++        assertEquals(UpgradeUtilities.checksumContents(DATA_NODE, bpCurFinalizeDir),
++                     UpgradeUtilities.checksumMasterBlockPoolFinalizedContents());
++      }
++    }
+   }
+  
+   /**
+@@ -106,7 +121,7 @@ public void testFinalize() throws Exception {
+       String[] nameNodeDirs = conf.getStrings(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY);
+       String[] dataNodeDirs = conf.getStrings(DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY);
+       
+-      log("Finalize with existing previous dir", numDirs);
++      log("Finalize NN & DN with existing previous dir", numDirs);
+       UpgradeUtilities.createNameNodeStorageDirs(nameNodeDirs, "current");
+       UpgradeUtilities.createNameNodeStorageDirs(nameNodeDirs, "previous");
+       UpgradeUtilities.createDataNodeStorageDirs(dataNodeDirs, "current");
+@@ -118,11 +133,47 @@ public void testFinalize() throws Exception {
+                                   .startupOption(StartupOption.REGULAR)
+                                   .build();
+       cluster.finalizeCluster(conf);
+-      checkResult(nameNodeDirs, dataNodeDirs);
++      cluster.triggerBlockReports();
++      // 1 second should be enough for asynchronous DN finalize
++      Thread.sleep(1000);
++      checkResult(nameNodeDirs, dataNodeDirs, null);
++
++      log("Finalize NN & DN without existing previous dir", numDirs);
++      cluster.finalizeCluster(conf);
++      cluster.triggerBlockReports();
++      // 1 second should be enough for asynchronous DN finalize
++      Thread.sleep(1000);
++      checkResult(nameNodeDirs, dataNodeDirs, null);
++
++      cluster.shutdown();
++      UpgradeUtilities.createEmptyDirs(nameNodeDirs);
++      UpgradeUtilities.createEmptyDirs(dataNodeDirs);
++
++      log("Finalize NN & BP with existing previous dir", numDirs);
++      String bpid = UpgradeUtilities.getCurrentBlockPoolID(cluster);
++      UpgradeUtilities.createNameNodeStorageDirs(nameNodeDirs, "current");
++      UpgradeUtilities.createNameNodeStorageDirs(nameNodeDirs, "previous");
++      UpgradeUtilities.createDataNodeStorageDirs(dataNodeDirs, "current");
++      UpgradeUtilities.createBlockPoolStorageDirs(dataNodeDirs, "current", bpid);
++      UpgradeUtilities.createBlockPoolStorageDirs(dataNodeDirs, "previous", bpid);
++      cluster = new MiniDFSCluster.Builder(conf)
++                                  .format(false)
++                                  .manageDataDfsDirs(false)
++                                  .manageNameDfsDirs(false)
++                                  .startupOption(StartupOption.REGULAR)
++                                  .build();
++      cluster.finalizeCluster(conf);
++      cluster.triggerBlockReports();
++      // 1 second should be enough for asynchronous BP finalize
++      Thread.sleep(1000);
++      checkResult(nameNodeDirs, dataNodeDirs, bpid);
+ 
+-      log("Finalize without existing previous dir", numDirs);
++      log("Finalize NN & BP without existing previous dir", numDirs);
+       cluster.finalizeCluster(conf);
+-      checkResult(nameNodeDirs, dataNodeDirs);
++      cluster.triggerBlockReports();
++      // 1 second should be enough for asynchronous BP finalize
++      Thread.sleep(1000);
++      checkResult(nameNodeDirs, dataNodeDirs, bpid);
+ 
+       cluster.shutdown();
+       UpgradeUtilities.createEmptyDirs(nameNodeDirs);
+-- 
+1.7.0.4
+

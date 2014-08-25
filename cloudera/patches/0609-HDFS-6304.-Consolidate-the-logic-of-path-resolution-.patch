@@ -1,0 +1,599 @@
+From 4dec88479237b0af72ec73956f834dfa4958c65d Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Wed, 30 Apr 2014 17:44:17 +0000
+Subject: [PATCH 609/795] HDFS-6304. Consolidate the logic of path resolution in FSDirectory. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1591411 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |  133 +++++++++++++------
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |    2 +-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    2 +-
+ .../hdfs/server/namenode/FSPermissionChecker.java  |    4 +-
+ .../hdfs/server/namenode/INodeDirectory.java       |   47 -------
+ .../hadoop/hdfs/server/namenode/FSAclBaseTest.java |    2 +-
+ .../server/namenode/TestFSPermissionChecker.java   |   26 +++-
+ .../hadoop/hdfs/server/namenode/TestFsck.java      |    2 +-
+ 8 files changed, 117 insertions(+), 101 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index f8fb5da..ae792ed 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -516,7 +516,7 @@ boolean unprotectedRemoveBlock(String path,
+     }
+ 
+     // update space consumed
+-    final INodesInPath iip = rootDir.getINodesInPath4Write(path, true);
++    final INodesInPath iip = getINodesInPath4Write(path, true);
+     updateCount(iip, 0, -fileNode.getBlockDiskspace(), true);
+     return true;
+   }
+@@ -588,7 +588,7 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp)
+     throws QuotaExceededException, UnresolvedLinkException, 
+     FileAlreadyExistsException, SnapshotAccessControlException, IOException {
+     assert hasWriteLock();
+-    INodesInPath srcIIP = rootDir.getINodesInPath4Write(src, false);
++    INodesInPath srcIIP = getINodesInPath4Write(src, false);
+     final INode srcInode = srcIIP.getLastINode();
+     
+     // check the validation of the source
+@@ -813,7 +813,7 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp,
+       }
+     }
+     String error = null;
+-    final INodesInPath srcIIP = rootDir.getINodesInPath4Write(src, false);
++    final INodesInPath srcIIP = getINodesInPath4Write(src, false);
+     final INode srcInode = srcIIP.getLastINode();
+     // validate source
+     if (srcInode == null) {
+@@ -851,7 +851,7 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp,
+           + error);
+       throw new IOException(error);
+     }
+-    INodesInPath dstIIP = rootDir.getINodesInPath4Write(dst, false);
++    INodesInPath dstIIP = getINodesInPath4Write(dst, false);
+     if (dstIIP.getINodes().length == 1) {
+       error = "rename destination cannot be the root";
+       NameNode.stateChangeLog.warn("DIR* FSDirectory.unprotectedRenameTo: "
+@@ -955,7 +955,7 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp,
+       // src and dst file/dir are in the same directory, and the dstParent has
+       // been replaced when we removed the src. Refresh the dstIIP and
+       // dstParent.
+-      dstIIP = rootDir.getINodesInPath4Write(dst, false);
++      dstIIP = getINodesInPath4Write(dst, false);
+     }
+     
+     boolean undoRemoveDst = false;
+@@ -1112,7 +1112,7 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp,
+       UnresolvedLinkException, SnapshotAccessControlException {
+     assert hasWriteLock();
+ 
+-    final INodesInPath iip = rootDir.getINodesInPath4Write(src, true);
++    final INodesInPath iip = getINodesInPath4Write(src, true);
+     final INode inode = iip.getLastINode();
+     if (inode == null || !inode.isFile()) {
+       return null;
+@@ -1153,7 +1153,7 @@ long getPreferredBlockSize(String path) throws UnresolvedLinkException,
+       FileNotFoundException, IOException {
+     readLock();
+     try {
+-      return INodeFile.valueOf(rootDir.getNode(path, false), path
++      return INodeFile.valueOf(getNode(path, false), path
+           ).getPreferredBlockSize();
+     } finally {
+       readUnlock();
+@@ -1164,7 +1164,7 @@ boolean exists(String src) throws UnresolvedLinkException {
+     src = normalizePath(src);
+     readLock();
+     try {
+-      INode inode = rootDir.getNode(src, false);
++      INode inode = getNode(src, false);
+       if (inode == null) {
+          return false;
+       }
+@@ -1190,7 +1190,7 @@ void unprotectedSetPermission(String src, FsPermission permissions)
+       throws FileNotFoundException, UnresolvedLinkException,
+       QuotaExceededException, SnapshotAccessControlException {
+     assert hasWriteLock();
+-    final INodesInPath inodesInPath = rootDir.getINodesInPath4Write(src, true);
++    final INodesInPath inodesInPath = getINodesInPath4Write(src, true);
+     final INode inode = inodesInPath.getLastINode();
+     if (inode == null) {
+       throw new FileNotFoundException("File does not exist: " + src);
+@@ -1215,7 +1215,7 @@ void unprotectedSetOwner(String src, String username, String groupname)
+       throws FileNotFoundException, UnresolvedLinkException,
+       QuotaExceededException, SnapshotAccessControlException {
+     assert hasWriteLock();
+-    final INodesInPath inodesInPath = rootDir.getINodesInPath4Write(src, true);
++    final INodesInPath inodesInPath = getINodesInPath4Write(src, true);
+     INode inode = inodesInPath.getLastINode();
+     if (inode == null) {
+       throw new FileNotFoundException("File does not exist: " + src);
+@@ -1262,7 +1262,7 @@ void unprotectedConcat(String target, String [] srcs, long timestamp)
+     }
+     // do the move
+     
+-    final INodesInPath trgIIP = rootDir.getINodesInPath4Write(target, true);
++    final INodesInPath trgIIP = getINodesInPath4Write(target, true);
+     final INode[] trgINodes = trgIIP.getINodes();
+     final INodeFile trgInode = trgIIP.getLastINode().asFile();
+     INodeDirectory trgParent = trgINodes[trgINodes.length-2].asDirectory();
+@@ -1331,7 +1331,7 @@ boolean delete(String src, BlocksMapUpdateInfo collectedBlocks,
+     final long filesRemoved;
+     writeLock();
+     try {
+-      final INodesInPath inodesInPath = rootDir.getINodesInPath4Write(
++      final INodesInPath inodesInPath = getINodesInPath4Write(
+           normalizePath(src), false);
+       if (!deleteAllowed(inodesInPath, src) ) {
+         filesRemoved = -1;
+@@ -1381,7 +1381,7 @@ private static boolean deleteAllowed(final INodesInPath iip,
+   boolean isNonEmptyDirectory(String path) throws UnresolvedLinkException {
+     readLock();
+     try {
+-      final INodesInPath inodesInPath = rootDir.getLastINodeInPath(path, false);
++      final INodesInPath inodesInPath = getLastINodeInPath(path, false);
+       final INode inode = inodesInPath.getINode(0);
+       if (inode == null || !inode.isDirectory()) {
+         //not found or not a directory
+@@ -1410,7 +1410,7 @@ void unprotectedDelete(String src, long mtime) throws UnresolvedLinkException,
+     BlocksMapUpdateInfo collectedBlocks = new BlocksMapUpdateInfo();
+     List<INode> removedINodes = new ChunkedArrayList<INode>();
+ 
+-    final INodesInPath inodesInPath = rootDir.getINodesInPath4Write(
++    final INodesInPath inodesInPath = getINodesInPath4Write(
+         normalizePath(src), false);
+     long filesRemoved = -1;
+     if (deleteAllowed(inodesInPath, src)) {
+@@ -1535,7 +1535,7 @@ DirectoryListing getListing(String src, byte[] startAfter,
+       if (srcs.endsWith(HdfsConstants.SEPARATOR_DOT_SNAPSHOT_DIR)) {
+         return getSnapshotsListing(srcs, startAfter);
+       }
+-      final INodesInPath inodesInPath = rootDir.getLastINodeInPath(srcs, true);
++      final INodesInPath inodesInPath = getLastINodeInPath(srcs, true);
+       final int snapshot = inodesInPath.getPathSnapshotId();
+       final INode targetNode = inodesInPath.getINode(0);
+       if (targetNode == null)
+@@ -1625,7 +1625,7 @@ HdfsFileStatus getFileInfo(String src, boolean resolveLink)
+       if (srcs.endsWith(HdfsConstants.SEPARATOR_DOT_SNAPSHOT_DIR)) {
+         return getFileInfo4DotSnapshot(srcs);
+       }
+-      final INodesInPath inodesInPath = rootDir.getLastINodeInPath(srcs, resolveLink);
++      final INodesInPath inodesInPath = getLastINodeInPath(srcs, resolveLink);
+       final INode i = inodesInPath.getINode(0);
+       return i == null? null: createFileStatus(HdfsFileStatus.EMPTY_NAME, i,
+           inodesInPath.getPathSnapshotId());
+@@ -1674,7 +1674,7 @@ private INode getINode4DotSnapshot(String src) throws UnresolvedLinkException {
+     waitForReady();
+     readLock();
+     try {
+-      final INode i = rootDir.getNode(src, false);
++      final INode i = getNode(src, false);
+       return i != null && i.isFile()? i.asFile().getBlocks(): null;
+     } finally {
+       readUnlock();
+@@ -1701,7 +1701,7 @@ public INodesInPath getLastINodeInPath(String src)
+        throws UnresolvedLinkException {
+     readLock();
+     try {
+-      return rootDir.getLastINodeInPath(src, true);
++      return getLastINodeInPath(src, true);
+     } finally {
+       readUnlock();
+     }
+@@ -1714,7 +1714,7 @@ public INodesInPath getINodesInPath4Write(String src
+       ) throws UnresolvedLinkException, SnapshotAccessControlException {
+     readLock();
+     try {
+-      return rootDir.getINodesInPath4Write(src, true);
++      return getINodesInPath4Write(src, true);
+     } finally {
+       readUnlock();
+     }
+@@ -1728,7 +1728,7 @@ public INode getINode4Write(String src) throws UnresolvedLinkException,
+       SnapshotAccessControlException {
+     readLock();
+     try {
+-      return rootDir.getINode4Write(src, true);
++      return getINode4Write(src, true);
+     } finally {
+       readUnlock();
+     }
+@@ -1744,7 +1744,7 @@ boolean isValidToCreate(String src) throws UnresolvedLinkException,
+     readLock();
+     try {
+       if (srcs.startsWith("/") && !srcs.endsWith("/")
+-          && rootDir.getINode4Write(srcs, false) == null) {
++          && getINode4Write(srcs, false) == null) {
+         return true;
+       } else {
+         return false;
+@@ -1761,7 +1761,7 @@ boolean isDir(String src) throws UnresolvedLinkException {
+     src = normalizePath(src);
+     readLock();
+     try {
+-      INode node = rootDir.getNode(src, false);
++      INode node = getNode(src, false);
+       return node != null && node.isDirectory();
+     } finally {
+       readUnlock();
+@@ -1777,7 +1777,7 @@ boolean isDirMutable(String src) throws UnresolvedLinkException,
+     src = normalizePath(src);
+     readLock();
+     try {
+-      INode node = rootDir.getINode4Write(src, false);
++      INode node = getINode4Write(src, false);
+       return node != null && node.isDirectory();
+     } finally {
+       readUnlock();
+@@ -1798,7 +1798,7 @@ void updateSpaceConsumed(String path, long nsDelta, long dsDelta)
+           UnresolvedLinkException, SnapshotAccessControlException {
+     writeLock();
+     try {
+-      final INodesInPath iip = rootDir.getINodesInPath4Write(path, false);
++      final INodesInPath iip = getINodesInPath4Write(path, false);
+       if (iip.getLastINode() == null) {
+         throw new FileNotFoundException("Path not found: " + path);
+       }
+@@ -2343,7 +2343,7 @@ ContentSummary getContentSummary(String src)
+     String srcs = normalizePath(src);
+     readLock();
+     try {
+-      INode targetNode = rootDir.getNode(srcs, false);
++      INode targetNode = getNode(srcs, false);
+       if (targetNode == null) {
+         throw new FileNotFoundException("File does not exist: " + srcs);
+       }
+@@ -2441,7 +2441,7 @@ INodeDirectory unprotectedSetQuota(String src, long nsQuota, long dsQuota)
+     }
+     
+     String srcs = normalizePath(src);
+-    final INodesInPath iip = rootDir.getINodesInPath4Write(srcs, true);
++    final INodesInPath iip = getINodesInPath4Write(srcs, true);
+     INodeDirectory dirNode = INodeDirectory.valueOf(iip.getLastINode(), srcs);
+     if (dirNode.isRoot() && nsQuota == HdfsConstants.QUOTA_RESET) {
+       throw new IllegalArgumentException("Cannot clear namespace quota on root.");
+@@ -2724,7 +2724,7 @@ void modifyAclEntries(String src, List<AclEntry> aclSpec) throws IOException {
+   private List<AclEntry> unprotectedModifyAclEntries(String src,
+       List<AclEntry> aclSpec) throws IOException {
+     assert hasWriteLock();
+-    INodesInPath iip = rootDir.getINodesInPath4Write(normalizePath(src), true);
++    INodesInPath iip = getINodesInPath4Write(normalizePath(src), true);
+     INode inode = resolveLastINode(src, iip);
+     int snapshotId = iip.getLatestSnapshotId();
+     List<AclEntry> existingAcl = AclStorage.readINodeLogicalAcl(inode);
+@@ -2747,7 +2747,7 @@ void removeAclEntries(String src, List<AclEntry> aclSpec) throws IOException {
+   private List<AclEntry> unprotectedRemoveAclEntries(String src,
+       List<AclEntry> aclSpec) throws IOException {
+     assert hasWriteLock();
+-    INodesInPath iip = rootDir.getINodesInPath4Write(normalizePath(src), true);
++    INodesInPath iip = getINodesInPath4Write(normalizePath(src), true);
+     INode inode = resolveLastINode(src, iip);
+     int snapshotId = iip.getLatestSnapshotId();
+     List<AclEntry> existingAcl = AclStorage.readINodeLogicalAcl(inode);
+@@ -2770,7 +2770,7 @@ void removeDefaultAcl(String src) throws IOException {
+   private List<AclEntry> unprotectedRemoveDefaultAcl(String src)
+       throws IOException {
+     assert hasWriteLock();
+-    INodesInPath iip = rootDir.getINodesInPath4Write(normalizePath(src), true);
++    INodesInPath iip = getINodesInPath4Write(normalizePath(src), true);
+     INode inode = resolveLastINode(src, iip);
+     int snapshotId = iip.getLatestSnapshotId();
+     List<AclEntry> existingAcl = AclStorage.readINodeLogicalAcl(inode);
+@@ -2792,7 +2792,7 @@ void removeAcl(String src) throws IOException {
+ 
+   private void unprotectedRemoveAcl(String src) throws IOException {
+     assert hasWriteLock();
+-    INodesInPath iip = rootDir.getINodesInPath4Write(normalizePath(src), true);
++    INodesInPath iip = getINodesInPath4Write(normalizePath(src), true);
+     INode inode = resolveLastINode(src, iip);
+     int snapshotId = iip.getLatestSnapshotId();
+     AclStorage.removeINodeAcl(inode, snapshotId);
+@@ -2817,7 +2817,7 @@ void setAcl(String src, List<AclEntry> aclSpec) throws IOException {
+     }
+ 
+     assert hasWriteLock();
+-    INodesInPath iip = rootDir.getINodesInPath4Write(normalizePath(src), true);
++    INodesInPath iip = getINodesInPath4Write(normalizePath(src), true);
+     INode inode = resolveLastINode(src, iip);
+     int snapshotId = iip.getLatestSnapshotId();
+     List<AclEntry> existingAcl = AclStorage.readINodeLogicalAcl(inode);
+@@ -2837,7 +2837,7 @@ AclStatus getAclStatus(String src) throws IOException {
+           getINode4DotSnapshot(srcs) != null) {
+         return new AclStatus.Builder().owner("").group("").build();
+       }
+-      INodesInPath iip = rootDir.getLastINodeInPath(srcs, true);
++      INodesInPath iip = getLastINodeInPath(srcs, true);
+       INode inode = resolveLastINode(src, iip);
+       int snapshotId = iip.getPathSnapshotId();
+       List<AclEntry> acl = AclStorage.readINodeAcl(inode, snapshotId);
+@@ -2900,7 +2900,18 @@ void shutdown() {
+   static byte[][] getPathComponentsForReservedPath(String src) {
+     return !isReservedName(src) ? null : INode.getPathComponents(src);
+   }
+-  
++
++  /** Check if a given inode name is reserved */
++  public static boolean isReservedName(INode inode) {
++    return CHECK_RESERVED_FILE_NAMES
++            && Arrays.equals(inode.getLocalNameBytes(), DOT_RESERVED);
++  }
++
++  /** Check if a given path is reserved */
++  public static boolean isReservedName(String src) {
++    return src.startsWith(DOT_RESERVED_PATH_PREFIX);
++  }
++
+   /**
+    * Resolve the path of /.reserved/.inodes/<inodeid>/... to a regular path
+    * 
+@@ -2960,15 +2971,53 @@ static String resolvePath(String src, byte[][] pathComponents, FSDirectory fsd)
+     }
+     return path.toString();
+   }
+-  
+-  /** Check if a given inode name is reserved */
+-  public static boolean isReservedName(INode inode) {
+-    return CHECK_RESERVED_FILE_NAMES
+-        && Arrays.equals(inode.getLocalNameBytes(), DOT_RESERVED);
++
++  /** @return the {@link INodesInPath} containing only the last inode. */
++  private INodesInPath getLastINodeInPath(String path, boolean resolveLink
++  ) throws UnresolvedLinkException {
++    return INodesInPath.resolve(rootDir, INode.getPathComponents(path), 1,
++            resolveLink);
+   }
+-  
+-  /** Check if a given path is reserved */
+-  public static boolean isReservedName(String src) {
+-    return src.startsWith(DOT_RESERVED_PATH_PREFIX);
++
++  /** @return the {@link INodesInPath} containing all inodes in the path. */
++  INodesInPath getINodesInPath(String path, boolean resolveLink
++  ) throws UnresolvedLinkException {
++    final byte[][] components = INode.getPathComponents(path);
++    return INodesInPath.resolve(rootDir, components, components.length,
++            resolveLink);
++  }
++
++  /** @return the last inode in the path. */
++  INode getNode(String path, boolean resolveLink)
++          throws UnresolvedLinkException {
++    return getLastINodeInPath(path, resolveLink).getINode(0);
++  }
++
++  /**
++   * @return the INode of the last component in src, or null if the last
++   * component does not exist.
++   * @throws UnresolvedLinkException if symlink can't be resolved
++   * @throws SnapshotAccessControlException if path is in RO snapshot
++   */
++  private INode getINode4Write(String src, boolean resolveLink)
++          throws UnresolvedLinkException, SnapshotAccessControlException {
++    return getINodesInPath4Write(src, resolveLink).getLastINode();
++  }
++
++  /**
++   * @return the INodesInPath of the components in src
++   * @throws UnresolvedLinkException if symlink can't be resolved
++   * @throws SnapshotAccessControlException if path is in RO snapshot
++   */
++  private INodesInPath getINodesInPath4Write(String src, boolean resolveLink)
++          throws UnresolvedLinkException, SnapshotAccessControlException {
++    final byte[][] components = INode.getPathComponents(src);
++    INodesInPath inodesInPath = INodesInPath.resolve(rootDir, components,
++            components.length, resolveLink);
++    if (inodesInPath.isSnapshot()) {
++      throw new SnapshotAccessControlException(
++              "Modification on a read-only snapshot is disallowed");
++    }
++    return inodesInPath;
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index f559906..b025776 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -600,7 +600,7 @@ private int loadDirectory(DataInput in, Counter counter) throws IOException {
+      // Rename .snapshot paths if we're doing an upgrade
+      parentPath = renameReservedPathsOnUpgrade(parentPath, getLayoutVersion());
+      final INodeDirectory parent = INodeDirectory.valueOf(
+-         namesystem.dir.rootDir.getNode(parentPath, true), parentPath);
++         namesystem.dir.getNode(parentPath, true), parentPath);
+      return loadChildren(parent, in, counter);
+    }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 1bcd660..4872f26 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -5490,7 +5490,7 @@ private void checkPermission(FSPermissionChecker pc,
+       dir.waitForReady();
+       readLock();
+       try {
+-        pc.checkPermission(path, dir.rootDir, doCheckOwner, ancestorAccess,
++        pc.checkPermission(path, dir, doCheckOwner, ancestorAccess,
+             parentAccess, access, subAccess, resolveLink);
+       } finally {
+         readUnlock();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSPermissionChecker.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSPermissionChecker.java
+index 0e10273..82cb3ac 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSPermissionChecker.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSPermissionChecker.java
+@@ -144,7 +144,7 @@ public void checkSuperuserPrivilege()
+    * Guarded by {@link FSNamesystem#readLock()}
+    * Caller of this method must hold that lock.
+    */
+-  void checkPermission(String path, INodeDirectory root, boolean doCheckOwner,
++  void checkPermission(String path, FSDirectory dir, boolean doCheckOwner,
+       FsAction ancestorAccess, FsAction parentAccess, FsAction access,
+       FsAction subAccess, boolean resolveLink)
+       throws AccessControlException, UnresolvedLinkException {
+@@ -159,7 +159,7 @@ void checkPermission(String path, INodeDirectory root, boolean doCheckOwner,
+     }
+     // check if (parentAccess != null) && file exists, then check sb
+     // If resolveLink, the check is performed on the link target.
+-    final INodesInPath inodesInPath = root.getINodesInPath(path, resolveLink);
++    final INodesInPath inodesInPath = dir.getINodesInPath(path, resolveLink);
+     final int snapshotId = inodesInPath.getPathSnapshotId();
+     final INode[] inodes = inodesInPath.getINodes();
+     int ancestorIndex = inodes.length - 2;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+index f981db1..98600be 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+@@ -380,53 +380,6 @@ public INode getChild(byte[] name, int snapshotId) {
+         : ReadOnlyList.Util.asReadOnlyList(children);
+   }
+ 
+-  /** @return the {@link INodesInPath} containing only the last inode. */
+-  INodesInPath getLastINodeInPath(String path, boolean resolveLink
+-      ) throws UnresolvedLinkException {
+-    return INodesInPath.resolve(this, getPathComponents(path), 1, resolveLink);
+-  }
+-
+-  /** @return the {@link INodesInPath} containing all inodes in the path. */
+-  INodesInPath getINodesInPath(String path, boolean resolveLink
+-      ) throws UnresolvedLinkException {
+-    final byte[][] components = getPathComponents(path);
+-    return INodesInPath.resolve(this, components, components.length, resolveLink);
+-  }
+-
+-  /** @return the last inode in the path. */
+-  INode getNode(String path, boolean resolveLink) 
+-    throws UnresolvedLinkException {
+-    return getLastINodeInPath(path, resolveLink).getINode(0);
+-  }
+-
+-  /**
+-   * @return the INode of the last component in src, or null if the last
+-   * component does not exist.
+-   * @throws UnresolvedLinkException if symlink can't be resolved
+-   * @throws SnapshotAccessControlException if path is in RO snapshot
+-   */
+-  INode getINode4Write(String src, boolean resolveLink)
+-      throws UnresolvedLinkException, SnapshotAccessControlException {
+-    return getINodesInPath4Write(src, resolveLink).getLastINode();
+-  }
+-
+-  /**
+-   * @return the INodesInPath of the components in src
+-   * @throws UnresolvedLinkException if symlink can't be resolved
+-   * @throws SnapshotAccessControlException if path is in RO snapshot
+-   */
+-  INodesInPath getINodesInPath4Write(String src, boolean resolveLink)
+-      throws UnresolvedLinkException, SnapshotAccessControlException {
+-    final byte[][] components = INode.getPathComponents(src);
+-    INodesInPath inodesInPath = INodesInPath.resolve(this, components,
+-        components.length, resolveLink);
+-    if (inodesInPath.isSnapshot()) {
+-      throw new SnapshotAccessControlException(
+-          "Modification on a read-only snapshot is disallowed");
+-    }
+-    return inodesInPath;
+-  }
+-
+   /**
+    * Given a child's name, return the index of the next child
+    *
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
+index c9a6484..a3e9496 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
+@@ -1306,7 +1306,7 @@ private static void assertAclFeature(boolean expectAclFeature)
+    */
+   private static void assertAclFeature(Path pathToCheck,
+       boolean expectAclFeature) throws IOException {
+-    INode inode = cluster.getNamesystem().getFSDirectory().getRoot()
++    INode inode = cluster.getNamesystem().getFSDirectory()
+       .getNode(pathToCheck.toUri().getPath(), false);
+     assertNotNull(inode);
+     AclFeature aclFeature = inode.getAclFeature();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java
+index fd81279..338d13b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSPermissionChecker.java
+@@ -26,6 +26,7 @@
+ import java.io.IOException;
+ import java.util.Arrays;
+ 
++import org.apache.hadoop.conf.Configuration;
+ import org.junit.Before;
+ import org.junit.Test;
+ 
+@@ -38,7 +39,10 @@
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.mockito.invocation.InvocationOnMock;
++import org.mockito.stubbing.Answer;
+ 
++import static org.mockito.Mockito.*;
+ /**
+  * Unit tests covering FSPermissionChecker.  All tests in this suite have been
+  * cross-validated against Linux setfacl/getfacl to check for consistency of the
+@@ -56,14 +60,24 @@
+   private static final UserGroupInformation CLARK =
+     UserGroupInformation.createUserForTesting("clark", new String[] { "execs" });
+ 
++  private FSDirectory dir;
+   private INodeDirectory inodeRoot;
+ 
+   @Before
+   public void setUp() {
+-    PermissionStatus permStatus = PermissionStatus.createImmutable(SUPERUSER,
+-      SUPERGROUP, FsPermission.createImmutable((short)0755));
+-    inodeRoot = new INodeDirectory(INodeId.ROOT_INODE_ID,
+-      INodeDirectory.ROOT_NAME, permStatus, 0L);
++    Configuration conf = new Configuration();
++    FSNamesystem fsn = mock(FSNamesystem.class);
++    doAnswer(new Answer() {
++      @Override
++      public Object answer(InvocationOnMock invocation) throws Throwable {
++        Object[] args = invocation.getArguments();
++        FsPermission perm = (FsPermission) args[0];
++        return new PermissionStatus(SUPERUSER, SUPERGROUP, perm);
++      }
++    }).when(fsn).createFsOwnerPermissions(any(FsPermission.class));
++    FSImage image = mock(FSImage.class);
++    dir = new FSDirectory(image, fsn, conf);
++    inodeRoot = dir.getRoot();
+   }
+ 
+   @Test
+@@ -379,14 +393,14 @@ private void addAcl(INodeWithAdditionalFields inode, AclEntry... acl)
+   private void assertPermissionGranted(UserGroupInformation user, String path,
+       FsAction access) throws IOException {
+     new FSPermissionChecker(SUPERUSER, SUPERGROUP, user).checkPermission(path,
+-      inodeRoot, false, null, null, access, null, true);
++      dir, false, null, null, access, null, true);
+   }
+ 
+   private void assertPermissionDenied(UserGroupInformation user, String path,
+       FsAction access) throws IOException {
+     try {
+       new FSPermissionChecker(SUPERUSER, SUPERGROUP, user).checkPermission(path,
+-        inodeRoot, false, null, null, access, null, true);
++        dir, false, null, null, access, null, true);
+       fail("expected AccessControlException for user + " + user + ", path = " +
+         path + ", access = " + access);
+     } catch (AccessControlException e) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsck.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsck.java
+index a6dd4fe..ea4e689 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsck.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsck.java
+@@ -699,7 +699,7 @@ public void testFsckError() throws Exception {
+       DFSTestUtil.waitReplication(fs, filePath, (short)1);
+       
+       // intentionally corrupt NN data structure
+-      INodeFile node = (INodeFile)cluster.getNamesystem().dir.rootDir.getNode(
++      INodeFile node = (INodeFile)cluster.getNamesystem().dir.getNode(
+           fileName, true);
+       final BlockInfo[] blocks = node.getBlocks(); 
+       assertEquals(blocks.length, 1);
+-- 
+1.7.0.4
+

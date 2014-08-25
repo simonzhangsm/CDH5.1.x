@@ -1,0 +1,38 @@
+From a223723002d21490a1e42d50a93d77a65100fafa Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Sat, 7 Jun 2014 06:13:22 +0000
+Subject: [PATCH 751/795] YARN-2132. ZKRMStateStore.ZKAction#runWithRetries doesn't log the exception it encounters. (Vamsee Yarlagadda via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1601066 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b110320183049c28fcb98514c3a9c57b6426bf60)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+---
+ .../resourcemanager/recovery/ZKRMStateStore.java   |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 0402eb1..31c8885 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -998,13 +998,13 @@ T runWithRetries() throws Exception {
+             throw new StoreFencedException();
+           }
+         } catch (KeeperException ke) {
++          LOG.info("Exception while executing a ZK operation.", ke);
+           if (shouldRetry(ke.code()) && ++retry < numRetries) {
+-            LOG.info("Waiting for zookeeper to be connected, retry no. + "
+-                + retry);
++            LOG.info("Retrying operation on ZK. Retry no. " + retry);
+             Thread.sleep(zkRetryInterval);
+             continue;
+           }
+-          LOG.error("Error while doing ZK operation.", ke);
++          LOG.info("Maxed out ZK retries. Giving up!");
+           throw ke;
+         }
+       }
+-- 
+1.7.0.4
+

@@ -1,0 +1,121 @@
+From 45815ea32568f319d7c942a2de149d897b08e3e8 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 15 May 2014 21:30:22 +0000
+Subject: [PATCH 600/795] HDFS-5683. Better audit log messages for caching operations. Contributed by Abhiraj Butala.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1595057 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7fbe0174fffea61a3dabc6f29be29775578181a2)
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   24 +++++++++++++------
+ 1 files changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 9d5ff73..1bcd660 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -7359,6 +7359,7 @@ long addCacheDirective(CacheDirectiveInfo directive, EnumSet<CacheFlag> flags)
+       cacheManager.waitForRescanIfNeeded();
+     }
+     writeLock();
++    String effectiveDirectiveStr = null;
+     Long result = null;
+     try {
+       checkOperation(OperationCategory.WRITE);
+@@ -7370,11 +7371,12 @@ long addCacheDirective(CacheDirectiveInfo directive, EnumSet<CacheFlag> flags)
+         throw new IOException("addDirective: you cannot specify an ID " +
+             "for this operation.");
+       }
+-      CacheDirectiveInfo effectiveDirective = 
++      CacheDirectiveInfo effectiveDirective =
+           cacheManager.addDirective(directive, pc, flags);
+       getEditLog().logAddCacheDirectiveInfo(effectiveDirective,
+           cacheEntry != null);
+       result = effectiveDirective.getId();
++      effectiveDirectiveStr = effectiveDirective.toString();
+       success = true;
+     } finally {
+       writeUnlock();
+@@ -7382,7 +7384,7 @@ long addCacheDirective(CacheDirectiveInfo directive, EnumSet<CacheFlag> flags)
+         getEditLog().logSync();
+       }
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "addCacheDirective", null, null, null);
++        logAuditEvent(success, "addCacheDirective", effectiveDirectiveStr, null, null);
+       }
+       RetryCache.setState(cacheEntry, success, result);
+     }
+@@ -7419,7 +7421,8 @@ void modifyCacheDirective(CacheDirectiveInfo directive,
+         getEditLog().logSync();
+       }
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "modifyCacheDirective", null, null, null);
++        String idStr = "{id: " + directive.getId().toString() + "}";
++        logAuditEvent(success, "modifyCacheDirective", idStr, directive.toString(), null);
+       }
+       RetryCache.setState(cacheEntry, success);
+     }
+@@ -7447,7 +7450,8 @@ void removeCacheDirective(Long id) throws IOException {
+     } finally {
+       writeUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "removeCacheDirective", null, null,
++        String idStr = "{id: " + id.toString() + "}";
++        logAuditEvent(success, "removeCacheDirective", idStr, null,
+             null);
+       }
+       RetryCache.setState(cacheEntry, success);
+@@ -7472,7 +7476,7 @@ void removeCacheDirective(Long id) throws IOException {
+     } finally {
+       readUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "listCacheDirectives", null, null,
++        logAuditEvent(success, "listCacheDirectives", filter.toString(), null,
+             null);
+       }
+     }
+@@ -7489,6 +7493,7 @@ public void addCachePool(CachePoolInfo req) throws IOException {
+     }
+     writeLock();
+     boolean success = false;
++    String poolInfoStr = null;
+     try {
+       checkOperation(OperationCategory.WRITE);
+       if (isInSafeMode()) {
+@@ -7499,12 +7504,13 @@ public void addCachePool(CachePoolInfo req) throws IOException {
+         pc.checkSuperuserPrivilege();
+       }
+       CachePoolInfo info = cacheManager.addCachePool(req);
++      poolInfoStr = info.toString();
+       getEditLog().logAddCachePool(info, cacheEntry != null);
+       success = true;
+     } finally {
+       writeUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "addCachePool", req.getPoolName(), null, null);
++        logAuditEvent(success, "addCachePool", poolInfoStr, null, null);
+       }
+       RetryCache.setState(cacheEntry, success);
+     }
+@@ -7537,7 +7543,8 @@ public void modifyCachePool(CachePoolInfo req) throws IOException {
+     } finally {
+       writeUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "modifyCachePool", req.getPoolName(), null, null);
++        String poolNameStr = "{poolName: " + req.getPoolName() + "}";
++        logAuditEvent(success, "modifyCachePool", poolNameStr, req.toString(), null);
+       }
+       RetryCache.setState(cacheEntry, success);
+     }
+@@ -7570,7 +7577,8 @@ public void removeCachePool(String cachePoolName) throws IOException {
+     } finally {
+       writeUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "removeCachePool", cachePoolName, null, null);
++        String poolNameStr = "{poolName: " + cachePoolName + "}";
++        logAuditEvent(success, "removeCachePool", poolNameStr, null, null);
+       }
+       RetryCache.setState(cacheEntry, success);
+     }
+-- 
+1.7.0.4
+

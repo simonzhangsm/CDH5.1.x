@@ -1,0 +1,86 @@
+From f4e243e598d1f6ed9b18ae43ace9b1d65af89c0c Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Fri, 28 Feb 2014 21:07:03 +0000
+Subject: [PATCH 533/795] HDFS-5956. A file size is multiplied by the replication factor in 'hdfs oiv -p FileDistribution' option. Contributed by Akira Ajisaka.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1573078 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit af2db8f91c2a76c970424603118bae853eee6b47)
+---
+ .../FileDistributionCalculator.java                |    4 +-
+ .../offlineImageViewer/TestOfflineImageViewer.java |   27 +++++++++++++++++--
+ 2 files changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/FileDistributionCalculator.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/FileDistributionCalculator.java
+index 2433b28..04f6e50 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/FileDistributionCalculator.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/FileDistributionCalculator.java
+@@ -123,10 +123,10 @@ private void run(InputStream in) throws IOException {
+         totalBlocks += f.getBlocksCount();
+         long fileSize = 0;
+         for (BlockProto b : f.getBlocksList()) {
+-          fileSize += b.getNumBytes() * f.getReplication();
++          fileSize += b.getNumBytes();
+         }
+         maxFileSize = Math.max(fileSize, maxFileSize);
+-        totalSpace += fileSize;
++        totalSpace += fileSize * f.getReplication();
+ 
+         int bucket = fileSize > maxSize ? distribution.length - 1 : (int) Math
+             .ceil((double)fileSize / steps);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/TestOfflineImageViewer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/TestOfflineImageViewer.java
+index 8fdd70a..a3a5292 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/TestOfflineImageViewer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/TestOfflineImageViewer.java
+@@ -28,6 +28,8 @@
+ import java.io.RandomAccessFile;
+ import java.io.StringReader;
+ import java.io.StringWriter;
++import java.util.Collections;
++import java.util.Comparator;
+ import java.util.HashMap;
+ import java.util.regex.Matcher;
+ import java.util.regex.Pattern;
+@@ -241,7 +243,7 @@ private void copyPartOfFile(File src, File dest) throws IOException {
+   }
+ 
+   @Test
+-  public void testFileDistributionVisitor() throws IOException {
++  public void testFileDistributionCalculator() throws IOException {
+     StringWriter output = new StringWriter();
+     PrintWriter o = new PrintWriter(output);
+     new FileDistributionCalculator(new Configuration(), 0, 0, o)
+@@ -250,10 +252,29 @@ public void testFileDistributionVisitor() throws IOException {
+ 
+     Pattern p = Pattern.compile("totalFiles = (\\d+)\n");
+     Matcher matcher = p.matcher(output.getBuffer());
+-
+     assertTrue(matcher.find() && matcher.groupCount() == 1);
+     int totalFiles = Integer.parseInt(matcher.group(1));
+-    assertEquals(totalFiles, NUM_DIRS * FILES_PER_DIR);
++    assertEquals(NUM_DIRS * FILES_PER_DIR, totalFiles);
++
++    p = Pattern.compile("totalDirectories = (\\d+)\n");
++    matcher = p.matcher(output.getBuffer());
++    assertTrue(matcher.find() && matcher.groupCount() == 1);
++    int totalDirs = Integer.parseInt(matcher.group(1));
++    // totalDirs includes root directory
++    assertEquals(NUM_DIRS + 1, totalDirs);
++
++    FileStatus maxFile = Collections.max(writtenFiles.values(),
++        new Comparator<FileStatus>() {
++      @Override
++      public int compare(FileStatus first, FileStatus second) {
++        return first.getLen() < second.getLen() ? -1 :
++            ((first.getLen() == second.getLen()) ? 0 : 1);
++      }
++    });
++    p = Pattern.compile("maxFileSize = (\\d+)\n");
++    matcher = p.matcher(output.getBuffer());
++    assertTrue(matcher.find() && matcher.groupCount() == 1);
++    assertEquals(maxFile.getLen(), Long.parseLong(matcher.group(1)));
+   }
+ 
+   @Test
+-- 
+1.7.0.4
+

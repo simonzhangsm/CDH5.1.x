@@ -1,0 +1,485 @@
+From c8a0cb4737bc39ba5e9ba2f2f433e32aabfcdc51 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Wed, 29 Jan 2014 23:51:40 +0000
+Subject: [PATCH 406/795] MAPREDUCE-5732. Report proper queue when job has been automatically placed (Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1562641 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 23aede4fff6cba1f871add028f597c0c42b51641)
+---
+ hadoop-mapreduce-project/CHANGES.txt               |    3 +
+ .../jobhistory/JobHistoryEventHandler.java         |    6 +++
+ .../apache/hadoop/mapreduce/v2/app/job/Job.java    |    4 +-
+ .../hadoop/mapreduce/v2/app/job/impl/JobImpl.java  |   10 ++++-
+ .../hadoop/mapreduce/v2/app/rm/RMCommunicator.java |    7 ++-
+ .../hadoop/mapreduce/jobhistory/TestEvents.java    |    9 ++++
+ .../org/apache/hadoop/mapreduce/v2/app/MRApp.java  |   30 +++++++++++----
+ .../hadoop/mapreduce/v2/app/MockAppContext.java    |    1 +
+ .../apache/hadoop/mapreduce/v2/app/MockJobs.java   |    5 ++
+ .../mapreduce/v2/app/TestRuntimeEstimators.java    |    5 ++
+ .../src/main/avro/Events.avpr                      |    9 ++++
+ .../hadoop/mapreduce/jobhistory/EventReader.java   |    2 +
+ .../mapreduce/jobhistory/JobHistoryParser.java     |    7 +++
+ .../hadoop/mapreduce/v2/hs/CompletedJob.java       |    5 ++
+ .../apache/hadoop/mapreduce/v2/hs/PartialJob.java  |    5 ++
+ .../mapreduce/v2/hs/TestJobHistoryEvents.java      |   40 ++++++++++++++++++++
+ .../v2/hs/webapp/TestHsWebServicesAcls.java        |    4 ++
+ 17 files changed, 140 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/CHANGES.txt b/hadoop-mapreduce-project/CHANGES.txt
+index b87522f..0d2e309 100644
+--- a/hadoop-mapreduce-project/CHANGES.txt
++++ b/hadoop-mapreduce-project/CHANGES.txt
+@@ -87,6 +87,9 @@ Release 2.3.0 - 2014-02-18
+     RMContainerAllocator$AssignedRequests.preemptReduce() violates the 
+     comparator contract (Gera Shegalov via kasha)
+ 
++    MAPREDUCE-5732. Report proper queue when job has been automatically placed
++    (Sandy Ryza)
++
+   OPTIMIZATIONS
+ 
+     MAPREDUCE-4680. Job history cleaner should only check timestamps of files in
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobHistoryEventHandler.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobHistoryEventHandler.java
+index 5c1e7d6..3de5ba7 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobHistoryEventHandler.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobHistoryEventHandler.java
+@@ -525,6 +525,12 @@ protected void handleEvent(JobHistoryEvent event) {
+         JobInitedEvent jie = (JobInitedEvent) event.getHistoryEvent();
+         mi.getJobIndexInfo().setJobStartTime(jie.getLaunchTime());
+       }
++      
++      if (event.getHistoryEvent().getEventType() == EventType.JOB_QUEUE_CHANGED) {
++        JobQueueChangeEvent jQueueEvent =
++            (JobQueueChangeEvent) event.getHistoryEvent();
++        mi.getJobIndexInfo().setQueueName(jQueueEvent.getJobQueueName());
++      }
+ 
+       // If this is JobFinishedEvent, close the writer and setup the job-index
+       if (event.getHistoryEvent().getEventType() == EventType.JOB_FINISHED) {
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/Job.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/Job.java
+index b14abcc..a40e5d2 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/Job.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/Job.java
+@@ -39,7 +39,7 @@
+ 
+ 
+ /**
+- * Main interface to interact with the job. Provides only getters. 
++ * Main interface to interact with the job.
+  */
+ public interface Job {
+ 
+@@ -98,4 +98,6 @@
+   List<AMInfo> getAMInfos();
+   
+   boolean checkAccess(UserGroupInformation callerUGI, JobACL jobOperation);
++  
++  public void setQueueName(String queueName);
+ }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
+index 5f08303..88dc99e 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/job/impl/JobImpl.java
+@@ -59,6 +59,7 @@
+ import org.apache.hadoop.mapreduce.jobhistory.JobHistoryParser.TaskInfo;
+ import org.apache.hadoop.mapreduce.jobhistory.JobInfoChangeEvent;
+ import org.apache.hadoop.mapreduce.jobhistory.JobInitedEvent;
++import org.apache.hadoop.mapreduce.jobhistory.JobQueueChangeEvent;
+ import org.apache.hadoop.mapreduce.jobhistory.JobSubmittedEvent;
+ import org.apache.hadoop.mapreduce.jobhistory.JobUnsuccessfulCompletionEvent;
+ import org.apache.hadoop.mapreduce.lib.chain.ChainMapper;
+@@ -181,7 +182,7 @@
+   private final EventHandler eventHandler;
+   private final MRAppMetrics metrics;
+   private final String userName;
+-  private final String queueName;
++  private String queueName;
+   private final long appSubmitTime;
+   private final AppContext appContext;
+ 
+@@ -1123,6 +1124,13 @@ public String getQueueName() {
+     return queueName;
+   }
+   
++  @Override
++  public void setQueueName(String queueName) {
++    this.queueName = queueName;
++    JobQueueChangeEvent jqce = new JobQueueChangeEvent(oldJobId, queueName);
++    eventHandler.handle(new JobHistoryEvent(jobId, jqce));
++  }
++  
+   /*
+    * (non-Javadoc)
+    * @see org.apache.hadoop.mapreduce.v2.app.job.Job#getConfFile()
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/rm/RMCommunicator.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/rm/RMCommunicator.java
+index f09ac74..a5c2306 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/rm/RMCommunicator.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/rm/RMCommunicator.java
+@@ -109,11 +109,11 @@ protected void serviceInit(Configuration conf) throws Exception {
+   @Override
+   protected void serviceStart() throws Exception {
+     scheduler= createSchedulerProxy();
+-    register();
+-    startAllocatorThread();
+     JobID id = TypeConverter.fromYarn(this.applicationId);
+     JobId jobId = TypeConverter.toYarn(id);
+     job = context.getJob(jobId);
++    register();
++    startAllocatorThread();
+     super.serviceStart();
+   }
+ 
+@@ -161,6 +161,9 @@ protected void register() {
+       }
+       this.applicationACLs = response.getApplicationACLs();
+       LOG.info("maxContainerCapability: " + maxContainerCapability.getMemory());
++      String queue = response.getQueue();
++      LOG.info("queue: " + queue);
++      job.setQueueName(queue);
+     } catch (Exception are) {
+       LOG.error("Exception while registering", are);
+       throw new YarnRuntimeException(are);
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/jobhistory/TestEvents.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/jobhistory/TestEvents.java
+index 8f1e4b9..d383f29 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/jobhistory/TestEvents.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/jobhistory/TestEvents.java
+@@ -81,6 +81,15 @@ public void testJobPriorityChange() throws Exception {
+     assertEquals(test.getPriority(), JobPriority.LOW);
+ 
+   }
++  
++  @Test(timeout = 10000)
++  public void testJobQueueChange() throws Exception {
++    org.apache.hadoop.mapreduce.JobID jid = new JobID("001", 1);
++    JobQueueChangeEvent test = new JobQueueChangeEvent(jid,
++        "newqueue");
++    assertEquals(test.getJobId().toString(), jid.toString());
++    assertEquals(test.getJobQueueName(), "newqueue");
++  }
+ 
+   /**
+    * simple test TaskUpdatedEvent and TaskUpdated
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MRApp.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MRApp.java
+index de573fe..86c0a0c 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MRApp.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MRApp.java
+@@ -116,6 +116,9 @@
+   private File testWorkDir;
+   private Path testAbsPath;
+   private ClusterInfo clusterInfo;
++  
++  // Queue to pretend the RM assigned us
++  private String assignedQueue;
+ 
+   public static String NM_HOST = "localhost";
+   public static int NM_PORT = 1234;
+@@ -132,7 +135,7 @@
+ 
+   public MRApp(int maps, int reduces, boolean autoComplete, String testName,
+       boolean cleanOnStart, Clock clock) {
+-    this(maps, reduces, autoComplete, testName, cleanOnStart, 1, clock);
++    this(maps, reduces, autoComplete, testName, cleanOnStart, 1, clock, null);
+   }
+ 
+   public MRApp(int maps, int reduces, boolean autoComplete, String testName,
+@@ -145,6 +148,12 @@ public MRApp(int maps, int reduces, boolean autoComplete, String testName,
+       boolean cleanOnStart) {
+     this(maps, reduces, autoComplete, testName, cleanOnStart, 1);
+   }
++  
++  public MRApp(int maps, int reduces, boolean autoComplete, String testName,
++      boolean cleanOnStart, String assignedQueue) {
++    this(maps, reduces, autoComplete, testName, cleanOnStart, 1,
++        new SystemClock(), assignedQueue);
++  }
+ 
+   public MRApp(int maps, int reduces, boolean autoComplete, String testName,
+       boolean cleanOnStart, boolean unregistered) {
+@@ -177,7 +186,7 @@ private static ContainerId getContainerId(ApplicationId applicationId,
+   public MRApp(int maps, int reduces, boolean autoComplete, String testName,
+       boolean cleanOnStart, int startCount) {
+     this(maps, reduces, autoComplete, testName, cleanOnStart, startCount,
+-        new SystemClock());
++        new SystemClock(), null);
+   }
+ 
+   public MRApp(int maps, int reduces, boolean autoComplete, String testName,
+@@ -190,33 +199,34 @@ public MRApp(int maps, int reduces, boolean autoComplete, String testName,
+       boolean cleanOnStart, int startCount, Clock clock, boolean unregistered) {
+     this(getApplicationAttemptId(applicationId, startCount), getContainerId(
+       applicationId, startCount), maps, reduces, autoComplete, testName,
+-      cleanOnStart, startCount, clock, unregistered);
++      cleanOnStart, startCount, clock, unregistered, null);
+   }
+ 
+   public MRApp(int maps, int reduces, boolean autoComplete, String testName,
+-      boolean cleanOnStart, int startCount, Clock clock) {
++      boolean cleanOnStart, int startCount, Clock clock, String assignedQueue) {
+     this(getApplicationAttemptId(applicationId, startCount), getContainerId(
+       applicationId, startCount), maps, reduces, autoComplete, testName,
+-      cleanOnStart, startCount, clock, true);
++      cleanOnStart, startCount, clock, true, assignedQueue);
+   }
+ 
+   public MRApp(ApplicationAttemptId appAttemptId, ContainerId amContainerId,
+       int maps, int reduces, boolean autoComplete, String testName,
+       boolean cleanOnStart, int startCount, boolean unregistered) {
+     this(appAttemptId, amContainerId, maps, reduces, autoComplete, testName,
+-        cleanOnStart, startCount, new SystemClock(), unregistered);
++        cleanOnStart, startCount, new SystemClock(), unregistered, null);
+   }
+ 
+   public MRApp(ApplicationAttemptId appAttemptId, ContainerId amContainerId,
+       int maps, int reduces, boolean autoComplete, String testName,
+       boolean cleanOnStart, int startCount) {
+     this(appAttemptId, amContainerId, maps, reduces, autoComplete, testName,
+-        cleanOnStart, startCount, new SystemClock(), true);
++        cleanOnStart, startCount, new SystemClock(), true, null);
+   }
+ 
+   public MRApp(ApplicationAttemptId appAttemptId, ContainerId amContainerId,
+       int maps, int reduces, boolean autoComplete, String testName,
+-      boolean cleanOnStart, int startCount, Clock clock, boolean unregistered) {
++      boolean cleanOnStart, int startCount, Clock clock, boolean unregistered,
++      String assignedQueue) {
+     super(appAttemptId, amContainerId, NM_HOST, NM_PORT, NM_HTTP_PORT, clock, System
+         .currentTimeMillis(), MRJobConfig.DEFAULT_MR_AM_MAX_ATTEMPTS);
+     this.testWorkDir = new File("target", testName);
+@@ -238,6 +248,7 @@ public MRApp(ApplicationAttemptId appAttemptId, ContainerId amContainerId,
+     // If safeToReportTerminationToUser is set to true, we can verify whether
+     // the job can reaches the final state when MRAppMaster shuts down.
+     this.successfullyUnregistered.set(unregistered);
++    this.assignedQueue = assignedQueue;
+   }
+ 
+   @Override
+@@ -284,6 +295,9 @@ public Job submit(Configuration conf, boolean mapSpeculative,
+     start();
+     DefaultMetricsSystem.shutdown();
+     Job job = getContext().getAllJobs().values().iterator().next();
++    if (assignedQueue != null) {
++      job.setQueueName(assignedQueue);
++    }
+ 
+     // Write job.xml
+     String jobFile = MRApps.getJobFile(conf, user,
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MockAppContext.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MockAppContext.java
+index d33e734..511731a 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MockAppContext.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MockAppContext.java
+@@ -39,6 +39,7 @@
+   final Map<JobId, Job> jobs;
+   final long startTime = System.currentTimeMillis();
+   Set<String> blacklistedNodes;
++  String queue;
+   
+   public MockAppContext(int appid) {
+     appID = MockJobs.newAppID(appid);
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MockJobs.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MockJobs.java
+index eb4919c..19ac0db 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MockJobs.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/MockJobs.java
+@@ -629,6 +629,11 @@ public Configuration loadConfFile() throws IOException {
+         jobConf.addResource(fc.open(configFile), configFile.toString());
+         return jobConf;
+       }
++
++      @Override
++      public void setQueueName(String queueName) {
++        // do nothing
++      }
+     };
+   }
+ 
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/TestRuntimeEstimators.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/TestRuntimeEstimators.java
+index 3d555f2..6fadf35 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/TestRuntimeEstimators.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/TestRuntimeEstimators.java
+@@ -505,6 +505,11 @@ public Path getConfFile() {
+     public Configuration loadConfFile() {
+       throw new UnsupportedOperationException();
+     }
++
++    @Override
++    public void setQueueName(String queueName) {
++      // do nothing
++    }
+   }
+ 
+   /*
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/avro/Events.avpr b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/avro/Events.avpr
+index 64ecf37..fa19433 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/avro/Events.avpr
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/avro/Events.avpr
+@@ -122,6 +122,13 @@
+       ]
+      },
+ 
++     {"type": "record", "name": "JobQueueChange",
++      "fields": [
++          {"name": "jobid", "type": "string"},
++          {"name": "jobQueueName", "type": "string"}
++      ]
++     },
++
+      {"type": "record", "name": "JobUnsuccessfulCompletion",
+       "fields": [
+           {"name": "jobid", "type": "string"},
+@@ -267,6 +274,7 @@
+           "JOB_FINISHED",
+           "JOB_PRIORITY_CHANGED",
+           "JOB_STATUS_CHANGED",
++          "JOB_QUEUE_CHANGED",
+           "JOB_FAILED",
+           "JOB_KILLED",
+           "JOB_ERROR",
+@@ -306,6 +314,7 @@
+                "JobInited",
+                "AMStarted",
+                "JobPriorityChange",
++               "JobQueueChange",
+                "JobStatusChanged",
+                "JobSubmitted",
+                "JobUnsuccessfulCompletion",
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/EventReader.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/EventReader.java
+index 37052b4..43d25cc 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/EventReader.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/EventReader.java
+@@ -98,6 +98,8 @@ public HistoryEvent getNextEvent() throws IOException {
+       result = new JobFinishedEvent(); break;
+     case JOB_PRIORITY_CHANGED:
+       result = new JobPriorityChangeEvent(); break;
++    case JOB_QUEUE_CHANGED:
++      result = new JobQueueChangeEvent(); break;
+     case JOB_STATUS_CHANGED:
+       result = new JobStatusChangedEvent(); break;
+     case JOB_FAILED:
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobHistoryParser.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobHistoryParser.java
+index d683505..9d6f579 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobHistoryParser.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobHistoryParser.java
+@@ -183,6 +183,9 @@ public void handleEvent(HistoryEvent event)  {
+     case JOB_PRIORITY_CHANGED:
+       handleJobPriorityChangeEvent((JobPriorityChangeEvent) event);
+       break;
++    case JOB_QUEUE_CHANGED:
++      handleJobQueueChangeEvent((JobQueueChangeEvent) event);
++      break;
+     case JOB_FAILED:
+     case JOB_KILLED:
+     case JOB_ERROR:
+@@ -385,6 +388,10 @@ private void handleJobFinishedEvent(JobFinishedEvent event) {
+   private void handleJobPriorityChangeEvent(JobPriorityChangeEvent event) {
+     info.priority = event.getPriority();
+   }
++  
++  private void handleJobQueueChangeEvent(JobQueueChangeEvent event) {
++    info.jobQueueName = event.getJobQueueName();
++  }
+ 
+   private void handleJobInitedEvent(JobInitedEvent event) {
+     info.launchTime = event.getLaunchTime();
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/CompletedJob.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/CompletedJob.java
+index 3f0644a..79b9275 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/CompletedJob.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/CompletedJob.java
+@@ -453,4 +453,9 @@ public Configuration loadConfFile() throws IOException {
+     }
+     return amInfos;
+   }
++
++  @Override
++  public void setQueueName(String queueName) {
++    throw new UnsupportedOperationException("Can't set job's queue name in history");
++  }
+ }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/PartialJob.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/PartialJob.java
+index ca12cb5..0725f46 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/PartialJob.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/PartialJob.java
+@@ -190,5 +190,10 @@ public Configuration loadConfFile() {
+   public List<AMInfo> getAMInfos() {
+     return null;
+   }
++  
++  @Override
++  public void setQueueName(String queueName) {
++    throw new UnsupportedOperationException("Can't set job's queue name in history");
++  }
+ 
+ }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/TestJobHistoryEvents.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/TestJobHistoryEvents.java
+index 54a4a25..6078e07 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/TestJobHistoryEvents.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/TestJobHistoryEvents.java
+@@ -155,6 +155,41 @@ public void testJobHistoryEventHandlerIsFirstServiceToStop() {
+     Assert.assertEquals("JobHistoryEventHandler",
+         services[services.length - 1].getName());
+   }
++  
++  @Test
++  public void testAssignedQueue() throws Exception {
++    Configuration conf = new Configuration();
++    MRApp app = new MRAppWithHistory(2, 1, true, this.getClass().getName(),
++        true, "assignedQueue");
++    app.submit(conf);
++    Job job = app.getContext().getAllJobs().values().iterator().next();
++    JobId jobId = job.getID();
++    LOG.info("JOBID is " + TypeConverter.fromYarn(jobId).toString());
++    app.waitForState(job, JobState.SUCCEEDED);
++    
++    //make sure all events are flushed 
++    app.waitForState(Service.STATE.STOPPED);
++    /*
++     * Use HistoryContext to read logged events and verify the number of 
++     * completed maps 
++    */
++    HistoryContext context = new JobHistory();
++    // test start and stop states
++    ((JobHistory)context).init(conf);
++    ((JobHistory)context).start();
++    Assert.assertTrue( context.getStartTime()>0);
++    Assert.assertEquals(((JobHistory)context).getServiceState(),Service.STATE.STARTED);
++
++    // get job before stopping JobHistory
++    Job parsedJob = context.getJob(jobId);
++
++    // stop JobHistory
++    ((JobHistory)context).stop();
++    Assert.assertEquals(((JobHistory)context).getServiceState(),Service.STATE.STOPPED);
++
++    Assert.assertEquals("QueueName not correct", "assignedQueue",
++        parsedJob.getQueueName());
++  }
+ 
+   private void verifyTask(Task task) {
+     Assert.assertEquals("Task state not currect", TaskState.SUCCEEDED,
+@@ -184,6 +219,11 @@ public MRAppWithHistory(int maps, int reduces, boolean autoComplete,
+       super(maps, reduces, autoComplete, testName, cleanOnStart);
+     }
+ 
++    public MRAppWithHistory(int maps, int reduces, boolean autoComplete,
++        String testName, boolean cleanOnStart, String assignedQueue) {
++      super(maps, reduces, autoComplete, testName, cleanOnStart, assignedQueue);
++    }
++
+     @Override
+     protected EventHandler<JobHistoryEvent> createJobHistoryHandler(
+         AppContext context) {
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/webapp/TestHsWebServicesAcls.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/webapp/TestHsWebServicesAcls.java
+index 63f7fb0..fd87b94 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/webapp/TestHsWebServicesAcls.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/test/java/org/apache/hadoop/mapreduce/v2/hs/webapp/TestHsWebServicesAcls.java
+@@ -415,5 +415,9 @@ public boolean checkAccess(UserGroupInformation callerUGI,
+       return aclsMgr.checkAccess(callerUGI, jobOperation,
+           this.getUserName(), jobAcls.get(jobOperation));
+     }
++
++    @Override
++    public void setQueueName(String queueName) {
++    }
+   }
+ }
+-- 
+1.7.0.4
+

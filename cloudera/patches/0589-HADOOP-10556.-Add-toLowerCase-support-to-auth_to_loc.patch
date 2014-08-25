@@ -1,0 +1,143 @@
+From b69b1e7c4ffbe24662e8f80149c3044966b1e3bb Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@cloudera.com>
+Date: Wed, 7 May 2014 11:50:36 -0700
+Subject: [PATCH 589/795] HADOOP-10556. Add toLowerCase support to auth_to_local rules for service name. (tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1593105 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9b721872eddeb19e504f2fb2d5516a2f533962f0)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../security/authentication/util/KerberosName.java |   17 ++++++++++++++---
+ .../authentication/util/TestKerberosName.java      |   16 ++++++++++++++++
+ .../hadoop-common/src/site/apt/SecureMode.apt.vm   |    4 +++-
+ 3 files changed, 33 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-auth/src/main/java/org/apache/hadoop/security/authentication/util/KerberosName.java b/hadoop-common-project/hadoop-auth/src/main/java/org/apache/hadoop/security/authentication/util/KerberosName.java
+index 6c51186..62bb00a 100644
+--- a/hadoop-common-project/hadoop-auth/src/main/java/org/apache/hadoop/security/authentication/util/KerberosName.java
++++ b/hadoop-common-project/hadoop-auth/src/main/java/org/apache/hadoop/security/authentication/util/KerberosName.java
+@@ -21,6 +21,7 @@
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.List;
++import java.util.Locale;
+ import java.util.regex.Matcher;
+ import java.util.regex.Pattern;
+ 
+@@ -66,7 +67,7 @@
+    */
+   private static final Pattern ruleParser =
+     Pattern.compile("\\s*((DEFAULT)|(RULE:\\[(\\d*):([^\\]]*)](\\(([^)]*)\\))?"+
+-                    "(s/([^/]*)/([^/]*)/(g)?)?))");
++                    "(s/([^/]*)/([^/]*)/(g)?)?))/?(L)?");
+ 
+   /**
+    * A pattern that recognizes simple/non-simple names.
+@@ -171,6 +172,7 @@ public String getRealm() {
+     private final Pattern fromPattern;
+     private final String toPattern;
+     private final boolean repeat;
++    private final boolean toLowerCase;
+ 
+     Rule() {
+       isDefault = true;
+@@ -180,10 +182,11 @@ public String getRealm() {
+       fromPattern = null;
+       toPattern = null;
+       repeat = false;
++      toLowerCase = false;
+     }
+ 
+     Rule(int numOfComponents, String format, String match, String fromPattern,
+-         String toPattern, boolean repeat) {
++         String toPattern, boolean repeat, boolean toLowerCase) {
+       isDefault = false;
+       this.numOfComponents = numOfComponents;
+       this.format = format;
+@@ -192,6 +195,7 @@ public String getRealm() {
+         fromPattern == null ? null : Pattern.compile(fromPattern);
+       this.toPattern = toPattern;
+       this.repeat = repeat;
++      this.toLowerCase = toLowerCase;
+     }
+ 
+     @Override
+@@ -220,6 +224,9 @@ public String toString() {
+             buf.append('g');
+           }
+         }
++        if (toLowerCase) {
++          buf.append("/L");
++        }
+       }
+       return buf.toString();
+     }
+@@ -308,6 +315,9 @@ String apply(String[] params) throws IOException {
+         throw new NoMatchingRule("Non-simple name " + result +
+                                  " after auth_to_local rule " + this);
+       }
++      if (toLowerCase && result != null) {
++        result = result.toLowerCase(Locale.ENGLISH);
++      }
+       return result;
+     }
+   }
+@@ -328,7 +338,8 @@ String apply(String[] params) throws IOException {
+                             matcher.group(7),
+                             matcher.group(9),
+                             matcher.group(10),
+-                            "g".equals(matcher.group(11))));
++                            "g".equals(matcher.group(11)),
++                            "L".equals(matcher.group(12))));
+       }
+       remaining = remaining.substring(matcher.end());
+     }
+diff --git a/hadoop-common-project/hadoop-auth/src/test/java/org/apache/hadoop/security/authentication/util/TestKerberosName.java b/hadoop-common-project/hadoop-auth/src/test/java/org/apache/hadoop/security/authentication/util/TestKerberosName.java
+index e82a0a6..354917e 100644
+--- a/hadoop-common-project/hadoop-auth/src/test/java/org/apache/hadoop/security/authentication/util/TestKerberosName.java
++++ b/hadoop-common-project/hadoop-auth/src/test/java/org/apache/hadoop/security/authentication/util/TestKerberosName.java
+@@ -91,6 +91,22 @@ public void testAntiPatterns() throws Exception {
+     checkBadTranslation("root/joe@FOO.COM");
+   }
+ 
++  @Test
++  public void testToLowerCase() throws Exception {
++    String rules =
++        "RULE:[1:$1]/L\n" +
++        "RULE:[2:$1]/L\n" +
++        "RULE:[2:$1;$2](^.*;admin$)s/;admin$///L\n" +
++        "RULE:[2:$1;$2](^.*;guest$)s/;guest$//g/L\n" +
++        "DEFAULT";
++    KerberosName.setRules(rules);
++    KerberosName.printRules();
++    checkTranslation("Joe@FOO.COM", "joe");
++    checkTranslation("Joe/root@FOO.COM", "joe");
++    checkTranslation("Joe/admin@FOO.COM", "joe");
++    checkTranslation("Joe/guestguest@FOO.COM", "joe");
++  }
++
+   @After
+   public void clear() {
+     System.clearProperty("java.security.krb5.realm");
+diff --git a/hadoop-common-project/hadoop-common/src/site/apt/SecureMode.apt.vm b/hadoop-common-project/hadoop-common/src/site/apt/SecureMode.apt.vm
+index 68ca4b0..fb1b262 100644
+--- a/hadoop-common-project/hadoop-common/src/site/apt/SecureMode.apt.vm
++++ b/hadoop-common-project/hadoop-common/src/site/apt/SecureMode.apt.vm
+@@ -176,9 +176,11 @@ KVNO Timestamp         Principal
+   the rule specified by <<<hadoop.security.auth_to_local>>>
+   which works in the same way as the <<<auth_to_local>>> in
+   {{{http://web.mit.edu/Kerberos/krb5-latest/doc/admin/conf_files/krb5_conf.html}Kerberos configuration file (krb5.conf)}}.
++  In addition, Hadoop <<<auth_to_local>>> mapping supports the <</L>> flag that
++  lowercases the returned name.
+ 
+   By default, it picks the first component of principal name as a user name
+-  if the realms matches to the <<<defalut_realm>>> (usually defined in /etc/krb5.conf).
++  if the realms matches to the <<<default_realm>>> (usually defined in /etc/krb5.conf).
+   For example, <<<host/full.qualified.domain.name@REALM.TLD>>> is mapped to <<<host>>>
+   by default rule.
+ 
+-- 
+1.7.0.4
+

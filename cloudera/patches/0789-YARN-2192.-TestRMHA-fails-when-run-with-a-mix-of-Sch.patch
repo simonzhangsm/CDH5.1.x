@@ -1,0 +1,33 @@
+From 0acf6ead1bf60f211c11d72eb557f265921d398d Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 24 Jun 2014 17:05:35 +0000
+Subject: [PATCH 789/795] YARN-2192. TestRMHA fails when run with a mix of Schedulers. (Anubhav Dhoot via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1605138 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0b98dc6ee27cd77ce366fdde1915a6397b585668)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../yarn/server/resourcemanager/TestRMHA.java      |    5 +----
+ 1 files changed, 1 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index eaf6e5d..610023b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -96,10 +96,7 @@ public void setUp() throws Exception {
+     configuration.setBoolean(YarnConfiguration.YARN_ACL_ENABLE, true);
+     ClusterMetrics.destroy();
+     QueueMetrics.clearQueueMetrics();
+-    MetricsSystem ms = DefaultMetricsSystem.instance();
+-    if (ms.getSource("ClusterMetrics") != null) {
+-      DefaultMetricsSystem.shutdown();
+-    }
++    DefaultMetricsSystem.shutdown();
+   }
+ 
+   private void checkMonitorHealth() throws IOException {
+-- 
+1.7.0.4
+

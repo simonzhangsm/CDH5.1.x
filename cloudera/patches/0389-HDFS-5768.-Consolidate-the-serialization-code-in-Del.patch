@@ -1,0 +1,316 @@
+From c4c078f18a4f33a146d89aa5a559d42560ec2b2d Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 14 Feb 2014 18:43:39 +0000
+Subject: [PATCH 389/795] HDFS-5768. Consolidate the serialization code in DelegationTokenSecretManager. Contributed by Haohui Mai
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568447 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0217373daed23e25b44a9e4e30658a2744984802)
+---
+ .../delegation/DelegationTokenSecretManager.java   |  203 ++++++++++---------
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |    4 +-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    8 +-
+ 3 files changed, 113 insertions(+), 102 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
+index b2446cb..e291204 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
+@@ -59,6 +59,7 @@
+       .getLog(DelegationTokenSecretManager.class);
+   
+   private final FSNamesystem namesystem;
++  private final SerializerCompat serializerCompat = new SerializerCompat();
+ 
+   public DelegationTokenSecretManager(long delegationKeyUpdateInterval,
+       long delegationTokenMaxLifetime, long delegationTokenRenewInterval,
+@@ -150,24 +151,21 @@ public synchronized long getTokenExpiryTime(
+       throw new IOException("No delegation token found for this identifier");
+     }
+   }
+-  
++
+   /**
+    * Load SecretManager state from fsimage.
+    * 
+    * @param in input stream to read fsimage
+    * @throws IOException
+    */
+-  public synchronized void loadSecretManagerState(DataInput in)
++  public synchronized void loadSecretManagerStateCompat(DataInput in)
+       throws IOException {
+     if (running) {
+       // a safety check
+       throw new IOException(
+           "Can't load state from image in a running SecretManager.");
+     }
+-    currentId = in.readInt();
+-    loadAllKeys(in);
+-    delegationTokenSequenceNumber = in.readInt();
+-    loadCurrentTokens(in);
++    serializerCompat.load(in);
+   }
+   
+   /**
+@@ -177,12 +175,9 @@ public synchronized void loadSecretManagerState(DataInput in)
+    * @param sdPath String storage directory path
+    * @throws IOException
+    */
+-  public synchronized void saveSecretManagerState(DataOutputStream out,
++  public synchronized void saveSecretManagerStateCompat(DataOutputStream out,
+       String sdPath) throws IOException {
+-    out.writeInt(currentId);
+-    saveAllKeys(out, sdPath);
+-    out.writeInt(delegationTokenSequenceNumber);
+-    saveCurrentTokens(out, sdPath);
++    serializerCompat.save(out, sdPath);
+   }
+   
+   /**
+@@ -283,91 +278,6 @@ public synchronized int getNumberOfKeys() {
+   }
+ 
+   /**
+-   * Private helper methods to save delegation keys and tokens in fsimage
+-   */
+-  private synchronized void saveCurrentTokens(DataOutputStream out,
+-      String sdPath) throws IOException {
+-    StartupProgress prog = NameNode.getStartupProgress();
+-    Step step = new Step(StepType.DELEGATION_TOKENS, sdPath);
+-    prog.beginStep(Phase.SAVING_CHECKPOINT, step);
+-    prog.setTotal(Phase.SAVING_CHECKPOINT, step, currentTokens.size());
+-    Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
+-    out.writeInt(currentTokens.size());
+-    Iterator<DelegationTokenIdentifier> iter = currentTokens.keySet()
+-        .iterator();
+-    while (iter.hasNext()) {
+-      DelegationTokenIdentifier id = iter.next();
+-      id.write(out);
+-      DelegationTokenInformation info = currentTokens.get(id);
+-      out.writeLong(info.getRenewDate());
+-      counter.increment();
+-    }
+-    prog.endStep(Phase.SAVING_CHECKPOINT, step);
+-  }
+-  
+-  /*
+-   * Save the current state of allKeys
+-   */
+-  private synchronized void saveAllKeys(DataOutputStream out, String sdPath)
+-      throws IOException {
+-    StartupProgress prog = NameNode.getStartupProgress();
+-    Step step = new Step(StepType.DELEGATION_KEYS, sdPath);
+-    prog.beginStep(Phase.SAVING_CHECKPOINT, step);
+-    prog.setTotal(Phase.SAVING_CHECKPOINT, step, currentTokens.size());
+-    Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
+-    out.writeInt(allKeys.size());
+-    Iterator<Integer> iter = allKeys.keySet().iterator();
+-    while (iter.hasNext()) {
+-      Integer key = iter.next();
+-      allKeys.get(key).write(out);
+-      counter.increment();
+-    }
+-    prog.endStep(Phase.SAVING_CHECKPOINT, step);
+-  }
+-  
+-  /**
+-   * Private helper methods to load Delegation tokens from fsimage
+-   */
+-  private synchronized void loadCurrentTokens(DataInput in)
+-      throws IOException {
+-    StartupProgress prog = NameNode.getStartupProgress();
+-    Step step = new Step(StepType.DELEGATION_TOKENS);
+-    prog.beginStep(Phase.LOADING_FSIMAGE, step);
+-    int numberOfTokens = in.readInt();
+-    prog.setTotal(Phase.LOADING_FSIMAGE, step, numberOfTokens);
+-    Counter counter = prog.getCounter(Phase.LOADING_FSIMAGE, step);
+-    for (int i = 0; i < numberOfTokens; i++) {
+-      DelegationTokenIdentifier id = new DelegationTokenIdentifier();
+-      id.readFields(in);
+-      long expiryTime = in.readLong();
+-      addPersistedDelegationToken(id, expiryTime);
+-      counter.increment();
+-    }
+-    prog.endStep(Phase.LOADING_FSIMAGE, step);
+-  }
+-
+-  /**
+-   * Private helper method to load delegation keys from fsimage.
+-   * @param in
+-   * @throws IOException
+-   */
+-  private synchronized void loadAllKeys(DataInput in) throws IOException {
+-    StartupProgress prog = NameNode.getStartupProgress();
+-    Step step = new Step(StepType.DELEGATION_KEYS);
+-    prog.beginStep(Phase.LOADING_FSIMAGE, step);
+-    int numberOfKeys = in.readInt();
+-    prog.setTotal(Phase.LOADING_FSIMAGE, step, numberOfKeys);
+-    Counter counter = prog.getCounter(Phase.LOADING_FSIMAGE, step);
+-    for (int i = 0; i < numberOfKeys; i++) {
+-      DelegationKey value = new DelegationKey();
+-      value.readFields(in);
+-      addKey(value);
+-      counter.increment();
+-    }
+-    prog.endStep(Phase.LOADING_FSIMAGE, step);
+-  }
+-
+-  /**
+    * Call namesystem to update editlogs for new master key.
+    */
+   @Override //AbstractDelegationTokenManager
+@@ -420,4 +330,105 @@ public static Credentials createCredentials(final NameNode namenode,
+     c.addToken(new Text(ugi.getShortUserName()), token);
+     return c;
+   }
++
++  private final class SerializerCompat {
++    private void load(DataInput in) throws IOException {
++      currentId = in.readInt();
++      loadAllKeys(in);
++      delegationTokenSequenceNumber = in.readInt();
++      loadCurrentTokens(in);
++    }
++
++    private void save(DataOutputStream out, String sdPath) throws IOException {
++      out.writeInt(currentId);
++      saveAllKeys(out, sdPath);
++      out.writeInt(delegationTokenSequenceNumber);
++      saveCurrentTokens(out, sdPath);
++    }
++
++    /**
++     * Private helper methods to save delegation keys and tokens in fsimage
++     */
++    private synchronized void saveCurrentTokens(DataOutputStream out,
++        String sdPath) throws IOException {
++      StartupProgress prog = NameNode.getStartupProgress();
++      Step step = new Step(StepType.DELEGATION_TOKENS, sdPath);
++      prog.beginStep(Phase.SAVING_CHECKPOINT, step);
++      prog.setTotal(Phase.SAVING_CHECKPOINT, step, currentTokens.size());
++      Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
++      out.writeInt(currentTokens.size());
++      Iterator<DelegationTokenIdentifier> iter = currentTokens.keySet()
++          .iterator();
++      while (iter.hasNext()) {
++        DelegationTokenIdentifier id = iter.next();
++        id.write(out);
++        DelegationTokenInformation info = currentTokens.get(id);
++        out.writeLong(info.getRenewDate());
++        counter.increment();
++      }
++      prog.endStep(Phase.SAVING_CHECKPOINT, step);
++    }
++
++    /*
++     * Save the current state of allKeys
++     */
++    private synchronized void saveAllKeys(DataOutputStream out, String sdPath)
++        throws IOException {
++      StartupProgress prog = NameNode.getStartupProgress();
++      Step step = new Step(StepType.DELEGATION_KEYS, sdPath);
++      prog.beginStep(Phase.SAVING_CHECKPOINT, step);
++      prog.setTotal(Phase.SAVING_CHECKPOINT, step, currentTokens.size());
++      Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
++      out.writeInt(allKeys.size());
++      Iterator<Integer> iter = allKeys.keySet().iterator();
++      while (iter.hasNext()) {
++        Integer key = iter.next();
++        allKeys.get(key).write(out);
++        counter.increment();
++      }
++      prog.endStep(Phase.SAVING_CHECKPOINT, step);
++    }
++
++    /**
++     * Private helper methods to load Delegation tokens from fsimage
++     */
++    private synchronized void loadCurrentTokens(DataInput in)
++        throws IOException {
++      StartupProgress prog = NameNode.getStartupProgress();
++      Step step = new Step(StepType.DELEGATION_TOKENS);
++      prog.beginStep(Phase.LOADING_FSIMAGE, step);
++      int numberOfTokens = in.readInt();
++      prog.setTotal(Phase.LOADING_FSIMAGE, step, numberOfTokens);
++      Counter counter = prog.getCounter(Phase.LOADING_FSIMAGE, step);
++      for (int i = 0; i < numberOfTokens; i++) {
++        DelegationTokenIdentifier id = new DelegationTokenIdentifier();
++        id.readFields(in);
++        long expiryTime = in.readLong();
++        addPersistedDelegationToken(id, expiryTime);
++        counter.increment();
++      }
++      prog.endStep(Phase.LOADING_FSIMAGE, step);
++    }
++
++    /**
++     * Private helper method to load delegation keys from fsimage.
++     * @param in
++     * @throws IOException
++     */
++    private synchronized void loadAllKeys(DataInput in) throws IOException {
++      StartupProgress prog = NameNode.getStartupProgress();
++      Step step = new Step(StepType.DELEGATION_KEYS);
++      prog.beginStep(Phase.LOADING_FSIMAGE, step);
++      int numberOfKeys = in.readInt();
++      prog.setTotal(Phase.LOADING_FSIMAGE, step, numberOfKeys);
++      Counter counter = prog.getCounter(Phase.LOADING_FSIMAGE, step);
++      for (int i = 0; i < numberOfKeys; i++) {
++        DelegationKey value = new DelegationKey();
++        value.readFields(in);
++        addKey(value);
++        counter.increment();
++      }
++      prog.endStep(Phase.LOADING_FSIMAGE, step);
++    }
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index eb1544b..09a6fc2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -889,7 +889,7 @@ private void loadSecretManagerState(DataInput in)
+         //This must not happen if security is turned on.
+         return; 
+       }
+-      namesystem.loadSecretManagerState(in);
++      namesystem.loadSecretManagerStateCompat(in);
+     }
+ 
+     private void loadCacheManagerState(DataInput in) throws IOException {
+@@ -1201,7 +1201,7 @@ void save(File newFile, FSImageCompression compression) throws IOException {
+         sourceNamesystem.saveFilesUnderConstruction(out, snapshotUCMap);
+         
+         context.checkCancelled();
+-        sourceNamesystem.saveSecretManagerState(out, sdPath);
++        sourceNamesystem.saveSecretManagerStateCompat(out, sdPath);
+         context.checkCancelled();
+         sourceNamesystem.getCacheManager().saveState(out, sdPath);
+         context.checkCancelled();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index fa6391c..a941074 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -6271,16 +6271,16 @@ void cancelDelegationToken(Token<DelegationTokenIdentifier> token)
+    * @param out save state of the secret manager
+    * @param sdPath String storage directory path
+    */
+-  void saveSecretManagerState(DataOutputStream out, String sdPath)
++  void saveSecretManagerStateCompat(DataOutputStream out, String sdPath)
+       throws IOException {
+-    dtSecretManager.saveSecretManagerState(out, sdPath);
++    dtSecretManager.saveSecretManagerStateCompat(out, sdPath);
+   }
+ 
+   /**
+    * @param in load the state of secret manager from input stream
+    */
+-  void loadSecretManagerState(DataInput in) throws IOException {
+-    dtSecretManager.loadSecretManagerState(in);
++  void loadSecretManagerStateCompat(DataInput in) throws IOException {
++    dtSecretManager.loadSecretManagerStateCompat(in);
+   }
+ 
+   /**
+-- 
+1.7.0.4
+

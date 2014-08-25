@@ -1,0 +1,29 @@
+From f8ea9922743ed8296db20f389cea714185a33696 Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@apache.org>
+Date: Thu, 19 Jun 2014 23:06:40 +0000
+Subject: [PATCH 778/795] HDFS-6312. WebHdfs HA failover is broken on secure clusters. (daryn via tucu)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1604045 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../apache/hadoop/hdfs/web/WebHdfsFileSystem.java  |    2 --
+ 1 files changed, 0 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+index 55537e1..2b5ad25 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/WebHdfsFileSystem.java
+@@ -358,8 +358,6 @@ private synchronized InetSocketAddress getCurrentNNAddr() {
+    */
+   private synchronized void resetStateToFailOver() {
+     currentNNAddrIndex = (currentNNAddrIndex + 1) % nnAddrs.length;
+-    delegationToken = null;
+-    tokenAspect.reset();
+   }
+ 
+   /**
+-- 
+1.7.0.4
+

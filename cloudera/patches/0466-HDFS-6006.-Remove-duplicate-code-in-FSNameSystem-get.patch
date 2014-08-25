@@ -1,0 +1,28 @@
+From 9657573862658ed25cdbaba6b10c240752c65bd7 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Tue, 25 Feb 2014 20:27:43 +0000
+Subject: [PATCH 466/795] HDFS-6006. Remove duplicate code in FSNameSystem#getFileInfo. Contributed by Akira Ajisaka.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1571815 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7794e76bf539a3061df24d2b47624e638bbae66d)
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    3 ---
+ 1 files changed, 0 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 380be8d..e4d93bc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -3417,9 +3417,6 @@ HdfsFileStatus getFileInfo(String src, boolean resolveLink)
+     HdfsFileStatus stat = null;
+     FSPermissionChecker pc = getPermissionChecker();
+     checkOperation(OperationCategory.READ);
+-    if (!DFSUtil.isValidName(src)) {
+-      throw new InvalidPathException("Invalid file name: " + src);
+-    }
+     byte[][] pathComponents = FSDirectory.getPathComponentsForReservedPath(src);
+     readLock();
+     try {
+-- 
+1.7.0.4
+

@@ -1,0 +1,255 @@
+From 92b70d5290f341d5ba67996bf1dd0ec1fb4664ca Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Wed, 4 Jun 2014 00:37:38 +0000
+Subject: [PATCH 745/795] HDFS-6268. Better sorting in NetworkTopology#pseudoSortByDistance when no local node is found. (wang)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1599842 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e2bdde348cd27fc933924dfdc2669a6b183845e7)
+---
+ .../server/blockmanagement/DatanodeManager.java    |    3 +-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    4 +-
+ .../java/org/apache/hadoop/hdfs/TestGetBlocks.java |    3 +
+ .../namenode/snapshot/TestSnapshotFileLength.java  |   18 ++++---
+ .../net/TestHdfsNetworkTopologyWithNodeGroup.java  |   10 ++--
+ .../org/apache/hadoop/net/TestNetworkTopology.java |   46 ++++++++++++++++---
+ 6 files changed, 61 insertions(+), 23 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
+index c76d53b..c47b3ed 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
+@@ -351,7 +351,8 @@ public void sortLocatedBlocks(final String targethost,
+         DFSUtil.DECOM_COMPARATOR;
+         
+     for (LocatedBlock b : locatedblocks) {
+-      networktopology.pseudoSortByDistance(client, b.getLocations());
++      networktopology.sortByDistance(client, b.getLocations(), b
++          .getBlock().getBlockId());
+       // Move decommissioned/stale datanodes to the bottom
+       Arrays.sort(b.getLocations(), comparator);
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 3e443a4..340c84e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -1624,9 +1624,11 @@ LocatedBlocks getBlockLocations(String clientMachine, String src,
+       blockManager.getDatanodeManager().sortLocatedBlocks(
+           clientMachine, blocks.getLocatedBlocks());
+       
++      // lastBlock is not part of getLocatedBlocks(), might need to sort it too
+       LocatedBlock lastBlock = blocks.getLastLocatedBlock();
+       if (lastBlock != null) {
+-        ArrayList<LocatedBlock> lastBlockList = new ArrayList<LocatedBlock>();
++        ArrayList<LocatedBlock> lastBlockList =
++            Lists.newArrayListWithCapacity(1);
+         lastBlockList.add(lastBlock);
+         blockManager.getDatanodeManager().sortLocatedBlocks(
+                               clientMachine, lastBlockList);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestGetBlocks.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestGetBlocks.java
+index 3b21e73..d64c50c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestGetBlocks.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestGetBlocks.java
+@@ -169,6 +169,9 @@ public void testReadSelectNonStaleDatanode() throws Exception {
+       if (stm != null) {
+         stm.close();
+       }
++      if (client != null) {
++        client.close();
++      }
+       cluster.shutdown();
+     }
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotFileLength.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotFileLength.java
+index 817a2de..95f0fe7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotFileLength.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotFileLength.java
+@@ -143,10 +143,10 @@ public void testSnapshotFileLengthWithCatCommand() throws Exception {
+ 
+     // Make sure we can read the entire file via its non-snapshot path.
+     fileStatus = hdfs.getFileStatus(file1);
+-    assertEquals(fileStatus.getLen(), BLOCKSIZE * 2);
++    assertEquals("Unexpected file length", BLOCKSIZE * 2, fileStatus.getLen());
+     fis = hdfs.open(file1);
+     bytesRead = fis.read(buffer, 0, buffer.length);
+-    assertEquals(bytesRead, BLOCKSIZE * 2);
++    assertEquals("Unexpected # bytes read", BLOCKSIZE * 2, bytesRead);
+     fis.close();
+ 
+     Path file1snap1 =
+@@ -156,21 +156,23 @@ public void testSnapshotFileLengthWithCatCommand() throws Exception {
+     assertEquals(fileStatus.getLen(), BLOCKSIZE);
+     // Make sure we can only read up to the snapshot length.
+     bytesRead = fis.read(buffer, 0, buffer.length);
+-    assertEquals(bytesRead, BLOCKSIZE);
++    assertEquals("Unexpected # bytes read", BLOCKSIZE, bytesRead);
+     fis.close();
+ 
+-    PrintStream psBackup = System.out;
++    PrintStream outBackup = System.out;
++    PrintStream errBackup = System.err;
+     ByteArrayOutputStream bao = new ByteArrayOutputStream();
+     System.setOut(new PrintStream(bao));
+     System.setErr(new PrintStream(bao));
+     // Make sure we can cat the file upto to snapshot length
+     FsShell shell = new FsShell();
+-    try{
++    try {
+       ToolRunner.run(conf, shell, new String[] { "-cat",
+       "/TestSnapshotFileLength/sub1/.snapshot/snapshot1/file1" });
+-      assertEquals(bao.size(), BLOCKSIZE);
+-    }finally{
+-      System.setOut(psBackup);
++      assertEquals("Unexpected # bytes from -cat", BLOCKSIZE, bao.size());
++    } finally {
++      System.setOut(outBackup);
++      System.setErr(errBackup);
+     }
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/net/TestHdfsNetworkTopologyWithNodeGroup.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/net/TestHdfsNetworkTopologyWithNodeGroup.java
+index 2a442b7..3094c84 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/net/TestHdfsNetworkTopologyWithNodeGroup.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/net/TestHdfsNetworkTopologyWithNodeGroup.java
+@@ -86,7 +86,7 @@ public void testGetDistance() throws Exception {
+     assertEquals(cluster.getDistance(dataNodes[0], dataNodes[6]), 8);
+   }
+ 
+-  public void testPseudoSortByDistance() throws Exception {
++  public void testSortByDistance() throws Exception {
+     DatanodeDescriptor[] testNodes = new DatanodeDescriptor[4];
+ 
+     // array contains both local node, local node group & local rack node
+@@ -94,7 +94,7 @@ public void testPseudoSortByDistance() throws Exception {
+     testNodes[1] = dataNodes[2];
+     testNodes[2] = dataNodes[3];
+     testNodes[3] = dataNodes[0];
+-    cluster.pseudoSortByDistance(dataNodes[0], testNodes );
++    cluster.sortByDistance(dataNodes[0], testNodes, 0xDEADBEEF);
+     assertTrue(testNodes[0] == dataNodes[0]);
+     assertTrue(testNodes[1] == dataNodes[1]);
+     assertTrue(testNodes[2] == dataNodes[2]);
+@@ -105,7 +105,7 @@ public void testPseudoSortByDistance() throws Exception {
+     testNodes[1] = dataNodes[4];
+     testNodes[2] = dataNodes[1];
+     testNodes[3] = dataNodes[0];
+-    cluster.pseudoSortByDistance(dataNodes[0], testNodes );
++    cluster.sortByDistance(dataNodes[0], testNodes, 0xDEADBEEF);
+     assertTrue(testNodes[0] == dataNodes[0]);
+     assertTrue(testNodes[1] == dataNodes[1]);
+ 
+@@ -114,7 +114,7 @@ public void testPseudoSortByDistance() throws Exception {
+     testNodes[1] = dataNodes[3];
+     testNodes[2] = dataNodes[2];
+     testNodes[3] = dataNodes[0];
+-    cluster.pseudoSortByDistance(dataNodes[0], testNodes );
++    cluster.sortByDistance(dataNodes[0], testNodes, 0xDEADBEEF);
+     assertTrue(testNodes[0] == dataNodes[0]);
+     assertTrue(testNodes[1] == dataNodes[2]);
+ 
+@@ -123,7 +123,7 @@ public void testPseudoSortByDistance() throws Exception {
+     testNodes[1] = dataNodes[7];
+     testNodes[2] = dataNodes[2];
+     testNodes[3] = dataNodes[0];
+-    cluster.pseudoSortByDistance(computeNode, testNodes );
++    cluster.sortByDistance(computeNode, testNodes, 0xDEADBEEF);
+     assertTrue(testNodes[0] == dataNodes[0]);
+     assertTrue(testNodes[1] == dataNodes[2]);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/net/TestNetworkTopology.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/net/TestNetworkTopology.java
+index 1540141..4f98ae4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/net/TestNetworkTopology.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/net/TestNetworkTopology.java
+@@ -54,7 +54,8 @@ public void setupDatanodes() {
+         DFSTestUtil.getDatanodeDescriptor("4.4.4.4", "/d1/r2"),
+         DFSTestUtil.getDatanodeDescriptor("5.5.5.5", "/d1/r2"),
+         DFSTestUtil.getDatanodeDescriptor("6.6.6.6", "/d2/r3"),
+-        DFSTestUtil.getDatanodeDescriptor("7.7.7.7", "/d2/r3")
++        DFSTestUtil.getDatanodeDescriptor("7.7.7.7", "/d2/r3"),
++        DFSTestUtil.getDatanodeDescriptor("8.8.8.8", "/d2/r3")
+     };
+     for (int i = 0; i < dataNodes.length; i++) {
+       cluster.add(dataNodes[i]);
+@@ -117,14 +118,14 @@ public void testGetDistance() throws Exception {
+   }
+ 
+   @Test
+-  public void testPseudoSortByDistance() throws Exception {
++  public void testSortByDistance() throws Exception {
+     DatanodeDescriptor[] testNodes = new DatanodeDescriptor[3];
+     
+     // array contains both local node & local rack node
+     testNodes[0] = dataNodes[1];
+     testNodes[1] = dataNodes[2];
+     testNodes[2] = dataNodes[0];
+-    cluster.pseudoSortByDistance(dataNodes[0], testNodes );
++    cluster.sortByDistance(dataNodes[0], testNodes, 0xDEADBEEF);
+     assertTrue(testNodes[0] == dataNodes[0]);
+     assertTrue(testNodes[1] == dataNodes[1]);
+     assertTrue(testNodes[2] == dataNodes[2]);
+@@ -133,7 +134,7 @@ public void testPseudoSortByDistance() throws Exception {
+     testNodes[0] = dataNodes[1];
+     testNodes[1] = dataNodes[3];
+     testNodes[2] = dataNodes[0];
+-    cluster.pseudoSortByDistance(dataNodes[0], testNodes );
++    cluster.sortByDistance(dataNodes[0], testNodes, 0xDEADBEEF);
+     assertTrue(testNodes[0] == dataNodes[0]);
+     assertTrue(testNodes[1] == dataNodes[1]);
+     assertTrue(testNodes[2] == dataNodes[3]);
+@@ -142,21 +143,50 @@ public void testPseudoSortByDistance() throws Exception {
+     testNodes[0] = dataNodes[5];
+     testNodes[1] = dataNodes[3];
+     testNodes[2] = dataNodes[1];
+-    cluster.pseudoSortByDistance(dataNodes[0], testNodes );
++    cluster.sortByDistance(dataNodes[0], testNodes, 0xDEADBEEF);
+     assertTrue(testNodes[0] == dataNodes[1]);
+     assertTrue(testNodes[1] == dataNodes[3]);
+     assertTrue(testNodes[2] == dataNodes[5]);
+-    
++
+     // array contains local rack node which happens to be in position 0
+     testNodes[0] = dataNodes[1];
+     testNodes[1] = dataNodes[5];
+     testNodes[2] = dataNodes[3];
+-    cluster.pseudoSortByDistance(dataNodes[0], testNodes );
+-    // peudoSortByDistance does not take the "data center" layer into consideration 
++    cluster.sortByDistance(dataNodes[0], testNodes, 0xDEADBEEF);
++    assertTrue(testNodes[0] == dataNodes[1]);
++    assertTrue(testNodes[1] == dataNodes[3]);
++    assertTrue(testNodes[2] == dataNodes[5]);
++
++    // Same as previous, but with a different random seed to test randomization
++    testNodes[0] = dataNodes[1];
++    testNodes[1] = dataNodes[5];
++    testNodes[2] = dataNodes[3];
++    cluster.sortByDistance(dataNodes[0], testNodes, 0xDEAD);
++    // sortByDistance does not take the "data center" layer into consideration
+     // and it doesn't sort by getDistance, so 1, 5, 3 is also valid here
+     assertTrue(testNodes[0] == dataNodes[1]);
+     assertTrue(testNodes[1] == dataNodes[5]);
+     assertTrue(testNodes[2] == dataNodes[3]);
++
++    // Array is just local rack nodes
++    // Expect a random first node depending on the seed (normally the block ID).
++    DatanodeDescriptor first = null;
++    boolean foundRandom = false;
++    for (int i=5; i<=7; i++) {
++      testNodes[0] = dataNodes[5];
++      testNodes[1] = dataNodes[6];
++      testNodes[2] = dataNodes[7];
++      cluster.sortByDistance(dataNodes[i], testNodes, 0xBEADED+i);
++      if (first == null) {
++        first = testNodes[0];
++      } else {
++        if (first != testNodes[0]) {
++          foundRandom = true;
++          break;
++        }
++      }
++    }
++    assertTrue("Expected to find a different first location", foundRandom);
+   }
+   
+   @Test
+-- 
+1.7.0.4
+

@@ -1,0 +1,208 @@
+From 2c3739673f5fa7af39963712e2cf16b776bbea8e Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Mon, 3 Feb 2014 19:55:58 +0000
+Subject: [PATCH 420/795] YARN-1639. Modified RM HA configuration handling to have a way of not requiring separate configuration files for each RM. Contributed by Xuan Gong.
+ svn merge --ignore-ancestry -c 1564032 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1564033 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9b44f6e3ee6e98ec75e2cc87d0ca0c1aa31277be)
+---
+ .../java/org/apache/hadoop/yarn/conf/HAUtil.java   |   49 +++++++++++++++++--
+ .../src/main/resources/yarn-default.xml            |    9 +++-
+ .../yarn/server/resourcemanager/TestRMHA.java      |   41 +++++++++++++++-
+ 3 files changed, 88 insertions(+), 11 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/HAUtil.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/HAUtil.java
+index 3cbde93..ec2c64b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/HAUtil.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/HAUtil.java
+@@ -21,10 +21,13 @@
+ import com.google.common.annotations.VisibleForTesting;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.HadoopIllegalArgumentException;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ 
++import java.net.InetSocketAddress;
+ import java.util.Collection;
+ 
+ @InterfaceAudience.Private
+@@ -108,8 +111,7 @@ private static void verifyAndSetRMHAIdsList(Configuration conf) {
+           String errmsg = iae.getMessage();
+           if (confKey == null) {
+             // Error at addSuffix
+-            errmsg = getInvalidValueMessage(YarnConfiguration.RM_HA_ID,
+-              getRMHAId(conf));
++            errmsg = getInvalidValueMessage(YarnConfiguration.RM_HA_ID, id);
+           }
+           throwBadConfigurationException(errmsg);
+         }
+@@ -122,10 +124,18 @@ private static void verifyAndSetRMHAIdsList(Configuration conf) {
+   }
+ 
+   private static void verifyAndSetCurrentRMHAId(Configuration conf) {
+-    String rmId = conf.getTrimmed(YarnConfiguration.RM_HA_ID);
++    String rmId = getRMHAId(conf);
+     if (rmId == null) {
+-      throwBadConfigurationException(
+-        getNeedToSetValueMessage(YarnConfiguration.RM_HA_ID));
++      StringBuilder msg = new StringBuilder();
++      msg.append("Can not find valid RM_HA_ID. None of ");
++      for (String id : conf
++          .getTrimmedStringCollection(YarnConfiguration.RM_HA_IDS)) {
++        msg.append(addSuffix(YarnConfiguration.RM_ADDRESS, id) + " ");
++      }
++      msg.append(" are matching" +
++          " the local address OR " + YarnConfiguration.RM_HA_ID + " is not" +
++          " specified in HA Configuration");
++      throwBadConfigurationException(msg.toString());
+     } else {
+       Collection<String> ids = getRMHAIds(conf);
+       if (!ids.contains(rmId)) {
+@@ -179,7 +189,34 @@ public static void verifyAndSetAllServiceAddresses(Configuration conf) {
+    * @return RM Id on success
+    */
+   public static String getRMHAId(Configuration conf) {
+-    return conf.get(YarnConfiguration.RM_HA_ID);
++    int found = 0;
++    String currentRMId = conf.getTrimmed(YarnConfiguration.RM_HA_ID);
++    if(currentRMId == null) {
++      for(String rmId : getRMHAIds(conf)) {
++        String key = addSuffix(YarnConfiguration.RM_ADDRESS, rmId);
++        String addr = conf.get(key);
++        if (addr == null) {
++          continue;
++        }
++        InetSocketAddress s;
++        try {
++          s = NetUtils.createSocketAddr(addr);
++        } catch (Exception e) {
++          LOG.warn("Exception in creating socket address " + addr, e);
++          continue;
++        }
++        if (!s.isUnresolved() && NetUtils.isLocalAddress(s.getAddress())) {
++          currentRMId = rmId.trim();
++          found++;
++        }
++      }
++    }
++    if (found > 1) { // Only one address must match the local address
++      String msg = "The HA Configuration has multiple addresses that match "
++          + "local node's address.";
++      throw new HadoopIllegalArgumentException(msg);
++    }
++    return currentRMId;
+   }
+ 
+   @VisibleForTesting
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+index 649a8ee..893916a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+@@ -395,7 +395,9 @@
+       the Active mode when prompted to.
+       (2) The nodes in the RM ensemble are listed in
+       yarn.resourcemanager.ha.rm-ids
+-      (3) The id of each RM comes from yarn.resourcemanager.ha.id
++      (3) The id of each RM either comes from yarn.resourcemanager.ha.id
++      if yarn.resourcemanager.ha.id is explicitly specified or can be
++      figured out by matching yarn.resourcemanager.address.{id} with local address
+       (4) The actual physical addresses come from the configs of the pattern
+       - {rpc-config}.{id}</description>
+     <name>yarn.resourcemanager.ha.enabled</name>
+@@ -442,7 +444,10 @@
+ 
+   <property>
+     <description>The id (string) of the current RM. When HA is enabled, this
+-      is a required config. See description of yarn.resourcemanager.ha.enabled
++      is an optional config. The id of current RM can be set by explicitly
++      specifying yarn.resourcemanager.ha.id or figured out by matching
++      yarn.resourcemanager.address.{id} with local address
++      See description of yarn.resourcemanager.ha.enabled
+       for full details on how this is used.</description>
+     <name>yarn.resourcemanager.ha.id</name>
+     <!--value>rm1</value-->
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index 9d1a467..5b4f570 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -36,6 +36,8 @@
+ 
+ import java.io.IOException;
+ 
++import junit.framework.Assert;
++
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertTrue;
+@@ -48,12 +50,15 @@
+   private static final String STATE_ERR =
+       "ResourceManager is in wrong HA state";
+ 
+-  private static final String RM1_ADDRESS = "0.0.0.0:0";
++  private static final String RM1_ADDRESS = "1.1.1.1:1";
+   private static final String RM1_NODE_ID = "rm1";
+ 
+-  private static final String RM2_ADDRESS = "1.1.1.1:1";
++  private static final String RM2_ADDRESS = "0.0.0.0:0";
+   private static final String RM2_NODE_ID = "rm2";
+ 
++  private static final String RM3_ADDRESS = "2.2.2.2:2";
++  private static final String RM3_NODE_ID = "rm3";
++
+   @Before
+   public void setUp() throws Exception {
+     configuration.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
+@@ -61,8 +66,8 @@ public void setUp() throws Exception {
+     for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
+       configuration.set(HAUtil.addSuffix(confKey, RM1_NODE_ID), RM1_ADDRESS);
+       configuration.set(HAUtil.addSuffix(confKey, RM2_NODE_ID), RM2_ADDRESS);
++      configuration.set(HAUtil.addSuffix(confKey, RM3_NODE_ID), RM3_ADDRESS);
+     }
+-    configuration.set(YarnConfiguration.RM_HA_ID, RM1_NODE_ID);
+   }
+ 
+   private void checkMonitorHealth() throws IOException {
+@@ -278,6 +283,36 @@ protected Dispatcher createDispatcher() {
+     rm.stop();
+   }
+ 
++  @Test
++  public void testHAIDLookup() {
++    //test implicitly lookup HA-ID
++    Configuration conf = new YarnConfiguration(configuration);
++    rm = new MockRM(conf);
++    rm.init(conf);
++
++    assertEquals(conf.get(YarnConfiguration.RM_HA_ID), RM2_NODE_ID);
++
++    //test explicitly lookup HA-ID
++    configuration.set(YarnConfiguration.RM_HA_ID, RM1_NODE_ID);
++    conf = new YarnConfiguration(configuration);
++    rm = new MockRM(conf);
++    rm.init(conf);
++    assertEquals(conf.get(YarnConfiguration.RM_HA_ID), RM1_NODE_ID);
++
++    //test if RM_HA_ID can not be found
++    configuration.set(YarnConfiguration.RM_HA_IDS, RM1_NODE_ID+ "," + RM3_NODE_ID);
++    configuration.unset(YarnConfiguration.RM_HA_ID);
++    conf = new YarnConfiguration(configuration);
++    try {
++      rm = new MockRM(conf);
++      rm.init(conf);
++      fail("Should get an exception here.");
++    } catch (Exception ex) {
++      Assert.assertTrue(ex.getMessage().contains(
++          "Invalid configuration! Can not find valid RM_HA_ID."));
++    }
++  }
++
+   @SuppressWarnings("rawtypes")
+   class MyCountingDispatcher extends AbstractService implements Dispatcher {
+ 
+-- 
+1.7.0.4
+

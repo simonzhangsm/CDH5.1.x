@@ -1,0 +1,47 @@
+From eda64f7860593756808f98fa1b7754b2b99f9424 Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Thu, 6 Mar 2014 18:56:49 +0000
+Subject: [PATCH 520/795] Merge r1574999 from branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2.4@1575003 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9bb8ceeb2dae19b43d143e4655c9d341bff178dd)
+---
+ .../server/namenode/ha/TestRetryCacheWithHA.java   |   10 +++++++---
+ 1 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
+index 18ddfbc..1896adc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
+@@ -562,10 +562,12 @@ Object getResult() {
+ 
+     @Override
+     void prepare() throws Exception {
+-      DFSTestUtil.createFile(dfs, new Path(target), BlockSize, DataNodes, 0);
++      final Path targetPath = new Path(target);
++      DFSTestUtil.createFile(dfs, targetPath, BlockSize, DataNodes, 0);
+       for (int i = 0; i < srcPaths.length; i++) {
+         DFSTestUtil.createFile(dfs, srcPaths[i], BlockSize, DataNodes, 0);
+       }
++      assertEquals(BlockSize, dfs.getFileStatus(targetPath).getLen());
+     }
+ 
+     @Override
+@@ -576,10 +578,12 @@ void invoke() throws Exception {
+     @Override
+     boolean checkNamenodeBeforeReturn() throws Exception {
+       Path targetPath = new Path(target);
+-      boolean done = dfs.exists(targetPath);
++      boolean done = dfs.getFileStatus(targetPath).getLen() == BlockSize
++          * (srcs.length + 1);
+       for (int i = 0; i < CHECKTIMES && !done; i++) {
+         Thread.sleep(1000);
+-        done = dfs.exists(targetPath);
++        done = dfs.getFileStatus(targetPath).getLen() == BlockSize
++            * (srcs.length + 1);
+       }
+       return done;
+     }
+-- 
+1.7.0.4
+

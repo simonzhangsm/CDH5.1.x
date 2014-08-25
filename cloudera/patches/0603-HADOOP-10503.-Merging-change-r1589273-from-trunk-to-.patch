@@ -1,0 +1,447 @@
+From 547f21a538642fc925b950610e85b0b4d27d307b Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Tue, 22 Apr 2014 19:58:02 +0000
+Subject: [PATCH 603/795] HADOOP-10503. Merging change r1589273 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1589275 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f12c1d36ac7949a19a961a396c33832f288c1516)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpCookieFlag.java
+---
+ .../hadoop/conf/TestConfigurationDeprecation.java  |    2 +-
+ .../hadoop/fs/FileContextPermissionBase.java       |    2 +-
+ .../org/apache/hadoop/fs/FileContextURIBase.java   |    2 +-
+ .../hadoop/fs/TestFileContextDeleteOnExit.java     |    2 +-
+ .../apache/hadoop/fs/TestFileSystemCaching.java    |    4 ++--
+ .../org/apache/hadoop/http/TestHttpServer.java     |    2 +-
+ .../hadoop/io/file/tfile/TestTFileByteArrays.java  |    2 +-
+ .../hadoop/io/file/tfile/TestTFileComparators.java |    2 +-
+ .../hadoop/io/file/tfile/TestTFileSplit.java       |    2 +-
+ .../hadoop/io/file/tfile/TestTFileStreams.java     |    2 +-
+ .../io/file/tfile/TestTFileUnsortedByteArrays.java |    2 +-
+ .../org/apache/hadoop/io/file/tfile/TestVLong.java |    2 +-
+ .../org/apache/hadoop/ipc/MiniRPCBenchmark.java    |    2 +-
+ .../apache/hadoop/ipc/TestRPCCompatibility.java    |    4 ++--
+ .../org/apache/hadoop/ipc/TestSocketFactory.java   |    2 +-
+ .../hadoop/security/TestDoAsEffectiveUser.java     |    2 +-
+ .../hadoop/security/TestUGIWithExternalKdc.java    |    2 +-
+ .../ssl/TestReloadingX509TrustManager.java         |    2 +-
+ .../token/delegation/TestDelegationToken.java      |    2 +-
+ .../java/org/apache/hadoop/util/TestClassUtil.java |    2 +-
+ .../apache/hadoop/util/TestIdentityHashStore.java  |    2 +-
+ .../org/apache/hadoop/util/TestLineReader.java     |    2 +-
+ hadoop-common-project/hadoop-minikdc/pom.xml       |    6 ------
+ hadoop-common-project/hadoop-nfs/pom.xml           |    1 -
+ .../java/org/apache/hadoop/nfs/TestNfsExports.java |    2 +-
+ .../java/org/apache/hadoop/nfs/TestNfsTime.java    |    2 +-
+ .../org/apache/hadoop/nfs/nfs3/TestFileHandle.java |    2 +-
+ .../org/apache/hadoop/portmap/TestPortmap.java     |    2 +-
+ hadoop-maven-plugins/pom.xml                       |    1 -
+ hadoop-project/pom.xml                             |    2 +-
+ 30 files changed, 29 insertions(+), 37 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/conf/TestConfigurationDeprecation.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/conf/TestConfigurationDeprecation.java
+index f336821..93a235a 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/conf/TestConfigurationDeprecation.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/conf/TestConfigurationDeprecation.java
+@@ -38,7 +38,7 @@
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicInteger;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.conf.Configuration.DeprecationDelta;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextPermissionBase.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextPermissionBase.java
+index d17305b..5c44a98 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextPermissionBase.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextPermissionBase.java
+@@ -23,7 +23,7 @@
+ import java.util.List;
+ import java.util.StringTokenizer;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.security.UserGroupInformation;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextURIBase.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextURIBase.java
+index 506e941..4082737 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextURIBase.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/FileContextURIBase.java
+@@ -21,7 +21,7 @@
+ import java.io.*;
+ import java.util.ArrayList;
+ import java.util.regex.Pattern;
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.util.Shell;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestFileContextDeleteOnExit.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestFileContextDeleteOnExit.java
+index 2a058f7..40db1fd 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestFileContextDeleteOnExit.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestFileContextDeleteOnExit.java
+@@ -20,7 +20,7 @@
+ import java.io.IOException;
+ import java.util.Set;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import org.apache.hadoop.util.ShutdownHookManager;
+ import org.junit.After;
+ import org.junit.Before;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestFileSystemCaching.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestFileSystemCaching.java
+index 8dff124..07b07dc 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestFileSystemCaching.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/fs/TestFileSystemCaching.java
+@@ -18,8 +18,8 @@
+ 
+ package org.apache.hadoop.fs;
+ 
+-import static junit.framework.Assert.assertSame;
+-import static junit.framework.Assert.assertNotSame;
++import static org.junit.Assert.assertSame;
++import static org.junit.Assert.assertNotSame;
+ 
+ import java.io.IOException;
+ import java.net.URI;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpServer.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpServer.java
+index cb86275..03294b5 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpServer.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/http/TestHttpServer.java
+@@ -45,7 +45,7 @@
+ import javax.servlet.http.HttpServletRequestWrapper;
+ import javax.servlet.http.HttpServletResponse;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileByteArrays.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileByteArrays.java
+index 886cba1..8040cdf 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileByteArrays.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileByteArrays.java
+@@ -23,7 +23,7 @@
+ import java.io.IOException;
+ import java.util.Random;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileComparators.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileComparators.java
+index 5bb1918..d7df1c3 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileComparators.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileComparators.java
+@@ -19,7 +19,7 @@
+ 
+ import java.io.IOException;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import junit.framework.TestCase;
+ 
+ import org.apache.hadoop.conf.Configuration;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileSplit.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileSplit.java
+index 470988e..4f84f0a 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileSplit.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileSplit.java
+@@ -19,7 +19,7 @@
+ import java.io.IOException;
+ import java.util.Random;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import junit.framework.TestCase;
+ 
+ import org.apache.hadoop.conf.Configuration;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileStreams.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileStreams.java
+index e8da180..8c67625 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileStreams.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileStreams.java
+@@ -22,7 +22,7 @@
+ import java.io.IOException;
+ import java.util.Random;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import junit.framework.TestCase;
+ 
+ import org.apache.hadoop.conf.Configuration;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileUnsortedByteArrays.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileUnsortedByteArrays.java
+index 6fb6fdf..2f7f2de 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileUnsortedByteArrays.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestTFileUnsortedByteArrays.java
+@@ -19,7 +19,7 @@
+ 
+ import java.io.IOException;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import junit.framework.TestCase;
+ 
+ import org.apache.hadoop.conf.Configuration;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestVLong.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestVLong.java
+index 34dcaa1..a2bb219 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestVLong.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/io/file/tfile/TestVLong.java
+@@ -21,7 +21,7 @@
+ import java.io.IOException;
+ import java.util.Random;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import junit.framework.TestCase;
+ 
+ import org.apache.hadoop.conf.Configuration;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/MiniRPCBenchmark.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/MiniRPCBenchmark.java
+index 4def070..576ce76 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/MiniRPCBenchmark.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/MiniRPCBenchmark.java
+@@ -26,7 +26,7 @@
+ import java.util.Arrays;
+ import java.util.Enumeration;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.commons.logging.impl.Log4JLogger;
+ import org.apache.hadoop.conf.Configuration;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestRPCCompatibility.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestRPCCompatibility.java
+index da1b791..8312607 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestRPCCompatibility.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestRPCCompatibility.java
+@@ -26,7 +26,7 @@
+ import java.lang.reflect.Method;
+ import java.net.InetSocketAddress;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -390,4 +390,4 @@ private GetProtocolSignatureRequestProto createGetProtocolSigRequestProto(
+     builder.setRpcKind(rpcKind.toString());
+     return builder.build();
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestSocketFactory.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestSocketFactory.java
+index c29d240..5d66a54 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestSocketFactory.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestSocketFactory.java
+@@ -24,7 +24,7 @@
+ 
+ import javax.net.SocketFactory;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
+index 830106d..dfbee76 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestDoAsEffectiveUser.java
+@@ -25,7 +25,7 @@
+ import java.util.ArrayList;
+ import java.util.Enumeration;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.io.Text;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestUGIWithExternalKdc.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestUGIWithExternalKdc.java
+index 2f55b11..896643a 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestUGIWithExternalKdc.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/TestUGIWithExternalKdc.java
+@@ -18,7 +18,7 @@
+ 
+ import java.io.IOException;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/ssl/TestReloadingX509TrustManager.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/ssl/TestReloadingX509TrustManager.java
+index 5a03605..75e5a8e 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/ssl/TestReloadingX509TrustManager.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/ssl/TestReloadingX509TrustManager.java
+@@ -30,7 +30,7 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+-import static junit.framework.Assert.assertEquals;
++import static org.junit.Assert.assertEquals;
+ import static org.apache.hadoop.security.ssl.KeyStoreTestUtil.createTrustStore;
+ import static org.apache.hadoop.security.ssl.KeyStoreTestUtil.generateCertificate;
+ import static org.apache.hadoop.security.ssl.KeyStoreTestUtil.generateKeyPair;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/TestDelegationToken.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/TestDelegationToken.java
+index 60f0fe0..4f83a57 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/TestDelegationToken.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/security/token/delegation/TestDelegationToken.java
+@@ -30,7 +30,7 @@
+ import java.util.List;
+ import java.util.Map;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestClassUtil.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestClassUtil.java
+index fe1284f..14e19f4 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestClassUtil.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestClassUtil.java
+@@ -20,7 +20,7 @@
+ 
+ import java.io.File;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.log4j.Logger;
+ import org.junit.Test;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestIdentityHashStore.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestIdentityHashStore.java
+index 795c8e3..bd74855 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestIdentityHashStore.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestIdentityHashStore.java
+@@ -21,7 +21,7 @@
+ import java.util.LinkedList;
+ import java.util.List;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestLineReader.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestLineReader.java
+index cbb06ea..9d909bc 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestLineReader.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/util/TestLineReader.java
+@@ -24,7 +24,7 @@
+ import org.apache.hadoop.util.LineReader;
+ import org.junit.Test;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ public class TestLineReader {
+   private LineReader lineReader;
+diff --git a/hadoop-common-project/hadoop-minikdc/pom.xml b/hadoop-common-project/hadoop-minikdc/pom.xml
+index 3894bea..77d525c 100644
+--- a/hadoop-common-project/hadoop-minikdc/pom.xml
++++ b/hadoop-common-project/hadoop-minikdc/pom.xml
+@@ -150,12 +150,6 @@
+       <groupId>junit</groupId>
+       <artifactId>junit</artifactId>
+       <scope>compile</scope>
+-      <exclusions>
+-        <exclusion>
+-          <groupId>org.hamcrest</groupId>
+-          <artifactId>hamcrest-core</artifactId>
+-        </exclusion>
+-      </exclusions>
+     </dependency>
+   </dependencies>
+ </project>
+diff --git a/hadoop-common-project/hadoop-nfs/pom.xml b/hadoop-common-project/hadoop-nfs/pom.xml
+index beb72f7..9aea888 100644
+--- a/hadoop-common-project/hadoop-nfs/pom.xml
++++ b/hadoop-common-project/hadoop-nfs/pom.xml
+@@ -51,7 +51,6 @@
+     <dependency>
+       <groupId>junit</groupId>
+       <artifactId>junit</artifactId>
+-      <version>4.8.2</version>
+     </dependency>
+     <dependency>
+       <groupId>org.mockito</groupId>
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsExports.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsExports.java
+index 30b6ff9..5cda10b 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsExports.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsExports.java
+@@ -17,7 +17,7 @@
+  */
+ package org.apache.hadoop.nfs;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.nfs.AccessPrivilege;
+ import org.apache.hadoop.nfs.NfsExports;
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsTime.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsTime.java
+index b25808e..a46051a 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsTime.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/TestNfsTime.java
+@@ -17,7 +17,7 @@
+  */
+ package org.apache.hadoop.nfs;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.nfs.NfsTime;
+ import org.apache.hadoop.oncrpc.XDR;
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestFileHandle.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestFileHandle.java
+index 2759b53..0c82cb0 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestFileHandle.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestFileHandle.java
+@@ -17,7 +17,7 @@
+  */
+ package org.apache.hadoop.nfs.nfs3;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.nfs.nfs3.FileHandle;
+ import org.apache.hadoop.oncrpc.XDR;
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/portmap/TestPortmap.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/portmap/TestPortmap.java
+index cc88d34..f217e84 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/portmap/TestPortmap.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/portmap/TestPortmap.java
+@@ -25,7 +25,7 @@
+ import java.net.Socket;
+ import java.util.Map;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.oncrpc.RpcCall;
+ import org.apache.hadoop.oncrpc.XDR;
+diff --git a/hadoop-maven-plugins/pom.xml b/hadoop-maven-plugins/pom.xml
+index 53fc613..cfdeea5 100644
+--- a/hadoop-maven-plugins/pom.xml
++++ b/hadoop-maven-plugins/pom.xml
+@@ -49,7 +49,6 @@
+     <dependency>
+       <groupId>junit</groupId>
+       <artifactId>junit</artifactId>
+-      <version>3.8.1</version>
+       <scope>test</scope>
+     </dependency>
+   </dependencies>
+diff --git a/hadoop-project/pom.xml b/hadoop-project/pom.xml
+index 0302a79..2e477ba 100644
+--- a/hadoop-project/pom.xml
++++ b/hadoop-project/pom.xml
+@@ -585,7 +585,7 @@
+       <dependency>
+         <groupId>junit</groupId>
+         <artifactId>junit</artifactId>
+-        <version>4.10</version>
++        <version>4.11</version>
+       </dependency>
+       <dependency>
+         <groupId>commons-lang</groupId>
+-- 
+1.7.0.4
+

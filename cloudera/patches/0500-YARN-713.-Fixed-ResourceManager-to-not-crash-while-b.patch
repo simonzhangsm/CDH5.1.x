@@ -1,0 +1,721 @@
+From 605109cf588d3e504fc1a327977f662d5b4cf600 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Wed, 19 Feb 2014 23:39:48 +0000
+Subject: [PATCH 500/795] YARN-713. Fixed ResourceManager to not crash while building tokens when DNS issues happen transmittently. Contributed by Jian He.
+ svn merge --ignore-ancestry -c 1569979 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1569980 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 434548647cdb8912e8512187d5ee3bee69744767)
+---
+ .../resourcemanager/ApplicationMasterService.java  |   10 +--
+ .../rmapp/attempt/RMAppAttemptImpl.java            |   63 ++++++++++---
+ .../event/RMAppAttemptContainerAllocatedEvent.java |   11 +--
+ .../rmcontainer/RMContainerImpl.java               |    2 +-
+ .../scheduler/AbstractYarnScheduler.java           |    5 +
+ .../resourcemanager/scheduler/Allocation.java      |   21 +++--
+ .../scheduler/SchedulerApplicationAttempt.java     |   68 +++++++++++---
+ .../scheduler/capacity/CapacityScheduler.java      |    6 -
+ .../scheduler/common/fica/FiCaSchedulerApp.java    |    8 +-
+ .../scheduler/fair/FairScheduler.java              |   15 +--
+ .../scheduler/fifo/FifoScheduler.java              |   17 ++--
+ .../security/NMTokenSecretManagerInRM.java         |   34 ++++---
+ .../rmapp/attempt/TestRMAppAttemptTransitions.java |    3 +-
+ .../capacity/TestContainerAllocation.java          |   97 ++++++++++++++++++++
+ 14 files changed, 258 insertions(+), 102 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
+index 58ddd15..4c05d13 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
+@@ -455,9 +455,11 @@ public AllocateResponse allocate(AllocateRequest request)
+               blacklistAdditions, blacklistRemovals);
+ 
+       RMAppAttempt appAttempt = app.getRMAppAttempt(appAttemptId);
+-      
+       AllocateResponse allocateResponse =
+           recordFactory.newRecordInstance(AllocateResponse.class);
++      if (!allocation.getContainers().isEmpty()) {
++        allocateResponse.setNMTokens(allocation.getNMTokens());
++      }
+ 
+       // update the response with the deltas of node status changes
+       List<RMNode> updatedNodes = new ArrayList<RMNode>();
+@@ -496,12 +498,6 @@ public AllocateResponse allocate(AllocateRequest request)
+       allocateResponse
+           .setPreemptionMessage(generatePreemptionMessage(allocation));
+ 
+-      // Adding NMTokens for allocated containers.
+-      if (!allocation.getContainers().isEmpty()) {
+-        allocateResponse.setNMTokens(rmContext.getNMTokenSecretManager()
+-            .createAndGetNMTokens(app.getUser(), appAttemptId,
+-                allocation.getContainers()));
+-      }
+       /*
+        * As we are updating the response inside the lock object so we don't
+        * need to worry about unregister call occurring in between (which
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+index cd5c9d3..12cc6f7 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+@@ -76,6 +76,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppFinishedAttemptEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptContainerAcquiredEvent;
++import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptContainerAllocatedEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptContainerFinishedEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptLaunchFailedEvent;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptNewSavedEvent;
+@@ -199,7 +200,8 @@
+           
+        // Transitions from SCHEDULED State
+       .addTransition(RMAppAttemptState.SCHEDULED,
+-                     RMAppAttemptState.ALLOCATED_SAVING,
++          EnumSet.of(RMAppAttemptState.ALLOCATED_SAVING,
++            RMAppAttemptState.SCHEDULED),
+           RMAppAttemptEventType.CONTAINER_ALLOCATED,
+           new AMContainerAllocatedTransition())
+       .addTransition(RMAppAttemptState.SCHEDULED, RMAppAttemptState.FINAL_SAVING,
+@@ -765,8 +767,9 @@ public void transition(RMAppAttemptImpl appAttempt,
+ 
+   private static final List<ContainerId> EMPTY_CONTAINER_RELEASE_LIST =
+       new ArrayList<ContainerId>();
++
+   private static final List<ResourceRequest> EMPTY_CONTAINER_REQUEST_LIST =
+-    new ArrayList<ResourceRequest>();
++      new ArrayList<ResourceRequest>();
+ 
+   private static final class ScheduleTransition
+       implements
+@@ -799,29 +802,57 @@ public RMAppAttemptState transition(RMAppAttemptImpl appAttempt,
+     }
+   }
+ 
+-  private static final class AMContainerAllocatedTransition 
+-                                                      extends BaseTransition {
++  private static final class AMContainerAllocatedTransition
++      implements
++      MultipleArcTransition<RMAppAttemptImpl, RMAppAttemptEvent, RMAppAttemptState> {
+     @Override
+-    public void transition(RMAppAttemptImpl appAttempt,
+-                                                     RMAppAttemptEvent event) {
++    public RMAppAttemptState transition(RMAppAttemptImpl appAttempt,
++        RMAppAttemptEvent event) {
+       // Acquire the AM container from the scheduler.
+-      Allocation amContainerAllocation = appAttempt.scheduler.allocate(
+-          appAttempt.applicationAttemptId, EMPTY_CONTAINER_REQUEST_LIST,
+-          EMPTY_CONTAINER_RELEASE_LIST, null, null);
++      Allocation amContainerAllocation =
++          appAttempt.scheduler.allocate(appAttempt.applicationAttemptId,
++            EMPTY_CONTAINER_REQUEST_LIST, EMPTY_CONTAINER_RELEASE_LIST, null,
++            null);
+       // There must be at least one container allocated, because a
+       // CONTAINER_ALLOCATED is emitted after an RMContainer is constructed,
+-      // and is put in SchedulerApplication#newlyAllocatedContainers. Then,
+-      // YarnScheduler#allocate will fetch it.
+-      assert amContainerAllocation.getContainers().size() != 0;
++      // and is put in SchedulerApplication#newlyAllocatedContainers.
++
++      // Note that YarnScheduler#allocate is not guaranteed to be able to
++      // fetch it since container may not be fetchable for some reason like
++      // DNS unavailable causing container token not generated. As such, we
++      // return to the previous state and keep retry until am container is
++      // fetched.
++      if (amContainerAllocation.getContainers().size() == 0) {
++        appAttempt.retryFetchingAMContainer(appAttempt);
++        return RMAppAttemptState.SCHEDULED;
++      }
+       // Set the masterContainer
+-      appAttempt.setMasterContainer(amContainerAllocation.getContainers().get(
+-                                                                           0));
++      appAttempt.setMasterContainer(amContainerAllocation.getContainers()
++        .get(0));
+       appAttempt.getSubmissionContext().setResource(
+-          appAttempt.getMasterContainer().getResource());
++        appAttempt.getMasterContainer().getResource());
+       appAttempt.storeAttempt();
++      return RMAppAttemptState.ALLOCATED_SAVING;
+     }
+   }
+-  
++
++  private void retryFetchingAMContainer(final RMAppAttemptImpl appAttempt) {
++    // start a new thread so that we are not blocking main dispatcher thread.
++    new Thread() {
++      @Override
++      public void run() {
++        try {
++          Thread.sleep(500);
++        } catch (InterruptedException e) {
++          LOG.warn("Interrupted while waiting to resend the"
++              + " ContainerAllocated Event.");
++        }
++        appAttempt.eventHandler.handle(new RMAppAttemptContainerAllocatedEvent(
++          appAttempt.applicationAttemptId));
++      }
++    }.start();
++  }
++
+   private static final class AttemptStoredTransition extends BaseTransition {
+     @Override
+     public void transition(RMAppAttemptImpl appAttempt,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/event/RMAppAttemptContainerAllocatedEvent.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/event/RMAppAttemptContainerAllocatedEvent.java
+index e841f7a..681f38c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/event/RMAppAttemptContainerAllocatedEvent.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/event/RMAppAttemptContainerAllocatedEvent.java
+@@ -25,16 +25,7 @@
+ 
+ public class RMAppAttemptContainerAllocatedEvent extends RMAppAttemptEvent {
+ 
+-  private final Container container;
+-
+-  public RMAppAttemptContainerAllocatedEvent(ApplicationAttemptId appAttemptId, 
+-      Container container) {
++  public RMAppAttemptContainerAllocatedEvent(ApplicationAttemptId appAttemptId) {
+     super(appAttemptId, RMAppAttemptEventType.CONTAINER_ALLOCATED);
+-    this.container = container;
+-  }
+-
+-  public Container getContainer() {
+-    return this.container;
+   }
+-
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmcontainer/RMContainerImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmcontainer/RMContainerImpl.java
+index d44fd3f..78bbfd1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmcontainer/RMContainerImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmcontainer/RMContainerImpl.java
+@@ -255,7 +255,7 @@ public void transition(RMContainerImpl container, RMContainerEvent event) {
+     @Override
+     public void transition(RMContainerImpl container, RMContainerEvent event) {
+       container.eventHandler.handle(new RMAppAttemptContainerAllocatedEvent(
+-          container.appAttemptId, container.container));
++          container.appAttemptId));
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+index 4208d1d..0f3af41 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/AbstractYarnScheduler.java
+@@ -31,11 +31,16 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
++import org.apache.hadoop.yarn.util.resource.Resources;
+ 
+ public abstract class AbstractYarnScheduler implements ResourceScheduler {
+ 
+   protected RMContext rmContext;
+   protected Map<ApplicationId, SchedulerApplication> applications;
++  protected final static List<Container> EMPTY_CONTAINER_LIST =
++      new ArrayList<Container>();
++  protected static final Allocation EMPTY_ALLOCATION = new Allocation(
++    EMPTY_CONTAINER_LIST, Resources.createResource(0), null, null, null);
+ 
+   public synchronized List<Container> getTransferredContainers(
+       ApplicationAttemptId currentAttempt) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/Allocation.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/Allocation.java
+index 8905504..19d17ae 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/Allocation.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/Allocation.java
+@@ -23,10 +23,9 @@
+ 
+ import org.apache.hadoop.yarn.api.records.Container;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
++import org.apache.hadoop.yarn.api.records.NMToken;
+ import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
+-import org.apache.hadoop.yarn.factories.RecordFactory;
+-import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
+ 
+ public class Allocation {
+   
+@@ -38,24 +37,24 @@
+   final Set<ContainerId> strictContainers;
+   final Set<ContainerId> fungibleContainers;
+   final List<ResourceRequest> fungibleResources;
+-
+-  public Allocation(List<Container> containers, Resource resourceLimit) {
+-    this(containers, resourceLimit, null, null, null);
+-  }
++  final List<NMToken> nmTokens;
+ 
+   public Allocation(List<Container> containers, Resource resourceLimit,
+-      Set<ContainerId> strictContainers) {
+-    this(containers, resourceLimit, strictContainers, null, null);
++      Set<ContainerId> strictContainers, Set<ContainerId> fungibleContainers,
++      List<ResourceRequest> fungibleResources) {
++    this(containers,  resourceLimit,strictContainers,  fungibleContainers,
++      fungibleResources, null);
+   }
+ 
+   public Allocation(List<Container> containers, Resource resourceLimit,
+       Set<ContainerId> strictContainers, Set<ContainerId> fungibleContainers,
+-      List<ResourceRequest> fungibleResources) {
++      List<ResourceRequest> fungibleResources, List<NMToken> nmTokens) {
+     this.containers = containers;
+     this.resourceLimit = resourceLimit;
+     this.strictContainers = strictContainers;
+     this.fungibleContainers = fungibleContainers;
+     this.fungibleResources = fungibleResources;
++    this.nmTokens = nmTokens;
+   }
+ 
+   public List<Container> getContainers() {
+@@ -78,4 +77,8 @@ public Resource getResourceLimit() {
+     return fungibleResources;
+   }
+     
++  public List<NMToken> getNMTokens() {
++    return nmTokens;
++  }
++
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+index fec5e05..a61d17c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+@@ -20,6 +20,7 @@
+ import java.util.ArrayList;
+ import java.util.Collection;
+ import java.util.HashMap;
++import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
+ 
+@@ -33,6 +34,7 @@
+ import org.apache.hadoop.yarn.api.records.ApplicationResourceUsageReport;
+ import org.apache.hadoop.yarn.api.records.Container;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
++import org.apache.hadoop.yarn.api.records.NMToken;
+ import org.apache.hadoop.yarn.api.records.NodeId;
+ import org.apache.hadoop.yarn.api.records.Priority;
+ import org.apache.hadoop.yarn.api.records.Resource;
+@@ -340,21 +342,61 @@ public Resource getCurrentConsumption() {
+     return currentConsumption;
+   }
+ 
+-  public synchronized List<Container> pullNewlyAllocatedContainers() {
+-    List<Container> returnContainerList = new ArrayList<Container>(
+-        newlyAllocatedContainers.size());
+-    for (RMContainer rmContainer : newlyAllocatedContainers) {
+-      rmContainer.handle(new RMContainerEvent(rmContainer.getContainerId(),
+-          RMContainerEventType.ACQUIRED));
++  public static class ContainersAndNMTokensAllocation {
++    List<Container> containerList;
++    List<NMToken> nmTokenList;
++
++    public ContainersAndNMTokensAllocation(List<Container> containerList,
++        List<NMToken> nmTokenList) {
++      this.containerList = containerList;
++      this.nmTokenList = nmTokenList;
++    }
++
++    public List<Container> getContainerList() {
++      return containerList;
++    }
++
++    public List<NMToken> getNMTokenList() {
++      return nmTokenList;
++    }
++  }
++
++  // Create container token and NMToken altogether, if either of them fails for
++  // some reason like DNS unavailable, do not return this container and keep it
++  // in the newlyAllocatedContainers waiting to be refetched.
++  public synchronized ContainersAndNMTokensAllocation
++      pullNewlyAllocatedContainersAndNMTokens() {
++    List<Container> returnContainerList =
++        new ArrayList<Container>(newlyAllocatedContainers.size());
++    List<NMToken> nmTokens = new ArrayList<NMToken>();
++    for (Iterator<RMContainer> i = newlyAllocatedContainers.iterator(); i
++      .hasNext();) {
++      RMContainer rmContainer = i.next();
+       Container container = rmContainer.getContainer();
+-      rmContainer.getContainer().setContainerToken(
+-        rmContext.getContainerTokenSecretManager().createContainerToken(
+-          rmContainer.getContainerId(), container.getNodeId(), getUser(),
+-          container.getResource()));
+-      returnContainerList.add(rmContainer.getContainer());
++      try {
++        // create container token and NMToken altogether.
++        container.setContainerToken(rmContext.getContainerTokenSecretManager()
++          .createContainerToken(container.getId(), container.getNodeId(),
++            getUser(), container.getResource()));
++        NMToken nmToken =
++            rmContext.getNMTokenSecretManager().createAndGetNMToken(getUser(),
++              getApplicationAttemptId(), container);
++        if (nmToken != null) {
++          nmTokens.add(nmToken);
++        }
++      } catch (IllegalArgumentException e) {
++        // DNS might be down, skip returning this container.
++        LOG.error(
++          "Error trying to assign container token to allocated container "
++              + container.getId(), e);
++        continue;
++      }
++      returnContainerList.add(container);
++      i.remove();
++      rmContainer.handle(new RMContainerEvent(rmContainer.getContainerId(),
++        RMContainerEventType.ACQUIRED));
+     }
+-    newlyAllocatedContainers.clear();
+-    return returnContainerList;
++    return new ContainersAndNMTokensAllocation(returnContainerList, nmTokens);
+   }
+ 
+   public synchronized void updateBlacklist(
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+index 6826c49..b8f2376 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+@@ -104,9 +104,6 @@
+ 
+   private CSQueue root;
+ 
+-  private final static List<Container> EMPTY_CONTAINER_LIST = 
+-    new ArrayList<Container>();
+-
+   static final Comparator<CSQueue> queueComparator = new Comparator<CSQueue>() {
+     @Override
+     public int compare(CSQueue q1, CSQueue q2) {
+@@ -557,9 +554,6 @@ private synchronized void doneApplicationAttempt(
+     }
+   }
+ 
+-  private static final Allocation EMPTY_ALLOCATION = 
+-      new Allocation(EMPTY_CONTAINER_LIST, Resources.createResource(0, 0));
+-
+   @Override
+   @Lock(Lock.NoLock.class)
+   public Allocation allocate(ApplicationAttemptId applicationAttemptId,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/common/fica/FiCaSchedulerApp.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/common/fica/FiCaSchedulerApp.java
+index dcbc5ad..52ce259 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/common/fica/FiCaSchedulerApp.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/common/fica/FiCaSchedulerApp.java
+@@ -238,9 +238,11 @@ public synchronized Allocation getAllocation(ResourceCalculator rc,
+     ResourceRequest rr = ResourceRequest.newInstance(
+         Priority.UNDEFINED, ResourceRequest.ANY,
+         minimumAllocation, numCont);
+-    return new Allocation(pullNewlyAllocatedContainers(), getHeadroom(),
+-                          null, currentContPreemption,
+-                          Collections.singletonList(rr));
++    ContainersAndNMTokensAllocation allocation =
++        pullNewlyAllocatedContainersAndNMTokens();
++    return new Allocation(allocation.getContainerList(), getHeadroom(), null,
++      currentContPreemption, Collections.singletonList(rr),
++      allocation.getNMTokenList());
+   }
+ 
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index 376a91f..a27a86d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -78,6 +78,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerAppReport;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplication;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt.ContainersAndNMTokensAllocation;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNodeReport;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAddedSchedulerEvent;
+@@ -143,12 +144,6 @@
+   // How often fair shares are re-calculated (ms)
+   protected long UPDATE_INTERVAL = 500;
+ 
+-  private final static List<Container> EMPTY_CONTAINER_LIST =
+-      new ArrayList<Container>();
+-
+-  private static final Allocation EMPTY_ALLOCATION =
+-      new Allocation(EMPTY_CONTAINER_LIST, Resources.createResource(0));
+-
+   // Aggregate metrics
+   FSQueueMetrics rootMetrics;
+ 
+@@ -922,9 +917,11 @@ public Allocation allocate(ApplicationAttemptId appAttemptId,
+       }
+ 
+       application.updateBlacklist(blacklistAdditions, blacklistRemovals);
+-      
+-      return new Allocation(application.pullNewlyAllocatedContainers(),
+-          application.getHeadroom(), preemptionContainerIds);
++      ContainersAndNMTokensAllocation allocation =
++          application.pullNewlyAllocatedContainersAndNMTokens();
++      return new Allocation(allocation.getContainerList(),
++        application.getHeadroom(), preemptionContainerIds, null, null,
++        allocation.getNMTokenList());
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+index a2e0134..61628f9 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+@@ -50,7 +50,6 @@
+ import org.apache.hadoop.yarn.api.records.QueueUserACLInfo;
+ import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
+-import org.apache.hadoop.yarn.api.records.Token;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ import org.apache.hadoop.yarn.factories.RecordFactory;
+@@ -80,6 +79,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerAppReport;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerAppUtils;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplication;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplicationAttempt.ContainersAndNMTokensAllocation;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNodeReport;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
+@@ -114,9 +114,6 @@
+ 
+   Configuration conf;
+ 
+-  private final static Container[] EMPTY_CONTAINER_ARRAY = new Container[] {};
+-  private final static List<Container> EMPTY_CONTAINER_LIST = Arrays.asList(EMPTY_CONTAINER_ARRAY);
+-
+   protected Map<NodeId, FiCaSchedulerNode> nodes = new ConcurrentHashMap<NodeId, FiCaSchedulerNode>();
+ 
+   private boolean initialized;
+@@ -264,8 +261,7 @@ public Resource getMaximumResourceCapability() {
+     }
+   }
+ 
+-  private static final Allocation EMPTY_ALLOCATION = 
+-      new Allocation(EMPTY_CONTAINER_LIST, Resources.createResource(0));
++
+   @Override
+   public Allocation allocate(
+       ApplicationAttemptId applicationAttemptId, List<ResourceRequest> ask,
+@@ -328,10 +324,11 @@ public Allocation allocate(
+       }
+ 
+       application.updateBlacklist(blacklistAdditions, blacklistRemovals);
+-
+-      return new Allocation(
+-          application.pullNewlyAllocatedContainers(), 
+-          application.getHeadroom());
++      ContainersAndNMTokensAllocation allocation =
++          application.pullNewlyAllocatedContainersAndNMTokens();
++      return new Allocation(allocation.getContainerList(),
++        application.getHeadroom(), null, null, null,
++        allocation.getNMTokenList());
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/NMTokenSecretManagerInRM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/NMTokenSecretManagerInRM.java
+index ab31eaf..9ec7b69 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/NMTokenSecretManagerInRM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/security/NMTokenSecretManagerInRM.java
+@@ -18,10 +18,8 @@
+ 
+ package org.apache.hadoop.yarn.server.resourcemanager.security;
+ 
+-import java.util.ArrayList;
+ import java.util.HashSet;
+ import java.util.Iterator;
+-import java.util.List;
+ import java.util.Timer;
+ import java.util.TimerTask;
+ import java.util.concurrent.ConcurrentHashMap;
+@@ -177,35 +175,39 @@ public void run() {
+       activateNextMasterKey();
+     }
+   }
+-  
+-  public List<NMToken> createAndGetNMTokens(String applicationSubmitter,
+-      ApplicationAttemptId appAttemptId, List<Container> containers) {
++
++  public NMToken createAndGetNMToken(String applicationSubmitter,
++      ApplicationAttemptId appAttemptId, Container container) {
+     try {
+       this.readLock.lock();
+-      List<NMToken> nmTokens = new ArrayList<NMToken>();
+       HashSet<NodeId> nodeSet = this.appAttemptToNodeKeyMap.get(appAttemptId);
++      NMToken nmToken = null;
+       if (nodeSet != null) {
+-        for (Container container : containers) {
+-          if (!nodeSet.contains(container.getNodeId())) {
++        if (!nodeSet.contains(container.getNodeId())) {
++          if (LOG.isDebugEnabled()) {
+             LOG.debug("Sending NMToken for nodeId : "
+                 + container.getNodeId().toString()
+                 + " for application attempt : " + appAttemptId.toString());
+-            Token token = createNMToken(appAttemptId, container.getNodeId(),
+-                applicationSubmitter);
+-            NMToken nmToken =
+-                NMToken.newInstance(container.getNodeId(), token);
+-            nmTokens.add(nmToken);
+-            // This will update the nmToken set.
++          }
++          Token token =
++              createNMToken(container.getId().getApplicationAttemptId(),
++                container.getNodeId(), applicationSubmitter);
++          nmToken = NMToken.newInstance(container.getNodeId(), token);
++          // The node set here is used for differentiating whether the NMToken
++          // has been issued for this node from the client's perspective. If
++          // this is an AM container, the NMToken is issued only for RM and so
++          // we should not update the node set.
++          if (container.getId().getId() != 1) {
+             nodeSet.add(container.getNodeId());
+           }
+         }
+       }
+-      return nmTokens;
++      return nmToken;
+     } finally {
+       this.readLock.unlock();
+     }
+   }
+-  
++
+   public void registerApplicationAttempt(ApplicationAttemptId appAttemptId) {
+     try {
+       this.writeLock.lock();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
+index 4286950..b342668 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
+@@ -586,8 +586,7 @@ private Container allocateApplicationAttempt() {
+     
+     applicationAttempt.handle(
+         new RMAppAttemptContainerAllocatedEvent(
+-            applicationAttempt.getAppAttemptId(), 
+-            container));
++            applicationAttempt.getAppAttemptId()));
+     
+     assertEquals(RMAppAttemptState.ALLOCATED_SAVING, 
+         applicationAttempt.getAppAttemptState());
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestContainerAllocation.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestContainerAllocation.java
+index 0e3bdeb..86e1b1e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestContainerAllocation.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestContainerAllocation.java
+@@ -25,20 +25,29 @@
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.security.SecurityUtilTestHelper;
+ import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
+ import org.apache.hadoop.yarn.api.records.Container;
+ import org.apache.hadoop.yarn.api.records.ContainerId;
++import org.apache.hadoop.yarn.api.records.NodeId;
++import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.api.records.ResourceRequest;
++import org.apache.hadoop.yarn.api.records.Token;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
++import org.apache.hadoop.yarn.server.resourcemanager.RMContextImpl;
++import org.apache.hadoop.yarn.server.resourcemanager.RMSecretManagerService;
+ import org.apache.hadoop.yarn.server.resourcemanager.TestFifoScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
++import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
++import org.apache.hadoop.yarn.server.resourcemanager.security.RMContainerTokenSecretManager;
+ import org.junit.Test;
+ 
+ 
+@@ -149,4 +158,92 @@ public void testContainerTokenGeneratedOnPullRequest() throws Exception {
+     Assert.assertNotNull(containers.get(0).getContainerToken());
+     rm1.stop();
+   }
++
++  @Test
++  public void testNormalContainerAllocationWhenDNSUnavailable() throws Exception{
++    YarnConfiguration conf = new YarnConfiguration();
++    MockRM rm1 = new MockRM(conf);
++    rm1.start();
++    MockNM nm1 = rm1.registerNode("unknownhost:1234", 8000);
++    RMApp app1 = rm1.submitApp(200);
++    MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
++
++    // request a container.
++    am1.allocate("127.0.0.1", 1024, 1, new ArrayList<ContainerId>());
++    ContainerId containerId2 =
++        ContainerId.newInstance(am1.getApplicationAttemptId(), 2);
++    rm1.waitForState(nm1, containerId2, RMContainerState.ALLOCATED);
++
++    // acquire the container.
++    SecurityUtilTestHelper.setTokenServiceUseIp(true);
++    List<Container> containers =
++        am1.allocate(new ArrayList<ResourceRequest>(),
++          new ArrayList<ContainerId>()).getAllocatedContainers();
++    // not able to fetch the container;
++    Assert.assertEquals(0, containers.size());
++
++    SecurityUtilTestHelper.setTokenServiceUseIp(false);
++    containers =
++        am1.allocate(new ArrayList<ResourceRequest>(),
++          new ArrayList<ContainerId>()).getAllocatedContainers();
++    // should be able to fetch the container;
++    Assert.assertEquals(1, containers.size());
++  }
++
++  private volatile int numRetries = 0;
++  private class TestRMSecretManagerService extends RMSecretManagerService {
++
++    public TestRMSecretManagerService(Configuration conf,
++        RMContextImpl rmContext) {
++      super(conf, rmContext);
++    }
++    @Override
++    protected RMContainerTokenSecretManager createContainerTokenSecretManager(
++        Configuration conf) {
++      return new RMContainerTokenSecretManager(conf) {
++
++        @Override
++        public Token createContainerToken(ContainerId containerId,
++            NodeId nodeId, String appSubmitter, Resource capability) {
++          numRetries++;
++          return super.createContainerToken(containerId, nodeId, appSubmitter,
++            capability);
++        }
++      };
++    }
++  }
++
++  // This is to test fetching AM container will be retried, if AM container is
++  // not fetchable since DNS is unavailable causing container token/NMtoken
++  // creation failure.
++  @Test(timeout = 20000)
++  public void testAMContainerAllocationWhenDNSUnavailable() throws Exception {
++    final YarnConfiguration conf = new YarnConfiguration();
++    MockRM rm1 = new MockRM(conf) {
++      @Override
++      protected RMSecretManagerService createRMSecretManagerService() {
++        return new TestRMSecretManagerService(conf, rmContext);
++      }
++    };
++    rm1.start();
++
++    MockNM nm1 = rm1.registerNode("unknownhost:1234", 8000);
++    SecurityUtilTestHelper.setTokenServiceUseIp(true);
++    RMApp app1 = rm1.submitApp(200);
++    RMAppAttempt attempt = app1.getCurrentAppAttempt();
++    nm1.nodeHeartbeat(true);
++
++    // fetching am container will fail, keep retrying 5 times.
++    while (numRetries <= 5) {
++      nm1.nodeHeartbeat(true);
++      Thread.sleep(1000);
++      Assert.assertEquals(RMAppAttemptState.SCHEDULED,
++        attempt.getAppAttemptState());
++      System.out.println("Waiting for am container to be allocated.");
++    }
++
++    SecurityUtilTestHelper.setTokenServiceUseIp(false);
++    rm1.waitForState(attempt.getAppAttemptId(), RMAppAttemptState.ALLOCATED);
++    MockRM.launchAndRegisterAM(app1, rm1, nm1);
++  }
+ }
+\ No newline at end of file
+-- 
+1.7.0.4
+

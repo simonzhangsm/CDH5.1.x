@@ -1,0 +1,177 @@
+From 5871d9fc151d6d1c0a21fababcb64a0955064008 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Mon, 3 Feb 2014 20:16:56 +0000
+Subject: [PATCH 422/795] YARN-1668. Modified RM HA handling of admin-acls to be available across RM failover by making using of a remote configuration-provider. Contributed by Xuan Gong.
+ svn merge --ignore-ancestry -c 1564043 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1564044 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9495a752f148c50474ca2527524e8931191b929e)
+---
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |    4 +-
+ .../yarn/server/resourcemanager/AdminService.java  |   22 ++++++--
+ .../server/resourcemanager/TestRMAdminService.java |   56 +++++++++++++++++++-
+ 3 files changed, 76 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index e1602bf..686afa8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -40,8 +40,10 @@
+   @Private
+   public static final String CS_CONFIGURATION_FILE= "capacity-scheduler.xml";
+ 
++  @Private
++  public static final String YARN_SITE_XML_FILE = "yarn-site.xml";
++
+   private static final String YARN_DEFAULT_XML_FILE = "yarn-default.xml";
+-  private static final String YARN_SITE_XML_FILE = "yarn-site.xml";
+ 
+   static {
+     Configuration.addDefaultResource(YARN_DEFAULT_XML_FILE);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+index c7fe0e2..9a33b70 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+@@ -74,6 +74,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
+ import org.apache.hadoop.yarn.server.resourcemanager.security.authorize.RMPolicyProvider;
+ 
++import com.google.common.annotations.VisibleForTesting;
+ import com.google.protobuf.BlockingService;
+ 
+ public class AdminService extends CompositeService implements
+@@ -407,14 +408,22 @@ public RefreshUserToGroupsMappingsResponse refreshUserToGroupsMappings(
+ 
+   @Override
+   public RefreshAdminAclsResponse refreshAdminAcls(
+-      RefreshAdminAclsRequest request) throws YarnException {
+-    UserGroupInformation user = checkAcls("refreshAdminAcls");
++      RefreshAdminAclsRequest request) throws YarnException, IOException {
++    String argName = "refreshAdminAcls";
++    UserGroupInformation user = checkAcls(argName);
+     
+-    Configuration conf = new Configuration();
++    if (!isRMActive()) {
++      RMAuditLogger.logFailure(user.getShortUserName(), argName,
++          adminAcl.toString(), "AdminService",
++          "ResourceManager is not active. Can not refresh user-groups.");
++      throwStandbyException();
++    }
++    Configuration conf =
++        getConfiguration(YarnConfiguration.YARN_SITE_XML_FILE);
+     adminAcl = new AccessControlList(conf.get(
+         YarnConfiguration.YARN_ADMIN_ACL,
+         YarnConfiguration.DEFAULT_YARN_ADMIN_ACL));
+-    RMAuditLogger.logSuccess(user.getShortUserName(), "refreshAdminAcls", 
++    RMAuditLogger.logSuccess(user.getShortUserName(), argName,
+         "AdminService");
+ 
+     return recordFactory.newRecordInstance(RefreshAdminAclsResponse.class);
+@@ -504,4 +513,9 @@ private synchronized Configuration getConfiguration(String confFileName)
+       throws YarnException, IOException {
+     return this.configurationProvider.getConfiguration(confFileName);
+   }
++
++  @VisibleForTesting
++  public AccessControlList getAccessControlList() {
++    return this.adminAcl;
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index d800f50..4b70185 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -31,6 +31,7 @@
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.YarnException;
++import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshAdminAclsRequest;
+ import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshQueuesRequest;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
+@@ -50,6 +51,7 @@
+ 
+   @Before
+   public void setup() throws IOException {
++    Configuration.addDefaultResource(YarnConfiguration.CS_CONFIGURATION_FILE);
+     fs = FileSystem.get(configuration);
+     workingPath =
+         new Path(new File("target", this.getClass().getSimpleName()
+@@ -72,6 +74,7 @@ public void tearDown() throws IOException {
+     fs.delete(workingPath, true);
+     fs.delete(tmpDir, true);
+   }
++
+   @Test
+   public void testAdminRefreshQueuesWithLocalConfigurationProvider()
+       throws IOException, YarnException {
+@@ -95,7 +98,6 @@ public void testAdminRefreshQueuesWithLocalConfigurationProvider()
+   @Test
+   public void testAdminRefreshQueuesWithFileSystemBasedConfigurationProvider()
+       throws IOException, YarnException {
+-    Configuration.addDefaultResource(YarnConfiguration.CS_CONFIGURATION_FILE);
+     configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
+         "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
+     rm = new MockRM(configuration);
+@@ -134,6 +136,58 @@ public void testAdminRefreshQueuesWithFileSystemBasedConfigurationProvider()
+     Assert.assertTrue(maxAppsAfter != maxAppsBefore);
+   }
+ 
++  @Test
++  public void testAdminAclsWithLocalConfigurationProvider() {
++    rm = new MockRM(configuration);
++    rm.init(configuration);
++    rm.start();
++
++    try {
++      rm.adminService.refreshAdminAcls(RefreshAdminAclsRequest.newInstance());
++    } catch (Exception ex) {
++      fail("Using localConfigurationProvider. Should not get any exception.");
++    }
++  }
++
++  @Test
++  public void testAdminAclsWithFileSystemBasedConfigurationProvider()
++      throws IOException, YarnException {
++    configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
++        "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
++    rm = new MockRM(configuration);
++    rm.init(configuration);
++    rm.start();
++
++    // clean the remoteDirectory
++    cleanRemoteDirectory();
++
++    try {
++      rm.adminService.refreshAdminAcls(RefreshAdminAclsRequest.newInstance());
++      fail("FileSystemBasedConfigurationProvider is used." +
++          " Should get an exception here");
++    } catch (Exception ex) {
++      Assert.assertTrue(ex.getMessage().contains(
++          "Can not find Configuration: yarn-site.xml"));
++    }
++
++    String aclStringBefore =
++        rm.adminService.getAccessControlList().getAclString().trim();
++
++    YarnConfiguration yarnConf = new YarnConfiguration();
++    yarnConf.set(YarnConfiguration.YARN_ADMIN_ACL, "world:anyone:rwcda");
++    String yarnConfFile = writeConfigurationXML(yarnConf, "yarn-site.xml");
++
++    // upload the file into Remote File System
++    uploadToRemoteFileSystem(new Path(yarnConfFile));
++    rm.adminService.refreshAdminAcls(RefreshAdminAclsRequest.newInstance());
++
++    String aclStringAfter =
++        rm.adminService.getAccessControlList().getAclString().trim();
++
++    Assert.assertTrue(!aclStringAfter.equals(aclStringBefore));
++    Assert.assertEquals(aclStringAfter, "world:anyone:rwcda");
++  }
++
+   private String writeConfigurationXML(Configuration conf, String confXMLName)
+       throws IOException {
+     DataOutputStream output = null;
+-- 
+1.7.0.4
+

@@ -1,0 +1,260 @@
+From d7cc6bd3e0e4b7916cdc8133827043ced38378e1 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Thu, 13 Feb 2014 21:25:34 +0000
+Subject: [PATCH 494/795] YARN-1676. Modified RM HA handling of user-to-group mappings to be available across RM failover by making using of a remote configuration-provider. Contributed by Xuan Gong.
+ svn merge --ignore-ancestry -c 1568041 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568042 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d9c8d26198bea9a3538fc9cd301468026c08e3fb)
+---
+ .../java/org/apache/hadoop/security/Groups.java    |   15 +++
+ .../yarn/server/resourcemanager/AdminService.java  |   17 ++--
+ .../server/resourcemanager/ResourceManager.java    |    4 +
+ .../server/resourcemanager/TestRMAdminService.java |  120 ++++++++++++++++++++
+ 4 files changed, 148 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Groups.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Groups.java
+index 097bc30..ea18b94 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Groups.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/Groups.java
+@@ -27,6 +27,7 @@
+ 
+ import org.apache.hadoop.HadoopIllegalArgumentException;
+ import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+@@ -240,4 +241,18 @@ public static synchronized Groups getUserToGroupsMappingService(
+     }
+     return GROUPS;
+   }
++
++  /**
++   * Create new groups used to map user-to-groups with loaded configuration.
++   * @param conf
++   * @return the groups being used to map user-to-groups.
++   */
++  @Private
++  public static synchronized Groups
++      getUserToGroupsMappingServiceWithLoadedConfiguration(
++          Configuration conf) {
++
++    GROUPS = new Groups(conf);
++    return GROUPS;
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+index da479b4..6ebf90a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+@@ -381,21 +381,22 @@ public RefreshSuperUserGroupsConfigurationResponse refreshSuperUserGroupsConfigu
+   @Override
+   public RefreshUserToGroupsMappingsResponse refreshUserToGroupsMappings(
+       RefreshUserToGroupsMappingsRequest request)
+-      throws YarnException, StandbyException {
+-    UserGroupInformation user = checkAcls("refreshUserToGroupsMappings");
++      throws YarnException, IOException {
++    String argName = "refreshUserToGroupsMappings";
++    UserGroupInformation user = checkAcls(argName);
+ 
+-    // TODO (YARN-1459): Revisit handling user-groups on Standby RM
+     if (!isRMActive()) {
+-      RMAuditLogger.logFailure(user.getShortUserName(),
+-          "refreshUserToGroupsMapping",
++      RMAuditLogger.logFailure(user.getShortUserName(), argName,
+           adminAcl.toString(), "AdminService",
+           "ResourceManager is not active. Can not refresh user-groups.");
+       throwStandbyException();
+     }
+ 
+-    Groups.getUserToGroupsMappingService().refresh();
+-    RMAuditLogger.logSuccess(user.getShortUserName(), 
+-        "refreshUserToGroupsMappings", "AdminService");
++    Groups.getUserToGroupsMappingService(
++        getConfiguration(getConfig(),
++            YarnConfiguration.CORE_SITE_CONFIGURATION_FILE)).refresh();
++
++    RMAuditLogger.logSuccess(user.getShortUserName(), argName, "AdminService");
+ 
+     return recordFactory.newRecordInstance(
+         RefreshUserToGroupsMappingsResponse.class);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index e907916..d93f78d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -33,6 +33,7 @@
+ import org.apache.hadoop.http.HttpConfig.Policy;
+ import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+ import org.apache.hadoop.metrics2.source.JvmMetrics;
++import org.apache.hadoop.security.Groups;
+ import org.apache.hadoop.security.SecurityUtil;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.service.AbstractService;
+@@ -197,6 +198,9 @@ protected void serviceInit(Configuration conf) throws Exception {
+       this.conf =
+           this.configurationProvider.getConfiguration(this.conf,
+               YarnConfiguration.CORE_SITE_CONFIGURATION_FILE);
++      // Do refreshUserToGroupsMappings with loaded core-site.xml
++      Groups.getUserToGroupsMappingServiceWithLoadedConfiguration(this.conf)
++          .refresh();
+     }
+ 
+     // register the handlers for all AlwaysOn services using setupDispatcher().
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index 2a170c6..82bd80b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -24,10 +24,17 @@
+ import java.io.File;
+ import java.io.FileOutputStream;
+ import java.io.IOException;
++import java.util.ArrayList;
++import java.util.List;
++
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.CommonConfigurationKeys;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.security.GroupMappingServiceProvider;
++import org.apache.hadoop.security.Groups;
++import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.security.authorize.AccessControlList;
+ import org.apache.hadoop.security.authorize.ProxyUsers;
+ import org.apache.hadoop.security.authorize.ServiceAuthorizationManager;
+@@ -37,6 +44,7 @@
+ import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshQueuesRequest;
+ import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshServiceAclsRequest;
+ import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshSuperUserGroupsConfigurationRequest;
++import org.apache.hadoop.yarn.server.api.protocolrecords.RefreshUserToGroupsMappingsRequest;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
+ import org.junit.After;
+@@ -374,6 +382,84 @@ private void verifyServiceACLsRefresh(ServiceAuthorizationManager manager,
+         .get("hadoop.proxyuser.test.hosts").contains("test_hosts"));
+   }
+ 
++  @Test
++  public void testRefreshUserToGroupsMappingsWithLocalConfigurationProvider() {
++    rm = new MockRM(configuration);
++    rm.init(configuration);
++    rm.start();
++    try {
++      rm.adminService
++          .refreshUserToGroupsMappings(RefreshUserToGroupsMappingsRequest
++              .newInstance());
++    } catch (Exception ex) {
++      fail("Using localConfigurationProvider. Should not get any exception.");
++    }
++  }
++
++  @Test
++  public void
++      testRefreshUserToGroupsMappingsWithFileSystemBasedConfigurationProvider()
++          throws IOException, YarnException {
++    configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
++        "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
++    try {
++      rm = new MockRM(configuration);
++      rm.init(configuration);
++      rm.start();
++      fail("Should throw an exception");
++    } catch (Exception ex) {
++      // Expect exception here
++    }
++
++    String user = UserGroupInformation.getCurrentUser().getUserName();
++    List<String> groupWithInit =
++        new ArrayList<String>(Groups.getUserToGroupsMappingService(
++            configuration).getGroups(user));
++
++    // upload default configurations
++    uploadDefaultConfiguration();
++    Configuration conf = new Configuration();
++    conf.setClass(CommonConfigurationKeys.HADOOP_SECURITY_GROUP_MAPPING,
++        MockUnixGroupsMapping.class,
++        GroupMappingServiceProvider.class);
++    uploadConfiguration(conf, "core-site.xml");
++
++    try {
++      rm = new MockRM(configuration);
++      rm.init(configuration);
++      rm.start();
++    } catch (Exception ex) {
++      fail("Should not get any exceptions");
++    }
++
++    // Make sure RM will use the updated GroupMappingServiceProvider
++    List<String> groupBefore =
++        new ArrayList<String>(Groups.getUserToGroupsMappingService(
++            configuration).getGroups(user));
++    Assert.assertTrue(groupBefore.contains("test_group_A")
++        && groupBefore.contains("test_group_B")
++        && groupBefore.contains("test_group_C") && groupBefore.size() == 3);
++    Assert.assertTrue(groupWithInit.size() != groupBefore.size());
++    Assert.assertFalse(groupWithInit.contains("test_group_A")
++        || groupWithInit.contains("test_group_B")
++        || groupWithInit.contains("test_group_C"));
++
++    // update the groups
++    MockUnixGroupsMapping.updateGroups();
++
++    rm.adminService
++        .refreshUserToGroupsMappings(RefreshUserToGroupsMappingsRequest
++            .newInstance());
++    List<String> groupAfter =
++        Groups.getUserToGroupsMappingService(configuration).getGroups(user);
++
++    // should get the updated groups
++    Assert.assertTrue(groupAfter.contains("test_group_D")
++        && groupAfter.contains("test_group_E")
++        && groupAfter.contains("test_group_F") && groupAfter.size() == 3);
++
++  }
++
+   private String writeConfigurationXML(Configuration conf, String confXMLName)
+       throws IOException {
+     DataOutputStream output = null;
+@@ -426,4 +512,38 @@ private void uploadDefaultConfiguration() throws IOException {
+         .addResource(YarnConfiguration.HADOOP_POLICY_CONFIGURATION_FILE);
+     uploadConfiguration(hadoopPolicyConf, "hadoop-policy.xml");
+   }
++
++  private static class MockUnixGroupsMapping implements
++      GroupMappingServiceProvider {
++
++    @SuppressWarnings("serial")
++    private static List<String> group = new ArrayList<String>() {{
++      add("test_group_A");
++      add("test_group_B");
++      add("test_group_C");
++    }};
++
++    @Override
++    public List<String> getGroups(String user) throws IOException {
++      return group;
++    }
++
++    @Override
++    public void cacheGroupsRefresh() throws IOException {
++      // Do nothing
++    }
++
++    @Override
++    public void cacheGroupsAdd(List<String> groups) throws IOException {
++      // Do nothing
++    }
++
++    public static void updateGroups() {
++      group.clear();
++      group.add("test_group_D");
++      group.add("test_group_E");
++      group.add("test_group_F");
++    }
++  }
++
+ }
+-- 
+1.7.0.4
+

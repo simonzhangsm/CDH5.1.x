@@ -1,0 +1,242 @@
+From b97e35dcd717a380445348bd6fd3b3bcbf0c94f4 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Fri, 9 May 2014 01:46:42 +0000
+Subject: [PATCH 708/795] HDFS-6329. WebHdfs does not work if HA is enabled on NN but logical URI is not configured. Contributed by Kihwal Lee.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1593470 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/NameNode.java      |   68 ++++++++++++++++++--
+ .../java/org/apache/hadoop/hdfs/DFSTestUtil.java   |    4 +-
+ .../org/apache/hadoop/hdfs/MiniDFSCluster.java     |   30 +++++++--
+ .../apache/hadoop/hdfs/web/TestWebHDFSForHA.java   |    6 ++-
+ 4 files changed, 93 insertions(+), 15 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+index cd83097..b1e1ec7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+@@ -267,10 +267,11 @@ public long getProtocolVersion(String protocol,
+   private JvmPauseMonitor pauseMonitor;
+   private ObjectName nameNodeStatusBeanName;
+   /**
+-   * The service name of the delegation token issued by the namenode. It is
+-   * the name service id in HA mode, or the rpc address in non-HA mode.
++   * The namenode address that clients will use to access this namenode
++   * or the name service. For HA configurations using logical URI, it
++   * will be the logical address.
+    */
+-  private String tokenServiceName;
++  private String clientNamenodeAddress;
+   
+   /** Format a new filesystem.  Destroys any filesystem that may already
+    * exist at this location.  **/
+@@ -313,7 +314,54 @@ public static StartupProgress getStartupProgress() {
+    *
+    * @return The name service id in HA-mode, or the rpc address in non-HA mode
+    */
+-  public String getTokenServiceName() { return tokenServiceName; }
++  public String getTokenServiceName() {
++    return getClientNamenodeAddress();
++  }
++
++  /**
++   * Set the namenode address that will be used by clients to access this
++   * namenode or name service. This needs to be called before the config
++   * is overriden.
++   */
++  public void setClientNamenodeAddress(Configuration conf) {
++    String nnAddr = conf.get(FS_DEFAULT_NAME_KEY);
++    if (nnAddr == null) {
++      // default fs is not set.
++      clientNamenodeAddress = null;
++      return;
++    }
++
++    LOG.info(FS_DEFAULT_NAME_KEY + " is " + nnAddr);
++    URI nnUri = URI.create(nnAddr);
++
++    String nnHost = nnUri.getHost();
++    if (nnHost == null) {
++      clientNamenodeAddress = null;
++      return;
++    }
++
++    if (DFSUtil.getNameServiceIds(conf).contains(nnHost)) {
++      // host name is logical
++      clientNamenodeAddress = nnHost;
++    } else if (nnUri.getPort() > 0) {
++      // physical address with a valid port
++      clientNamenodeAddress = nnUri.getAuthority();
++    } else {
++      // the port is missing or 0. Figure out real bind address later.
++      clientNamenodeAddress = null;
++      return;
++    }
++    LOG.info("Clients are to use " + clientNamenodeAddress + " to access"
++        + " this namenode/service.");
++  }
++
++  /**
++   * Get the namenode address to be used by clients.
++   * @return nn address
++   */
++  public String getClientNamenodeAddress() {
++    return clientNamenodeAddress;
++  }
+ 
+   public static InetSocketAddress getAddress(String address) {
+     return NetUtils.createSocketAddr(address, DEFAULT_PORT);
+@@ -506,9 +554,14 @@ protected void initialize(Configuration conf) throws IOException {
+     loadNamesystem(conf);
+ 
+     rpcServer = createRpcServer(conf);
+-    final String nsId = getNameServiceId(conf);
+-    tokenServiceName = HAUtil.isHAEnabled(conf, nsId) ? nsId : NetUtils
+-            .getHostPortString(rpcServer.getRpcAddress());
++    if (clientNamenodeAddress == null) {
++      // This is expected for MiniDFSCluster. Set it now using 
++      // the RPC server's bind address.
++      clientNamenodeAddress = 
++          NetUtils.getHostPortString(rpcServer.getRpcAddress());
++      LOG.info("Clients are to use " + clientNamenodeAddress + " to access"
++          + " this namenode/service.");
++    }
+     if (NamenodeRole.NAMENODE == role) {
+       httpServer.setNameNodeAddress(getNameNodeAddress());
+       httpServer.setFSImage(getFSImage());
+@@ -654,6 +707,7 @@ protected NameNode(Configuration conf, NamenodeRole role)
+       throws IOException { 
+     this.conf = conf;
+     this.role = role;
++    setClientNamenodeAddress(conf);
+     String nsId = getNameServiceId(conf);
+     String namenodeId = HAUtil.getNameNodeId(conf, nsId);
+     this.haEnabled = HAUtil.isHAEnabled(conf, nsId);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
+index 8151001..e1c375c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
+@@ -139,8 +139,8 @@ public static void formatNameNode(Configuration conf) throws IOException {
+     String clusterId = StartupOption.FORMAT.getClusterId();
+     if(clusterId == null || clusterId.isEmpty())
+       StartupOption.FORMAT.setClusterId("testClusterID");
+-
+-    NameNode.format(conf);
++    // Use a copy of conf as it can be altered by namenode during format.
++    NameNode.format(new Configuration(conf));
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
+index 0d251b1..ecd4c24 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
+@@ -762,8 +762,11 @@ private void createNameNodesAndSetConf(MiniDFSNNTopology nnTopology,
+ 
+     if (!federation && nnTopology.countNameNodes() == 1) {
+       NNConf onlyNN = nnTopology.getOnlyNameNode();
+-      // we only had one NN, set DEFAULT_NAME for it
+-      conf.set(FS_DEFAULT_NAME_KEY, "127.0.0.1:" + onlyNN.getIpcPort());
++      // we only had one NN, set DEFAULT_NAME for it. If not explicitly
++      // specified initially, the port will be 0 to make NN bind to any
++      // available port. It will be set to the right address after
++      // NN is started.
++      conf.set(FS_DEFAULT_NAME_KEY, "hdfs://127.0.0.1:" + onlyNN.getIpcPort());
+     }
+     
+     List<String> allNsIds = Lists.newArrayList();
+@@ -779,6 +782,7 @@ private void createNameNodesAndSetConf(MiniDFSNNTopology nnTopology,
+     int nnCounter = 0;
+     for (MiniDFSNNTopology.NSConf nameservice : nnTopology.getNameservices()) {
+       String nsId = nameservice.getId();
++      String lastDefaultFileSystem = null;
+       
+       Preconditions.checkArgument(
+           !federation || nsId != null,
+@@ -855,10 +859,19 @@ private void createNameNodesAndSetConf(MiniDFSNNTopology nnTopology,
+       for (NNConf nn : nameservice.getNNs()) {
+         initNameNodeConf(conf, nsId, nn.getNnId(), manageNameDfsDirs,
+             enableManagedDfsDirsRedundancy, nnCounter);
+-        createNameNode(nnCounter++, conf, numDataNodes, false, operation,
++        createNameNode(nnCounter, conf, numDataNodes, false, operation,
+             clusterId, nsId, nn.getNnId());
++        // Record the last namenode uri
++        if (nameNodes[nnCounter] != null && nameNodes[nnCounter].conf != null) {
++          lastDefaultFileSystem =
++              nameNodes[nnCounter].conf.get(FS_DEFAULT_NAME_KEY);
++        }
++        nnCounter++;
++      }
++      if (!federation && lastDefaultFileSystem != null) {
++        // Set the default file system to the actual bind address of NN.
++        conf.set(FS_DEFAULT_NAME_KEY, lastDefaultFileSystem);
+       }
+-      
+     }
+ 
+   }
+@@ -972,7 +985,8 @@ private void createNameNode(int nnIndex, Configuration conf,
+       operation.setClusterId(clusterId);
+     }
+     
+-    // Start the NameNode
++    // Start the NameNode after saving the default file system.
++    String originalDefaultFs = conf.get(FS_DEFAULT_NAME_KEY);
+     String[] args = createArgs(operation);
+     NameNode nn =  NameNode.createNameNode(args, conf);
+     if (operation == StartupOption.RECOVER) {
+@@ -996,6 +1010,12 @@ private void createNameNode(int nnIndex, Configuration conf,
+         DFS_NAMENODE_HTTP_ADDRESS_KEY);
+     nameNodes[nnIndex] = new NameNodeInfo(nn, nameserviceId, nnId,
+         operation, new Configuration(conf));
++    // Restore the default fs name
++    if (originalDefaultFs == null) {
++      conf.set(FS_DEFAULT_NAME_KEY, "");
++    } else {
++      conf.set(FS_DEFAULT_NAME_KEY, originalDefaultFs);
++    }
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
+index a37171a..8ff3398 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFSForHA.java
+@@ -28,6 +28,7 @@
+ import org.apache.hadoop.hdfs.DFSTestUtil;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.MiniDFSNNTopology;
++import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.security.token.Token;
+@@ -37,6 +38,7 @@
+ import java.io.IOException;
+ import java.net.URI;
+ 
++import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
+ import static org.mockito.Mockito.spy;
+ import static org.mockito.Mockito.verify;
+ 
+@@ -119,6 +121,8 @@ public void testSecureHAToken() throws IOException, InterruptedException {
+   @Test
+   public void testFailoverAfterOpen() throws IOException {
+     Configuration conf = DFSTestUtil.newHAConfiguration(LOGICAL_NAME);
++    conf.set(FS_DEFAULT_NAME_KEY, HdfsConstants.HDFS_URI_SCHEME +
++        "://" + LOGICAL_NAME);
+     MiniDFSCluster cluster = null;
+     FileSystem fs = null;
+     final Path p = new Path("/test");
+@@ -152,4 +156,4 @@ public void testFailoverAfterOpen() throws IOException {
+       }
+     }
+   }
+-}
+\ No newline at end of file
++}
+-- 
+1.7.0.4
+

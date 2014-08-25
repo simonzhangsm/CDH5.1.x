@@ -1,0 +1,159 @@
+From ef852537d12b27fce07efa62a9eeb936bff465e7 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Fri, 7 Feb 2014 02:40:02 +0000
+Subject: [PATCH 426/795] YARN-1665. Simplify the configuration of RM HA by having better default values. Contributed by Xuan Gong.
+ svn merge --ignore-ancestry -c 1565517 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1565518 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 23a9469e4fc81a573235dd2a9d58c9d70f2ef697)
+---
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |    4 ++--
+ .../apache/hadoop/yarn/client/TestRMFailover.java  |    4 ++--
+ .../src/main/resources/yarn-default.xml            |   15 +++++++++------
+ .../yarn/server/resourcemanager/TestRMHA.java      |    3 ++-
+ .../recovery/TestZKRMStateStore.java               |    2 ++
+ .../yarn/server/TestMiniYARNClusterForHA.java      |    2 +-
+ 6 files changed, 18 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index 9dbf0c0..045e507 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -362,11 +362,11 @@
+ 
+   public static final String AUTO_FAILOVER_ENABLED =
+       AUTO_FAILOVER_PREFIX + "enabled";
+-  public static final boolean DEFAULT_AUTO_FAILOVER_ENABLED = false;
++  public static final boolean DEFAULT_AUTO_FAILOVER_ENABLED = true;
+ 
+   public static final String AUTO_FAILOVER_EMBEDDED =
+       AUTO_FAILOVER_PREFIX + "embedded";
+-  public static final boolean DEFAULT_AUTO_FAILOVER_EMBEDDED = false;
++  public static final boolean DEFAULT_AUTO_FAILOVER_EMBEDDED = true;
+ 
+   public static final String AUTO_FAILOVER_ZK_BASE_PATH =
+       AUTO_FAILOVER_PREFIX + "zk-base-path";
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+index 8900b16..a57d507 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+@@ -172,8 +172,6 @@ public void testExplicitFailover()
+   @Test
+   public void testAutomaticFailover()
+       throws YarnException, InterruptedException, IOException {
+-    conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, true);
+-    conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_EMBEDDED, true);
+     conf.set(YarnConfiguration.RM_CLUSTER_ID, "yarn-test-cluster");
+     conf.set(YarnConfiguration.RM_ZK_ADDRESS, hostPort);
+     conf.setInt(YarnConfiguration.RM_ZK_TIMEOUT_MS, 2000);
+@@ -193,6 +191,7 @@ public void testAutomaticFailover()
+   @Test
+   public void testWebAppProxyInStandAloneMode() throws YarnException,
+       InterruptedException, IOException {
++    conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     WebAppProxyServer webAppProxyServer = new WebAppProxyServer();
+     try {
+       conf.set(YarnConfiguration.PROXY_ADDRESS, "0.0.0.0:9099");
+@@ -227,6 +226,7 @@ public void testWebAppProxyInStandAloneMode() throws YarnException,
+   @Test
+   public void testEmbeddedWebAppProxy() throws YarnException,
+       InterruptedException, IOException {
++    conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     cluster.init(conf);
+     cluster.start();
+     getAdminService(0).transitionToActive(req);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+index d8a233d..b524e1c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+@@ -405,17 +405,20 @@
+   </property>
+ 
+   <property>
+-    <description>Enable automatic failover.</description>
++    <description>Enable automatic failover.
++      By default, it is enabled only when HA is enabled</description>
+     <name>yarn.resourcemanager.ha.automatic-failover.enabled</name>
+-    <value>false</value>
++    <value>true</value>
+   </property>
+ 
+   <property>
+-    <description>Enable embedded automatic failover. The embedded elector
+-      relies on the RM state store to handle fencing, and is primarily intended
+-      to be used in conjunction with ZKRMStateStore.</description>
++    <description>Enable embedded automatic failover.
++      By default, it is enabled only when HA is enabled.
++      The embedded elector relies on the RM state store to handle fencing,
++      and is primarily intended to be used in conjunction with ZKRMStateStore.
++    </description>
+     <name>yarn.resourcemanager.ha.automatic-failover.embedded</name>
+-    <value>false</value>
++    <value>true</value>
+   </property>
+ 
+   <property>
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index 5b4f570..9bb6464 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -119,6 +119,7 @@ private void checkActiveRMFunctionality() throws IOException {
+    */
+   @Test (timeout = 30000)
+   public void testStartAndTransitions() throws IOException {
++    configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     Configuration conf = new YarnConfiguration(configuration);
+     rm = new MockRM(conf);
+     rm.init(conf);
+@@ -178,7 +179,6 @@ public void testTransitionsWhenAutomaticFailoverEnabled() throws IOException {
+         "automatic failover is enabled";
+ 
+     Configuration conf = new YarnConfiguration(configuration);
+-    conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, true);
+ 
+     rm = new MockRM(conf);
+     rm.init(conf);
+@@ -236,6 +236,7 @@ public void testRMDispatcherForHA() throws IOException {
+     String errorMessageForEventHandler =
+         "Expect to get the same number of handlers";
+     String errorMessageForService = "Expect to get the same number of services";
++    configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     Configuration conf = new YarnConfiguration(configuration);
+     rm = new MockRM(conf) {
+       @Override
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+index 417f34a..41fdca2 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+@@ -159,6 +159,7 @@ public void testFencing() throws Exception {
+         HAServiceProtocol.RequestSource.REQUEST_BY_USER);
+ 
+     Configuration conf1 = createHARMConf("rm1,rm2", "rm1", 1234);
++    conf1.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     ResourceManager rm1 = new ResourceManager();
+     rm1.init(conf1);
+     rm1.start();
+@@ -170,6 +171,7 @@ public void testFencing() throws Exception {
+         rm1.getRMContext().getRMAdminService().getServiceStatus().getState());
+ 
+     Configuration conf2 = createHARMConf("rm1,rm2", "rm2", 5678);
++    conf2.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     ResourceManager rm2 = new ResourceManager();
+     rm2.init(conf2);
+     rm2.start();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestMiniYARNClusterForHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestMiniYARNClusterForHA.java
+index 0526685..437acdf 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestMiniYARNClusterForHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestMiniYARNClusterForHA.java
+@@ -42,7 +42,7 @@
+   @Before
+   public void setup() throws IOException, InterruptedException {
+     Configuration conf = new YarnConfiguration();
+-
++    conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     cluster = new MiniYARNCluster(TestMiniYARNClusterForHA.class.getName(),
+         2, 1, 1, 1);
+     cluster.init(conf);
+-- 
+1.7.0.4
+

@@ -1,0 +1,26 @@
+From 71435954497bde95066c4ca94f8d785f39c7a5e6 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 3 Jun 2014 00:07:34 -0700
+Subject: [PATCH 726/795] HADOOP-10332. HttpServer's jetty audit log always logs 200 OK (jeagles)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1577221 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../java/org/apache/hadoop/http/HttpServer2.java   |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer2.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer2.java
+index 069411b..478f046 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer2.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpServer2.java
+@@ -363,7 +363,7 @@ private void initializeWebServer(String name, String hostName,
+       RequestLogHandler requestLogHandler = new RequestLogHandler();
+       requestLogHandler.setRequestLog(requestLog);
+       HandlerCollection handlers = new HandlerCollection();
+-      handlers.setHandlers(new Handler[] { requestLogHandler, contexts });
++      handlers.setHandlers(new Handler[] {contexts, requestLogHandler});
+       webServer.setHandler(handlers);
+     } else {
+       webServer.setHandler(contexts);
+-- 
+1.7.0.4
+

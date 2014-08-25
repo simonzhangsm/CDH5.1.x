@@ -1,0 +1,170 @@
+From 1666f1d37c8d10153088fc7e1797d6acc412fd9d Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Sat, 21 Jun 2014 07:33:04 +0000
+Subject: [PATCH 774/795] YARN-2187. FairScheduler: Disable max-AM-share check by default. (Robert Kanter via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1604322 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b42d7ff57c3441625ef48aac3c0253f9cedc7485)
+(cherry picked from commit be2d2482c0485e8800dc8f237fdd4ab5d6c2a5a9)
+---
+ .../scheduler/fair/AllocationConfiguration.java    |    2 +-
+ .../fair/AllocationFileLoaderService.java          |    2 +-
+ .../scheduler/fair/FSLeafQueue.java                |    3 +
+ .../scheduler/fair/TestFairScheduler.java          |   84 ++++++++++++++++++++
+ .../src/site/apt/FairScheduler.apt.vm              |    5 +-
+ 5 files changed, 92 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationConfiguration.java
+index 237cad2..d4ba88f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationConfiguration.java
+@@ -126,7 +126,7 @@ public AllocationConfiguration(Configuration conf) {
+     queueMaxAMShares = new HashMap<String, Float>();
+     userMaxAppsDefault = Integer.MAX_VALUE;
+     queueMaxAppsDefault = Integer.MAX_VALUE;
+-    queueMaxAMShareDefault = 1.0f;
++    queueMaxAMShareDefault = -1.0f;
+     queueAcls = new HashMap<String, Map<QueueACL, AccessControlList>>();
+     minSharePreemptionTimeouts = new HashMap<String, Long>();
+     defaultMinSharePreemptionTimeout = Long.MAX_VALUE;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java
+index fcb028d..d71a41f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java
+@@ -221,7 +221,7 @@ public synchronized void reloadAllocations() throws IOException,
+         new HashMap<String, Map<QueueACL, AccessControlList>>();
+     int userMaxAppsDefault = Integer.MAX_VALUE;
+     int queueMaxAppsDefault = Integer.MAX_VALUE;
+-    float queueMaxAMShareDefault = 1.0f;
++    float queueMaxAMShareDefault = -1.0f;
+     long fairSharePreemptionTimeout = Long.MAX_VALUE;
+     long defaultMinSharePreemptionTimeout = Long.MAX_VALUE;
+     SchedulingPolicy defaultSchedPolicy = SchedulingPolicy.DEFAULT_POLICY;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
+index 22d523a..0ca6c7c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FSLeafQueue.java
+@@ -277,6 +277,9 @@ public ActiveUsersManager getActiveUsersManager() {
+   public boolean canRunAppAM(Resource amResource) {
+     float maxAMShare =
+         scheduler.getAllocationConfiguration().getQueueMaxAMShare(getName());
++    if (Math.abs(maxAMShare - -1.0f) < 0.0001) {
++      return true;
++    }
+     Resource maxAMResource = Resources.multiply(getFairShare(), maxAMShare);
+     Resource ifRunAMResource = Resources.add(amResourceUsage, amResource);
+     return !policy
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+index 7887fe8..6b50cab 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+@@ -2386,6 +2386,90 @@ public void testQueueMaxAMShare() throws Exception {
+   }
+ 
+   @Test
++  public void testQueueMaxAMShareDefault() throws Exception {
++    conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
++
++    PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
++    out.println("<?xml version=\"1.0\"?>");
++    out.println("<allocations>");
++    out.println("<queue name=\"queue1\">");
++    out.println("</queue>");
++    out.println("<queue name=\"queue2\">");
++    out.println("<maxAMShare>1.0</maxAMShare>");
++    out.println("</queue>");
++    out.println("<queue name=\"queue3\">");
++    out.println("</queue>");
++    out.println("<queue name=\"queue4\">");
++    out.println("</queue>");
++    out.println("<queue name=\"queue5\">");
++    out.println("</queue>");
++    out.println("</allocations>");
++    out.close();
++
++    scheduler.reinitialize(conf, resourceManager.getRMContext());
++
++    RMNode node =
++        MockNodes.newNodeInfo(1, Resources.createResource(8192, 20),
++            0, "127.0.0.1");
++    NodeAddedSchedulerEvent nodeEvent = new NodeAddedSchedulerEvent(node);
++    NodeUpdateSchedulerEvent updateEvent = new NodeUpdateSchedulerEvent(node);
++    scheduler.handle(nodeEvent);
++    scheduler.update();
++
++    FSLeafQueue queue1 =
++        scheduler.getQueueManager().getLeafQueue("queue1", true);
++    assertEquals("Queue queue1's fair share should be 1366",
++        1366, queue1.getFairShare().getMemory());
++    FSLeafQueue queue2 =
++        scheduler.getQueueManager().getLeafQueue("queue2", true);
++    assertEquals("Queue queue2's fair share should be 1366",
++        1366, queue2.getFairShare().getMemory());
++    FSLeafQueue queue3 =
++        scheduler.getQueueManager().getLeafQueue("queue3", true);
++    assertEquals("Queue queue3's fair share should be 1366",
++        1366, queue3.getFairShare().getMemory());
++    FSLeafQueue queue4 =
++        scheduler.getQueueManager().getLeafQueue("queue4", true);
++    assertEquals("Queue queue4's fair share should be 1366",
++        1366, queue4.getFairShare().getMemory());
++    FSLeafQueue queue5 =
++        scheduler.getQueueManager().getLeafQueue("queue5", true);
++    assertEquals("Queue queue5's fair share should be 1366",
++        1366, queue5.getFairShare().getMemory());
++
++    Resource amResource1 = Resource.newInstance(2048, 1);
++    int amPriority = RMAppAttemptImpl.AM_CONTAINER_PRIORITY.getPriority();
++
++    // Exceeds queue limit, but default maxAMShare is -1.0 so it doesn't matter
++    ApplicationAttemptId attId1 = createAppAttemptId(1, 1);
++    createApplicationWithAMResource(attId1, "queue1", "test1", amResource1);
++    createSchedulingRequestExistingApplication(2048, 1, amPriority, attId1);
++    FSSchedulerApp app1 = scheduler.getSchedulerApp(attId1);
++    scheduler.update();
++    scheduler.handle(updateEvent);
++    assertEquals("Application1's AM requests 2048 MB memory",
++        2048, app1.getAMResource().getMemory());
++    assertEquals("Application1's AM should be running",
++        1, app1.getLiveContainers().size());
++    assertEquals("Queue1's AM resource usage should be 2048 MB memory",
++        2048, queue1.getAmResourceUsage().getMemory());
++
++    // Exceeds queue limit, and maxAMShare is 1.0
++    ApplicationAttemptId attId2 = createAppAttemptId(2, 1);
++    createApplicationWithAMResource(attId2, "queue2", "test1", amResource1);
++    createSchedulingRequestExistingApplication(2048, 1, amPriority, attId2);
++    FSSchedulerApp app2 = scheduler.getSchedulerApp(attId2);
++    scheduler.update();
++    scheduler.handle(updateEvent);
++    assertEquals("Application2's AM requests 2048 MB memory",
++        2048, app2.getAMResource().getMemory());
++    assertEquals("Application2's AM should not be running",
++        0, app2.getLiveContainers().size());
++    assertEquals("Queue2's AM resource usage should be 0 MB memory",
++        0, queue2.getAmResourceUsage().getMemory());
++  }
++
++  @Test
+   public void testMaxRunningAppsHierarchicalQueues() throws Exception {
+     conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
+     MockClock clock = new MockClock();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
+index 8a946cc..919657a 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
+@@ -241,8 +241,9 @@ Allocation file format
+ 
+    * maxAMShare: limit the fraction of the queue's fair share that can be used
+      to run application masters. This property can only be used for leaf queues.
+-     Default value is 1.0f, which means AMs in the leaf queue can take up to 100%
+-     of both the memory and CPU fair share.
++     For example, if set to 1.0f, then AMs in the leaf queue can take up to 100%
++     of both the memory and CPU fair share. The default value is -1.0f, which
++     means that this check is disabled.
+ 
+    * weight: to share the cluster non-proportionally with other queues. Weights
+      default to 1, and a queue with weight 2 should receive approximately twice
+-- 
+1.7.0.4
+

@@ -1,0 +1,27 @@
+From 9df773aaee4785ef2fff11f23a34d0a9ea1a26c2 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Wed, 14 May 2014 02:52:41 +0000
+Subject: [PATCH 736/795] HDFS-6381. Merge r1594447 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1594448 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c46442b839dae3fac4a6f37179b0fad9d2587199)
+---
+ .../hdfs/server/namenode/INodeReference.java       |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+index bf3be5b..89e8118 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+@@ -39,7 +39,7 @@
+  * snapshots and it is renamed/moved to other locations.
+  * 
+  * For example,
+- * (1) Support we have /abc/foo, say the inode of foo is inode(id=1000,name=foo)
++ * (1) Suppose we have /abc/foo, say the inode of foo is inode(id=1000,name=foo)
+  * (2) create snapshot s0 for /abc
+  * (3) mv /abc/foo /xyz/bar, i.e. inode(id=1000,name=...) is renamed from "foo"
+  *     to "bar" and its parent becomes /xyz.
+-- 
+1.7.0.4
+

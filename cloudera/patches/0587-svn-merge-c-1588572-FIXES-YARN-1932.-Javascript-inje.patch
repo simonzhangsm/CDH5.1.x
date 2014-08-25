@@ -1,0 +1,94 @@
+From ec9b1b4cd36c3af3ce34d5f3d2a0c703a5ab61ff Mon Sep 17 00:00:00 2001
+From: Jason Darrell Lowe <jlowe@apache.org>
+Date: Fri, 18 Apr 2014 21:46:14 +0000
+Subject: [PATCH 587/795] svn merge -c 1588572 FIXES: YARN-1932. Javascript injection on the job status page. Contributed by Mit Desai
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1588573 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7df1a64e721111eea2aee680d8bad49f4f42c08d)
+---
+ .../apache/hadoop/yarn/webapp/view/InfoBlock.java  |    4 +-
+ .../hadoop/yarn/webapp/view/TestInfoBlock.java     |   37 ++++++++++++++++++++
+ 2 files changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/view/InfoBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/view/InfoBlock.java
+index 804de6e..9fe67f1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/view/InfoBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/view/InfoBlock.java
+@@ -62,11 +62,11 @@
+         	DIV<TD<TR<TABLE<DIV<Hamlet>>>>> singleLineDiv;
+             for ( String line :lines) {
+               singleLineDiv = td.div();
+-              singleLineDiv._r(line);
++              singleLineDiv._(line);
+               singleLineDiv._();
+             }
+           } else {
+-            td._r(value);
++            td._(value);
+           }
+           td._();
+         } else {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/view/TestInfoBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/view/TestInfoBlock.java
+index fc574b7..4ec1434 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/view/TestInfoBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/webapp/view/TestInfoBlock.java
+@@ -21,6 +21,7 @@
+ import java.io.PrintWriter;
+ import java.io.StringWriter;
+ 
++import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertTrue;
+ 
+ import org.apache.hadoop.yarn.webapp.ResponseInfo;
+@@ -34,6 +35,33 @@
+ 
+   public static PrintWriter pw;
+ 
++  static final String JAVASCRIPT = "<script>alert('text')</script>";
++  static final String JAVASCRIPT_ESCAPED =
++      "&lt;script&gt;alert('text')&lt;/script&gt;";
++
++  public static class JavaScriptInfoBlock extends InfoBlock{
++
++    static ResponseInfo resInfo;
++
++    static {
++      resInfo = new ResponseInfo();
++      resInfo._("User_Name", JAVASCRIPT);
++    }
++
++    @Override
++    public PrintWriter writer() {
++      return TestInfoBlock.pw;
++    }
++
++    JavaScriptInfoBlock(ResponseInfo info) {
++      super(resInfo);
++    }
++
++    public JavaScriptInfoBlock() {
++      super(resInfo);
++    }
++  }
++
+   public static class MultilineInfoBlock extends InfoBlock{
+     
+     static ResponseInfo resInfo;
+@@ -78,4 +106,13 @@ public void testMultilineInfoBlock() throws Exception{
+       + " This is second line.%n </div>%n");
+     assertTrue(output.contains(expectedSinglelineData) && output.contains(expectedMultilineData));
+   }
++  
++  @Test(timeout=60000L)
++  public void testJavaScriptInfoBlock() throws Exception{
++    WebAppTests.testBlock(JavaScriptInfoBlock.class);
++    TestInfoBlock.pw.flush();
++    String output = TestInfoBlock.sw.toString();
++    assertFalse(output.contains("<script>"));
++    assertTrue(output.contains(JAVASCRIPT_ESCAPED));
++  }
+ }
+\ No newline at end of file
+-- 
+1.7.0.4
+

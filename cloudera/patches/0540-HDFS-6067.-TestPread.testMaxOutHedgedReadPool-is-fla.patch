@@ -1,0 +1,27 @@
+From 123ad4d758b54b2224b0f008f2462e4445c79204 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Thu, 6 Mar 2014 23:48:23 +0000
+Subject: [PATCH 540/795] HDFS-6067. TestPread.testMaxOutHedgedReadPool is flaky (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1575100 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 840d5bbb51d9c95b115b7f3f63ae23cdfa457ee2)
+---
+ .../java/org/apache/hadoop/hdfs/TestPread.java     |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
+index adea664..8bd911c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
+@@ -254,7 +254,7 @@ public void testMaxOutHedgedReadPool() throws IOException,
+       InterruptedException, ExecutionException {
+     Configuration conf = new Configuration();
+     int numHedgedReadPoolThreads = 5;
+-    final int initialHedgedReadTimeoutMillis = 500;
++    final int initialHedgedReadTimeoutMillis = 50000;
+     final int fixedSleepIntervalMillis = 50;
+     conf.setInt(DFSConfigKeys.DFS_DFSCLIENT_HEDGED_READ_THREADPOOL_SIZE,
+         numHedgedReadPoolThreads);
+-- 
+1.7.0.4
+

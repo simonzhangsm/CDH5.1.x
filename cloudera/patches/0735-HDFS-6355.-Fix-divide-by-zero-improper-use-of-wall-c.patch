@@ -1,0 +1,195 @@
+From 3953ae22fbf624b62092f786c6d20766794f70bb Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Tue, 13 May 2014 19:25:23 +0000
+Subject: [PATCH 735/795] HDFS-6355. Fix divide-by-zero, improper use of wall-clock time in BlockPoolSliceScanner (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1594339 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 44fc2690da8bc6c28446109fb732c42f69227cec)
+---
+ .../server/datanode/BlockPoolSliceScanner.java     |   27 ++++++++++---------
+ .../hadoop/hdfs/TestDatanodeBlockScanner.java      |   18 ++++++------
+ 2 files changed, 23 insertions(+), 22 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
+index 13a83bc..4f45345 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceScanner.java
+@@ -97,7 +97,7 @@
+   private long totalTransientErrors = 0;
+   private final AtomicInteger totalBlocksScannedInLastRun = new AtomicInteger(); // Used for test only
+   
+-  private long currentPeriodStart = Time.now();
++  private long currentPeriodStart = Time.monotonicNow();
+   private long bytesLeft = 0; // Bytes to scan in this period
+   private long totalBytesToScan = 0;
+   private boolean isNewPeriod = true;
+@@ -260,7 +260,7 @@ private synchronized long getNewBlockScanTime() {
+     long period = Math.min(scanPeriod, 
+                            Math.max(blockMap.size(),1) * 600 * 1000L);
+     int periodInt = Math.abs((int)period);
+-    return Time.now() - scanPeriod + 
++    return Time.monotonicNow() - scanPeriod +
+         DFSUtil.getRandom().nextInt(periodInt);
+   }
+ 
+@@ -322,7 +322,7 @@ private synchronized void updateScanStatus(Block block,
+       info = new BlockScanInfo(block);
+     }
+     
+-    long now = Time.now();
++    long now = Time.monotonicNow();
+     info.lastScanType = type;
+     info.lastScanTime = now;
+     info.lastScanOk = scanOk;
+@@ -399,8 +399,9 @@ static LogEntry parseEntry(String line) {
+   }
+   
+   private synchronized void adjustThrottler() {
+-    long timeLeft = currentPeriodStart+scanPeriod - Time.now();
+-    long bw = Math.max(bytesLeft*1000/timeLeft, MIN_SCAN_RATE);
++    long timeLeft = Math.max(1L,
++        currentPeriodStart + scanPeriod - Time.monotonicNow());
++    long bw = Math.max((bytesLeft * 1000) / timeLeft, MIN_SCAN_RATE);
+     throttler.setBandwidth(Math.min(bw, MAX_SCAN_RATE));
+   }
+   
+@@ -523,7 +524,7 @@ int getBlocksScannedInLastRun() {
+   private boolean assignInitialVerificationTimes() {
+     //First updates the last verification times from the log file.
+     if (verificationLog != null) {
+-      long now = Time.now();
++      long now = Time.monotonicNow();
+       RollingLogs.LineIterator logIterator = null;
+       try {
+         logIterator = verificationLog.logs.iterator(false);
+@@ -574,7 +575,7 @@ private boolean assignInitialVerificationTimes() {
+       // Initially spread the block reads over half of scan period
+       // so that we don't keep scanning the blocks too quickly when restarted.
+       long verifyInterval = Math.min(scanPeriod/(2L * numBlocks), 10*60*1000L);
+-      long lastScanTime = Time.now() - scanPeriod;
++      long lastScanTime = Time.monotonicNow() - scanPeriod;
+ 
+       if (!blockInfoSet.isEmpty()) {
+         BlockScanInfo info;
+@@ -601,16 +602,16 @@ private synchronized void startNewPeriod() {
+ 
+     // reset the byte counts :
+     bytesLeft = totalBytesToScan;
+-    currentPeriodStart = Time.now();
++    currentPeriodStart = Time.monotonicNow();
+     isNewPeriod = true;
+   }
+   
+   private synchronized boolean workRemainingInCurrentPeriod() {
+-    if (bytesLeft <= 0 && Time.now() < currentPeriodStart + scanPeriod) {
++    if (bytesLeft <= 0 && Time.monotonicNow() < currentPeriodStart + scanPeriod) {
+       if (LOG.isDebugEnabled()) {
+         LOG.debug("Skipping scan since bytesLeft=" + bytesLeft + ", Start=" +
+                   currentPeriodStart + ", period=" + scanPeriod + ", now=" +
+-                  Time.now() + " " + blockPoolId);
++                  Time.monotonicNow() + " " + blockPoolId);
+       }
+       return false;
+     } else {
+@@ -633,7 +634,7 @@ void scanBlockPoolSlice() {
+       scan();
+     } finally {
+       totalBlocksScannedInLastRun.set(processedBlocks.size());
+-      lastScanTime.set(Time.now());
++      lastScanTime.set(Time.monotonicNow());
+     }
+   }
+ 
+@@ -656,7 +657,7 @@ private void scan() {
+       while (datanode.shouldRun
+           && !datanode.blockScanner.blockScannerThread.isInterrupted()
+           && datanode.isBPServiceAlive(blockPoolId)) {
+-        long now = Time.now();
++        long now = Time.monotonicNow();
+         synchronized (this) {
+           if ( now >= (currentPeriodStart + scanPeriod)) {
+             startNewPeriod();
+@@ -714,7 +715,7 @@ synchronized void printBlockReport(StringBuilder buffer,
+     
+     int total = blockInfoSet.size();
+     
+-    long now = Time.now();
++    long now = Time.monotonicNow();
+     
+     Date date = new Date();
+     
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDatanodeBlockScanner.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDatanodeBlockScanner.java
+index ba4daa3..b7e9e5e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDatanodeBlockScanner.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDatanodeBlockScanner.java
+@@ -87,15 +87,15 @@ private static long waitForVerification(int infoPort, FileSystem fs,
+   throws IOException, TimeoutException {
+     URL url = new URL("http://localhost:" + infoPort +
+                       "/blockScannerReport?listblocks");
+-    long lastWarnTime = Time.now();
++    long lastWarnTime = Time.monotonicNow();
+     if (newTime <= 0) newTime = 1L;
+     long verificationTime = 0;
+     
+     String block = DFSTestUtil.getFirstBlock(fs, file).getBlockName();
+     long failtime = (timeout <= 0) ? Long.MAX_VALUE 
+-        : Time.now() + timeout;
++        : Time.monotonicNow() + timeout;
+     while (verificationTime < newTime) {
+-      if (failtime < Time.now()) {
++      if (failtime < Time.monotonicNow()) {
+         throw new TimeoutException("failed to achieve block verification after "
+             + timeout + " msec.  Current verification timestamp = "
+             + verificationTime + ", requested verification time > " 
+@@ -118,7 +118,7 @@ private static long waitForVerification(int infoPort, FileSystem fs,
+       }
+       
+       if (verificationTime < newTime) {
+-        long now = Time.now();
++        long now = Time.monotonicNow();
+         if ((now - lastWarnTime) >= 5*1000) {
+           LOG.info("Waiting for verification of " + block);
+           lastWarnTime = now; 
+@@ -134,7 +134,7 @@ private static long waitForVerification(int infoPort, FileSystem fs,
+ 
+   @Test
+   public void testDatanodeBlockScanner() throws IOException, TimeoutException {
+-    long startTime = Time.now();
++    long startTime = Time.monotonicNow();
+     
+     Configuration conf = new HdfsConfiguration();
+     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
+@@ -344,7 +344,7 @@ public void testTruncatedBlockReport() throws Exception {
+     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 3L);
+     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY, false);
+ 
+-    long startTime = Time.now();
++    long startTime = Time.monotonicNow();
+     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+                                                .numDataNodes(REPLICATION_FACTOR)
+                                                .build();
+@@ -428,10 +428,10 @@ static boolean changeReplicaLength(ExtendedBlock blk, int dnIndex,
+   private static void waitForBlockDeleted(ExtendedBlock blk, int dnIndex,
+       long timeout) throws TimeoutException, InterruptedException {
+     File blockFile = MiniDFSCluster.getBlockFile(dnIndex, blk);
+-    long failtime = Time.now() 
++    long failtime = Time.monotonicNow()
+                     + ((timeout > 0) ? timeout : Long.MAX_VALUE);
+     while (blockFile != null && blockFile.exists()) {
+-      if (failtime < Time.now()) {
++      if (failtime < Time.monotonicNow()) {
+         throw new TimeoutException("waited too long for blocks to be deleted: "
+             + blockFile.getPath() + (blockFile.exists() ? " still exists; " : " is absent; "));
+       }
+@@ -462,7 +462,7 @@ private static void testReplicaInfoParsingSingle(String subDirPath, int[] expect
+ 
+   @Test
+   public void testDuplicateScans() throws Exception {
+-    long startTime = Time.now();
++    long startTime = Time.monotonicNow();
+     MiniDFSCluster cluster = new MiniDFSCluster.Builder(new Configuration())
+         .numDataNodes(1).build();
+     FileSystem fs = null;
+-- 
+1.7.0.4
+

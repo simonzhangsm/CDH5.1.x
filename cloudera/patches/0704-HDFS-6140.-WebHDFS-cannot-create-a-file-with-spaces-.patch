@@ -1,0 +1,44 @@
+From 06f22c6e2f5f20a77cc37b6471f00f3d7c5aa874 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Sat, 22 Mar 2014 05:32:24 +0000
+Subject: [PATCH 704/795] HDFS-6140. WebHDFS cannot create a file with spaces in the name after HA failover changes. Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1580173 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../web/resources/DatanodeWebHdfsMethods.java      |    3 +--
+ .../hdfs/web/TestWebHdfsFileSystemContract.java    |    2 +-
+ 2 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/DatanodeWebHdfsMethods.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/DatanodeWebHdfsMethods.java
+index ea0a08f..5472731 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/DatanodeWebHdfsMethods.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/web/resources/DatanodeWebHdfsMethods.java
+@@ -247,8 +247,7 @@ private Response put(
+       }
+       final String scheme = "http".equals(request.getScheme()) ?
+       WebHdfsFileSystem.SCHEME : SWebHdfsFileSystem.SCHEME;
+-      final URI uri = URI.create(String.format("%s://%s/%s", scheme,
+-              nnId, fullpath));
++      final URI uri = new URI(scheme, nnId, fullpath, null, null);
+       return Response.created(uri).type(MediaType.APPLICATION_OCTET_STREAM).build();
+     }
+     default:
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHdfsFileSystemContract.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHdfsFileSystemContract.java
+index da23a59..9a0245c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHdfsFileSystemContract.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHdfsFileSystemContract.java
+@@ -504,7 +504,7 @@ public void testResponseCode() throws IOException {
+ 
+     {//test create with path containing spaces
+       HttpOpParam.Op op = PutOpParam.Op.CREATE;
+-      Path path = new Path("/test/path%20with%20spaces");
++      Path path = new Path("/test/path with spaces");
+       URL url = webhdfs.toUrl(op, path);
+       HttpURLConnection conn = (HttpURLConnection)url.openConnection();
+       conn.setRequestMethod(op.getType().toString());
+-- 
+1.7.0.4
+

@@ -1,0 +1,175 @@
+From ea27b26cf115bbbfbd27deb3177798abc0af5764 Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Mon, 3 Mar 2014 19:51:33 +0000
+Subject: [PATCH 514/795] HDFS-6013. add rollingUpgrade information to latest UI. Contributed by Vinayakumar B.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1573700 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b725acf4c88a0023f3b610d978091de44ef4639e)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    4 ++
+ .../hadoop/hdfs/protocol/RollingUpgradeInfo.java   |   30 ++++++++++++++++++++
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   14 +++++++++
+ .../hdfs/server/namenode/NameNodeMXBean.java       |   10 ++++++-
+ .../src/main/webapps/hdfs/dfshealth.html           |   22 +++++++++++---
+ .../hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js |    5 +++
+ 6 files changed, 79 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index eca8711..976d30e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -130,3 +130,7 @@ HDFS-5535 subtasks:
+ 
+     HDFS-6034. Use DataNodeLayoutVersion for DN registration check and do not
+     verify layout version if there is a rolling upgrade in progress.  (szetszwo)
++
++    HDFS-6013. add rollingUpgrade information to latest UI.
++    (Vinayakumar B via wheat9)
++
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/RollingUpgradeInfo.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/RollingUpgradeInfo.java
+index 5e53949..98089bc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/RollingUpgradeInfo.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/RollingUpgradeInfo.java
+@@ -94,4 +94,34 @@ public String toString() {
+   private static String timestamp2String(long timestamp) {
+     return new Date(timestamp) + " (=" + timestamp + ")";
+   }
++
++  public static class Bean {
++    private final String blockPoolId;
++    private final long startTime;
++    private final long finalizeTime;
++    private final boolean createdRollbackImages;
++
++    public Bean(RollingUpgradeInfo f) {
++      this.blockPoolId = f.getBlockPoolId();
++      this.startTime = f.startTime;
++      this.finalizeTime = f.finalizeTime;
++      this.createdRollbackImages = f.createdRollbackImages();
++    }
++
++    public String getBlockPoolId() {
++      return blockPoolId;
++    }
++
++    public long getStartTime() {
++      return startTime;
++    }
++
++    public long getFinalizeTime() {
++      return finalizeTime;
++    }
++
++    public boolean isCreatedRollbackImages() {
++      return createdRollbackImages;
++    }
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 88eb399..76ce640 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -7235,6 +7235,20 @@ public void setNeedRollbackFsImage(boolean needRollbackFsImage) {
+     this.needRollbackFsImage = needRollbackFsImage;
+   }
+ 
++  @Override  // NameNodeMXBean
++  public RollingUpgradeInfo.Bean getRollingUpgradeStatus() {
++    readLock();
++    try {
++      RollingUpgradeInfo upgradeInfo = getRollingUpgradeInfo();
++      if (upgradeInfo != null) {
++        return new RollingUpgradeInfo.Bean(upgradeInfo);
++      }
++      return null;
++    } finally {
++      readUnlock();
++    }
++  }
++
+   /** Is rolling upgrade in progress? */
+   public boolean isRollingUpgrade() {
+     return rollingUpgradeInfo != null;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeMXBean.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeMXBean.java
+index fd46d54..c9b4d55 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeMXBean.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeMXBean.java
+@@ -21,6 +21,7 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
++import org.apache.hadoop.hdfs.protocol.RollingUpgradeInfo;
+ 
+ /**
+  * This is the JMX management interface for namenode information
+@@ -78,7 +79,14 @@
+    * @return true, if upgrade is finalized
+    */
+   public boolean isUpgradeFinalized();
+-  
++
++  /**
++   * Gets the RollingUpgrade information
++   *
++   * @return Rolling upgrade information
++   */
++  public RollingUpgradeInfo.Bean getRollingUpgradeStatus();
++
+   /**
+    * Gets total used space by data nodes for non DFS purposes such as storing
+    * temporary files on the local file system
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
+index 0df17b5..8ef3e3f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
+@@ -72,14 +72,26 @@
+ <script type="text/x-dust-template" id="tmpl-dfshealth">
+ 
+ {#nn}
+-{@if cond="{DistinctVersionCount} > 1"}
++{@if cond="{DistinctVersionCount} > 1 || '{RollingUpgradeStatus}'.length"}
+ <div class="alert alert-dismissable alert-info">
+   <button type="button" class="close" data-dismiss="alert" aria-hidden="true">&times;</button>
+ 
+-  There are {DistinctVersionCount} versions of datanodes currently live: 
+-  {#DistinctVersions}
+-  {key} ({value}) {@sep},{/sep}
+-  {/DistinctVersions}
++  {#RollingUpgradeStatus}
++    <p>Rolling upgrade started at {#helper_date_tostring value="{startTime}"/}. </br>
++    {#createdRollbackImages}
++      Rollback image has been created. Proceed to upgrade daemons.
++      {:else}
++      Rollback image has not been created.
++    {/createdRollbackImages}
++    </p>
++  {/RollingUpgradeStatus}
++
++  {@if cond="{DistinctVersionCount} > 1"}
++    There are {DistinctVersionCount} versions of datanodes currently live:
++    {#DistinctVersions}
++    {key} ({value}) {@sep},{/sep}
++    {/DistinctVersions}
++  {/if}
+ </div>
+ {/if}
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js
+index 98e4ecc..3165d16 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js
+@@ -44,6 +44,11 @@
+         for (var i in j) {
+           chunk.write('<tr><td>' + i + '</td><td>' + j[i] + '</td><td>' + params.type + '</td></tr>');
+         }
++      },
++
++      'helper_date_tostring' : function (chunk, ctx, bodies, params) {
++        var value = dust.helpers.tap(params.value, chunk, ctx);
++        return chunk.write('' + new Date(Number(value)).toLocaleString());
+       }
+     };
+ 
+-- 
+1.7.0.4
+

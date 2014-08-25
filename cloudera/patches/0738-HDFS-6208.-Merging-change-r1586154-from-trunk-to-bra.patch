@@ -1,0 +1,161 @@
+From f16574e39a6a0bdafcd0ea697be56849213c2064 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Wed, 9 Apr 2014 21:58:01 +0000
+Subject: [PATCH 738/795] HDFS-6208. Merging change r1586154 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1586160 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b760d58291a602b717037599f05bcc06c66abb4d)
+---
+ .../datanode/fsdataset/impl/FsDatasetCache.java    |    4 +-
+ .../datanode/fsdataset/impl/MappableBlock.java     |   72 +++++++++++---------
+ .../hdfs/server/namenode/TestCacheDirectives.java  |    6 ++
+ 3 files changed, 48 insertions(+), 34 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetCache.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetCache.java
+index 277c2e7..f0004db 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetCache.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetCache.java
+@@ -395,6 +395,8 @@ public void run() {
+         dataset.datanode.getMetrics().incrBlocksCached(1);
+         success = true;
+       } finally {
++        IOUtils.closeQuietly(blockIn);
++        IOUtils.closeQuietly(metaIn);
+         if (!success) {
+           if (reservedBytes) {
+             newUsedBytes = usedBytesCount.release(length);
+@@ -403,8 +405,6 @@ public void run() {
+             LOG.debug("Caching of " + key + " was aborted.  We are now " +
+                 "caching only " + newUsedBytes + " + bytes in total.");
+           }
+-          IOUtils.closeQuietly(blockIn);
+-          IOUtils.closeQuietly(metaIn);
+           if (mappableBlock != null) {
+             mappableBlock.close();
+           }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/MappableBlock.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/MappableBlock.java
+index 330498f..45aa364 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/MappableBlock.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/MappableBlock.java
+@@ -28,6 +28,7 @@
+ import java.nio.channels.FileChannel;
+ import java.nio.channels.FileChannel.MapMode;
+ 
++import org.apache.commons.io.IOUtils;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.fs.ChecksumException;
+@@ -76,8 +77,9 @@ public static MappableBlock load(long length,
+       String blockFileName) throws IOException {
+     MappableBlock mappableBlock = null;
+     MappedByteBuffer mmap = null;
++    FileChannel blockChannel = null;
+     try {
+-      FileChannel blockChannel = blockIn.getChannel();
++      blockChannel = blockIn.getChannel();
+       if (blockChannel == null) {
+         throw new IOException("Block InputStream has no FileChannel.");
+       }
+@@ -86,6 +88,7 @@ public static MappableBlock load(long length,
+       verifyChecksum(length, metaIn, blockChannel, blockFileName);
+       mappableBlock = new MappableBlock(mmap, length);
+     } finally {
++      IOUtils.closeQuietly(blockChannel);
+       if (mappableBlock == null) {
+         if (mmap != null) {
+           NativeIO.POSIX.munmap(mmap); // unmapping also unlocks
+@@ -107,38 +110,43 @@ private static void verifyChecksum(long length,
+         BlockMetadataHeader.readHeader(new DataInputStream(
+             new BufferedInputStream(metaIn, BlockMetadataHeader
+                 .getHeaderSize())));
+-    FileChannel metaChannel = metaIn.getChannel();
+-    if (metaChannel == null) {
+-      throw new IOException("Block InputStream meta file has no FileChannel.");
+-    }
+-    DataChecksum checksum = header.getChecksum();
+-    final int bytesPerChecksum = checksum.getBytesPerChecksum();
+-    final int checksumSize = checksum.getChecksumSize();
+-    final int numChunks = (8*1024*1024) / bytesPerChecksum;
+-    ByteBuffer blockBuf = ByteBuffer.allocate(numChunks*bytesPerChecksum);
+-    ByteBuffer checksumBuf = ByteBuffer.allocate(numChunks*checksumSize);
+-    // Verify the checksum
+-    int bytesVerified = 0;
+-    while (bytesVerified < length) {
+-      Preconditions.checkState(bytesVerified % bytesPerChecksum == 0,
+-          "Unexpected partial chunk before EOF");
+-      assert bytesVerified % bytesPerChecksum == 0;
+-      int bytesRead = fillBuffer(blockChannel, blockBuf);
+-      if (bytesRead == -1) {
+-        throw new IOException("checksum verification failed: premature EOF");
++    FileChannel metaChannel = null;
++    try {
++      metaChannel = metaIn.getChannel();
++      if (metaChannel == null) {
++        throw new IOException("Block InputStream meta file has no FileChannel.");
+       }
+-      blockBuf.flip();
+-      // Number of read chunks, including partial chunk at end
+-      int chunks = (bytesRead+bytesPerChecksum-1) / bytesPerChecksum;
+-      checksumBuf.limit(chunks*checksumSize);
+-      fillBuffer(metaChannel, checksumBuf);
+-      checksumBuf.flip();
+-      checksum.verifyChunkedSums(blockBuf, checksumBuf, blockFileName,
+-          bytesVerified);
+-      // Success
+-      bytesVerified += bytesRead;
+-      blockBuf.clear();
+-      checksumBuf.clear();
++      DataChecksum checksum = header.getChecksum();
++      final int bytesPerChecksum = checksum.getBytesPerChecksum();
++      final int checksumSize = checksum.getChecksumSize();
++      final int numChunks = (8*1024*1024) / bytesPerChecksum;
++      ByteBuffer blockBuf = ByteBuffer.allocate(numChunks*bytesPerChecksum);
++      ByteBuffer checksumBuf = ByteBuffer.allocate(numChunks*checksumSize);
++      // Verify the checksum
++      int bytesVerified = 0;
++      while (bytesVerified < length) {
++        Preconditions.checkState(bytesVerified % bytesPerChecksum == 0,
++            "Unexpected partial chunk before EOF");
++        assert bytesVerified % bytesPerChecksum == 0;
++        int bytesRead = fillBuffer(blockChannel, blockBuf);
++        if (bytesRead == -1) {
++          throw new IOException("checksum verification failed: premature EOF");
++        }
++        blockBuf.flip();
++        // Number of read chunks, including partial chunk at end
++        int chunks = (bytesRead+bytesPerChecksum-1) / bytesPerChecksum;
++        checksumBuf.limit(chunks*checksumSize);
++        fillBuffer(metaChannel, checksumBuf);
++        checksumBuf.flip();
++        checksum.verifyChunkedSums(blockBuf, checksumBuf, blockFileName,
++            bytesVerified);
++        // Success
++        bytesVerified += bytesRead;
++        blockBuf.clear();
++        checksumBuf.clear();
++      }
++    } finally {
++      IOUtils.closeQuietly(metaChannel);
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCacheDirectives.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCacheDirectives.java
+index 345d01c..ed12460 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCacheDirectives.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCacheDirectives.java
+@@ -147,6 +147,12 @@ public void setup() throws Exception {
+ 
+   @After
+   public void teardown() throws Exception {
++    // Remove cache directives left behind by tests so that we release mmaps.
++    RemoteIterator<CacheDirectiveEntry> iter = dfs.listCacheDirectives(null);
++    while (iter.hasNext()) {
++      dfs.removeCacheDirective(iter.next().getInfo().getId());
++    }
++    waitForCachedBlocks(namenode, 0, 0, "teardown");
+     if (cluster != null) {
+       cluster.shutdown();
+     }
+-- 
+1.7.0.4
+

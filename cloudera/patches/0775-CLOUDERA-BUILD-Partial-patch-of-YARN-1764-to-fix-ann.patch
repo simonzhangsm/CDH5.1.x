@@ -1,0 +1,24 @@
+From 26ece930c360727e0163520c59abac784e9f6aa7 Mon Sep 17 00:00:00 2001
+From: adhoot@cloudera.com <adhoot@adhoot-MBP.local>
+Date: Tue, 24 Jun 2014 13:18:02 -0700
+Subject: [PATCH 775/795] CLOUDERA-BUILD Partial patch of YARN-1764 to fix annotations when handling failures.
+
+---
+ .../hadoop/yarn/api/ApplicationClientProtocol.java |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/ApplicationClientProtocol.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/ApplicationClientProtocol.java
+index 9d62415..9c86c2d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/ApplicationClientProtocol.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/api/ApplicationClientProtocol.java
+@@ -194,6 +194,7 @@ public KillApplicationResponse forceKillApplication(
+    */
+   @Public
+   @Stable
++  @Idempotent
+   public GetApplicationReportResponse getApplicationReport(
+       GetApplicationReportRequest request) 
+   throws YarnException, IOException;
+-- 
+1.7.0.4
+

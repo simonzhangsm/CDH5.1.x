@@ -1,0 +1,116 @@
+From 506d1b6d17c9dfdc0e1c9970581bd47f0b9d3a06 Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Fri, 31 Jan 2014 05:35:30 +0000
+Subject: [PATCH 434/795] HDFS-5856. DataNode.checkDiskError might throw NPE. Contributed by Josh Elser.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1563064 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit bede7770b03234b769a92362a2e53ded8398890f)
+---
+ .../hadoop/hdfs/server/datanode/DataNode.java      |   31 +++++++++++++++----
+ .../hadoop/hdfs/server/datanode/TestDiskError.java |   16 ++++++++++
+ 2 files changed, 40 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index e59a13b..abf47e9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -36,6 +36,7 @@
+ import java.net.URI;
+ import java.net.UnknownHostException;
+ import java.nio.channels.ClosedByInterruptException;
++import java.nio.channels.ClosedChannelException;
+ import java.nio.channels.SocketChannel;
+ import java.security.PrivilegedExceptionAction;
+ import java.util.ArrayList;
+@@ -51,7 +52,6 @@
+ 
+ import javax.management.ObjectName;
+ 
+-
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
+@@ -1326,12 +1326,7 @@ public void shutdown() {
+   protected void checkDiskError(Exception e ) throws IOException {
+     
+     LOG.warn("checkDiskError: exception: ", e);
+-    if (e instanceof SocketException || e instanceof SocketTimeoutException
+-    	  || e instanceof ClosedByInterruptException 
+-    	  || e.getMessage().startsWith("An established connection was aborted")
+-    	  || e.getMessage().startsWith("Broken pipe")
+-    	  || e.getMessage().startsWith("Connection reset")
+-    	  || e.getMessage().contains("java.nio.channels.SocketChannel")) {
++    if (isNetworkRelatedException(e)) {
+       LOG.info("Not checking disk as checkDiskError was called on a network" +
+       		" related exception");	
+       return;
+@@ -1345,6 +1340,28 @@ protected void checkDiskError(Exception e ) throws IOException {
+   }
+   
+   /**
++   * Check if the provided exception looks like it's from a network error
++   * @param e the exception from a checkDiskError call
++   * @return true if this exception is network related, false otherwise
++   */
++  protected boolean isNetworkRelatedException(Exception e) {
++    if (e instanceof SocketException 
++        || e instanceof SocketTimeoutException
++        || e instanceof ClosedChannelException 
++        || e instanceof ClosedByInterruptException) {
++      return true;
++    }
++    
++    String msg = e.getMessage();
++    
++    return null != msg 
++        && (msg.startsWith("An established connection was aborted")
++            || msg.startsWith("Broken pipe")
++            || msg.startsWith("Connection reset")
++            || msg.contains("java.nio.channels.SocketChannel"));
++  }
++  
++  /**
+    *  Check if there is a disk failure and if so, handle the error
+    */
+   public void checkDiskError() {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDiskError.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDiskError.java
+index 6b70cbf..e36005b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDiskError.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDiskError.java
+@@ -18,12 +18,16 @@
+ package org.apache.hadoop.hdfs.server.datanode;
+ 
+ import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertTrue;
+ 
+ import java.io.DataOutputStream;
+ import java.io.File;
+ import java.net.InetSocketAddress;
+ import java.net.Socket;
++import java.net.SocketException;
++import java.net.SocketTimeoutException;
++import java.nio.channels.ClosedChannelException;
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FileSystem;
+@@ -196,4 +200,16 @@ public void testLocalDirs() throws Exception {
+       }
+     }
+   }
++  
++  @Test
++  public void testNetworkErrorsIgnored() {
++    DataNode dn = cluster.getDataNodes().iterator().next();
++    
++    assertTrue(dn.isNetworkRelatedException(new SocketException()));
++    assertTrue(dn.isNetworkRelatedException(new SocketTimeoutException()));
++    assertTrue(dn.isNetworkRelatedException(new ClosedChannelException()));
++    assertTrue(dn.isNetworkRelatedException(new Exception("Broken pipe foo bar")));
++    assertFalse(dn.isNetworkRelatedException(new Exception()));
++    assertFalse(dn.isNetworkRelatedException(new Exception("random problem")));
++  }
+ }
+-- 
+1.7.0.4
+

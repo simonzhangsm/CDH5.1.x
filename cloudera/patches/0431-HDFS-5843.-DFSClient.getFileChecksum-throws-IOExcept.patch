@@ -1,0 +1,75 @@
+From 45c9f8a9a74b8ebab8cbb8658f81fc33a35cf903 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Thu, 30 Jan 2014 19:15:13 +0000
+Subject: [PATCH 431/795] HDFS-5843. DFSClient.getFileChecksum() throws IOException if checksum is disabled. Contributed by Laurent Goujon.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1562927 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f75863c01d94405cd81845efea3c22fce63b5117)
+---
+ .../hadoop/hdfs/server/datanode/DataXceiver.java   |    5 +++--
+ .../org/apache/hadoop/hdfs/TestFSOutputSummer.java |   13 +++++++++++--
+ 2 files changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+index 13b411e..da38b91 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+@@ -655,8 +655,9 @@ public void blockChecksum(final ExtendedBlock block,
+       final BlockMetadataHeader header = BlockMetadataHeader.readHeader(checksumIn);
+       final DataChecksum checksum = header.getChecksum(); 
+       final int bytesPerCRC = checksum.getBytesPerChecksum();
+-      final long crcPerBlock = (metadataIn.getLength()
+-          - BlockMetadataHeader.getHeaderSize())/checksum.getChecksumSize();
++      final long crcPerBlock = checksum.getChecksumSize() > 0 
++              ? (metadataIn.getLength() - BlockMetadataHeader.getHeaderSize())/checksum.getChecksumSize()
++              : 0;
+       
+       //compute block checksum
+       final MD5Hash md5 = MD5Hash.digest(checksumIn);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFSOutputSummer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFSOutputSummer.java
+index 88a8371..047f67f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFSOutputSummer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFSOutputSummer.java
+@@ -71,7 +71,7 @@ private void writeFile2(Path name) throws Exception {
+     cleanupFile(name);
+   }
+   
+-  /* create a file, write data with vairable amount of data */
++  /* create a file, write data with variable amount of data */
+   private void writeFile3(Path name) throws Exception {
+     FSDataOutputStream stm = fileSys.create(name, true, 
+         fileSys.getConf().getInt(IO_FILE_BUFFER_SIZE_KEY, 4096),
+@@ -103,6 +103,8 @@ private void checkFile(Path name) throws Exception {
+     stm.readFully(0, actual);
+     checkAndEraseData(actual, 0, expected, "Read Sanity Test");
+     stm.close();
++    // do a sanity check. Get the file checksum
++    fileSys.getFileChecksum(name);
+   }
+ 
+   private void cleanupFile(Path name) throws IOException {
+@@ -112,13 +114,20 @@ private void cleanupFile(Path name) throws IOException {
+   }
+   
+   /**
+-   * Test write opeation for output stream in DFS.
++   * Test write operation for output stream in DFS.
+    */
+   @Test
+   public void testFSOutputSummer() throws Exception {
++    doTestFSOutputSummer("CRC32");
++    doTestFSOutputSummer("CRC32C");
++    doTestFSOutputSummer("NULL");
++  }
++  
++  private void doTestFSOutputSummer(String checksumType) throws Exception {
+     Configuration conf = new HdfsConfiguration();
+     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_SIZE);
+     conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, BYTES_PER_CHECKSUM);
++    conf.set(DFSConfigKeys.DFS_CHECKSUM_TYPE_KEY, checksumType);
+     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+                                                .numDataNodes(NUM_OF_DATANODES)
+                                                .build();
+-- 
+1.7.0.4
+

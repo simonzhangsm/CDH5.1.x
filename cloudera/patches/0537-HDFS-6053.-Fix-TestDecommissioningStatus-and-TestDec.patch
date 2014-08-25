@@ -1,0 +1,27 @@
+From 79f27ffdcad61d612f1287d09319c8ebeb55bedc Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Tue, 4 Mar 2014 19:29:04 +0000
+Subject: [PATCH 537/795] HDFS-6053. Fix TestDecommissioningStatus and TestDecommission in branch-2. Contributed by Jing Zhao.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1574178 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 6066fcd7aa33a45539ad70011387f1a427e24453)
+---
+ .../hdfs/server/blockmanagement/BlockManager.java  |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
+index f25d5a9..a80bcf8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
+@@ -3037,7 +3037,7 @@ boolean isReplicationInProgress(DatanodeDescriptor srcNode) {
+                 
+         if (isNeededReplication(block, curExpectedReplicas, curReplicas)) {
+           if (curExpectedReplicas > curReplicas) {
+-            if (bc instanceof MutableBlockCollection) {
++            if (bc.isUnderConstruction()) {
+               if (block.equals(bc.getLastBlock()) && curReplicas > minReplication) {
+                 continue;
+               }
+-- 
+1.7.0.4
+

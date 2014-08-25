@@ -1,0 +1,129 @@
+From 8a407d0a845c87ee10ce8c03f706d2d95fd7dcca Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 21 Feb 2014 00:17:04 +0000
+Subject: [PATCH 418/795] HDFS-5982. Merge change r1570395 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570398 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d4c84a3da4e71e0e1ba17ae1690f206ed2c1e671)
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   29 +++++++--------
+ .../namenode/snapshot/TestSnapshotDeletion.java    |   38 +++++++++++++++++++-
+ 2 files changed, 51 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 7c8c323..ffba230 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -1308,20 +1308,12 @@ boolean delete(String src, BlocksMapUpdateInfo collectedBlocks,
+       if (!deleteAllowed(inodesInPath, src) ) {
+         filesRemoved = -1;
+       } else {
+-        // Before removing the node, first check if the targetNode is for a
+-        // snapshottable dir with snapshots, or its descendants have
+-        // snapshottable dir with snapshots
+-        final INode targetNode = inodesInPath.getLastINode();
+         List<INodeDirectorySnapshottable> snapshottableDirs = 
+             new ArrayList<INodeDirectorySnapshottable>();
+-        checkSnapshot(targetNode, snapshottableDirs);
++        checkSnapshot(inodesInPath.getLastINode(), snapshottableDirs);
+         filesRemoved = unprotectedDelete(inodesInPath, collectedBlocks,
+             removedINodes, now);
+-        if (snapshottableDirs.size() > 0) {
+-          // There are some snapshottable directories without snapshots to be
+-          // deleted. Need to update the SnapshotManager.
+-          namesystem.removeSnapshottableDirs(snapshottableDirs);
+-        }
++        namesystem.removeSnapshottableDirs(snapshottableDirs);
+       }
+     } finally {
+       writeUnlock();
+@@ -1383,18 +1375,25 @@ boolean isNonEmptyDirectory(String path) throws UnresolvedLinkException {
+    * @param src a string representation of a path to an inode
+    * @param mtime the time the inode is removed
+    * @throws SnapshotAccessControlException if path is in RO snapshot
+-   */ 
++   */
+   void unprotectedDelete(String src, long mtime) throws UnresolvedLinkException,
+-      QuotaExceededException, SnapshotAccessControlException {
++      QuotaExceededException, SnapshotAccessControlException, IOException {
+     assert hasWriteLock();
+     BlocksMapUpdateInfo collectedBlocks = new BlocksMapUpdateInfo();
+     List<INode> removedINodes = new ChunkedArrayList<INode>();
+ 
+     final INodesInPath inodesInPath = rootDir.getINodesInPath4Write(
+         normalizePath(src), false);
+-    final long filesRemoved = deleteAllowed(inodesInPath, src) ? 
+-        unprotectedDelete(inodesInPath, collectedBlocks, 
+-            removedINodes, mtime) : -1;
++    long filesRemoved = -1;
++    if (deleteAllowed(inodesInPath, src)) {
++      List<INodeDirectorySnapshottable> snapshottableDirs = 
++          new ArrayList<INodeDirectorySnapshottable>();
++      checkSnapshot(inodesInPath.getLastINode(), snapshottableDirs);
++      filesRemoved = unprotectedDelete(inodesInPath, collectedBlocks,
++          removedINodes, mtime);
++      namesystem.removeSnapshottableDirs(snapshottableDirs); 
++    }
++
+     if (filesRemoved >= 0) {
+       getFSNamesystem().removePathAndBlocks(src, collectedBlocks, 
+           removedINodes);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
+index bd7a4c3..a570573 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
+@@ -40,6 +40,7 @@
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
++import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+@@ -128,7 +129,42 @@ public void testDeleteDirectoryWithSnapshot() throws Exception {
+     exception.expectMessage(error);
+     hdfs.delete(sub, true);
+   }
+-  
++
++  /**
++   * Test applying editlog of operation which deletes a snapshottable directory
++   * without snapshots. The snapshottable dir list in snapshot manager should be
++   * updated.
++   */
++  @Test (timeout=300000)
++  public void testApplyEditLogForDeletion() throws Exception {
++    final Path foo = new Path("/foo");
++    final Path bar1 = new Path(foo, "bar1");
++    final Path bar2 = new Path(foo, "bar2");
++    hdfs.mkdirs(bar1);
++    hdfs.mkdirs(bar2);
++
++    // allow snapshots on bar1 and bar2
++    hdfs.allowSnapshot(bar1);
++    hdfs.allowSnapshot(bar2);
++    assertEquals(2, cluster.getNamesystem().getSnapshotManager()
++        .getNumSnapshottableDirs());
++    assertEquals(2, cluster.getNamesystem().getSnapshotManager()
++        .getSnapshottableDirs().length);
++
++    // delete /foo
++    hdfs.delete(foo, true);
++    cluster.restartNameNode(0);
++    // the snapshottable dir list in snapshot manager should be empty
++    assertEquals(0, cluster.getNamesystem().getSnapshotManager()
++        .getNumSnapshottableDirs());
++    assertEquals(0, cluster.getNamesystem().getSnapshotManager()
++        .getSnapshottableDirs().length);
++    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
++    hdfs.saveNamespace();
++    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
++    cluster.restartNameNode(0);
++  }
++
+   /**
+    * Deleting directory with snapshottable descendant with snapshots must fail.
+    */
+-- 
+1.7.0.4
+

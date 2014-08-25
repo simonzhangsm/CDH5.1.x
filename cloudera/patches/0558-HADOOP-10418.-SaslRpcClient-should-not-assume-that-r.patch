@@ -1,0 +1,29 @@
+From 75664b3cc3092fe060f068c01103de1593e6475f Mon Sep 17 00:00:00 2001
+From: Aaron Twining Myers <atm@apache.org>
+Date: Mon, 24 Mar 2014 00:02:46 +0000
+Subject: [PATCH 558/795] HADOOP-10418. SaslRpcClient should not assume that remote principals are in the default_realm. Contributed by Aaron T. Myers.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1580667 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b92e9b66d5f755aa1923097e1f65d9c8ed8754bf)
+---
+ .../org/apache/hadoop/security/SaslRpcClient.java  |    4 +++-
+ 1 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/SaslRpcClient.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/SaslRpcClient.java
+index 5343737..e7fd665 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/SaslRpcClient.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/SaslRpcClient.java
+@@ -297,7 +297,9 @@ String getServerPrincipal(SaslAuth authType) throws IOException {
+     }
+     // construct server advertised principal for comparision
+     String serverPrincipal = new KerberosPrincipal(
+-        authType.getProtocol() + "/" + authType.getServerId()).getName();
++        authType.getProtocol() + "/" + authType.getServerId(),
++        KerberosPrincipal.KRB_NT_SRV_HST).getName();
++
+     boolean isPrincipalValid = false;
+ 
+     // use the pattern if defined
+-- 
+1.7.0.4
+

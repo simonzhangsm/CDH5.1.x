@@ -1,0 +1,36 @@
+From 52a18b6a8ff89443da29d18b66627deeaf53acaa Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Mon, 10 Mar 2014 19:05:10 +0000
+Subject: [PATCH 681/795] HDFS-6070. Cleanup use of ReadStatistics in DFSInputStream.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1576048 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f40c3afee2e74f8e628053a8a5d93845e23bef49)
+---
+ .../org/apache/hadoop/hdfs/DFSInputStream.java     |    9 +++------
+ 1 files changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+index cc7bd46..d536342 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+@@ -659,14 +659,11 @@ private static void updateReadStatistics(ReadStatistics readStatistics,
+         int nRead, BlockReader blockReader) {
+     if (nRead <= 0) return;
+     if (blockReader.isShortCircuit()) {
+-      readStatistics.totalBytesRead += nRead;
+-      readStatistics.totalLocalBytesRead += nRead;
+-      readStatistics.totalShortCircuitBytesRead += nRead;
++      readStatistics.addShortCircuitBytes(nRead);
+     } else if (blockReader.isLocal()) {
+-      readStatistics.totalBytesRead += nRead;
+-      readStatistics.totalLocalBytesRead += nRead;
++      readStatistics.addLocalBytes(nRead);
+     } else {
+-      readStatistics.totalBytesRead += nRead;
++      readStatistics.addRemoteBytes(nRead);
+     }
+   }
+   
+-- 
+1.7.0.4
+

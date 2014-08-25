@@ -1,0 +1,58 @@
+From 62c609ad72a404ba2e7929ad06dc2d0fd6ff1749 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Fri, 9 May 2014 22:18:43 +0000
+Subject: [PATCH 592/795] YARN-2036. Document yarn.resourcemanager.hostname in ClusterSetup (Ray Chiang via Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1593631 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8b9be37bd188740aaeba743aa45397af3e0ecddb)
+---
+ .../hadoop-common/src/site/apt/ClusterSetup.apt.vm |   20 +++++++++++++++-----
+ 1 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/site/apt/ClusterSetup.apt.vm b/hadoop-common-project/hadoop-common/src/site/apt/ClusterSetup.apt.vm
+index b4fef5d..f5f1deb 100644
+--- a/hadoop-common-project/hadoop-common/src/site/apt/ClusterSetup.apt.vm
++++ b/hadoop-common-project/hadoop-common/src/site/apt/ClusterSetup.apt.vm
+@@ -226,24 +226,34 @@ Hadoop MapReduce Next Generation - Cluster Setup
+ *-------------------------+-------------------------+------------------------+
+ | <<<yarn.resourcemanager.address>>> | | |
+ | | <<<ResourceManager>>> host:port for clients to submit jobs. | |
+-| | | <host:port> |
++| | | <host:port>\ |
++| | | If set, overrides the hostname set in <<<yarn.resourcemanager.hostname>>>. |
+ *-------------------------+-------------------------+------------------------+
+ | <<<yarn.resourcemanager.scheduler.address>>> | | |
+ | | <<<ResourceManager>>> host:port for ApplicationMasters to talk to | |
+ | | Scheduler to obtain resources. | |
+-| | | <host:port> |
++| | | <host:port>\ |
++| | | If set, overrides the hostname set in <<<yarn.resourcemanager.hostname>>>. |
+ *-------------------------+-------------------------+------------------------+
+ | <<<yarn.resourcemanager.resource-tracker.address>>> | | |
+ | | <<<ResourceManager>>> host:port for NodeManagers. | |
+-| | | <host:port> |
++| | | <host:port>\ |
++| | | If set, overrides the hostname set in <<<yarn.resourcemanager.hostname>>>. |
+ *-------------------------+-------------------------+------------------------+
+ | <<<yarn.resourcemanager.admin.address>>> | | |
+ | | <<<ResourceManager>>> host:port for administrative commands. | |
+-| | | <host:port> |
++| | | <host:port>\ |
++| | | If set, overrides the hostname set in <<<yarn.resourcemanager.hostname>>>. |
+ *-------------------------+-------------------------+------------------------+
+ | <<<yarn.resourcemanager.webapp.address>>> | | |
+ | | <<<ResourceManager>>> web-ui host:port. | |
+-| | | <host:port> |
++| | | <host:port>\ |
++| | | If set, overrides the hostname set in <<<yarn.resourcemanager.hostname>>>. |
++*-------------------------+-------------------------+------------------------+
++| <<<yarn.resourcemanager.hostname>>> | | |
++| | <<<ResourceManager>>> host. | |
++| | | <host>\ |
++| | | Single hostname that can be set in place of setting all <<<yarn.resourcemanager*address>>> resources.  Results in default ports for ResourceManager components. |
+ *-------------------------+-------------------------+------------------------+
+ | <<<yarn.resourcemanager.scheduler.class>>> | | |
+ | | <<<ResourceManager>>> Scheduler class. | |
+-- 
+1.7.0.4
+

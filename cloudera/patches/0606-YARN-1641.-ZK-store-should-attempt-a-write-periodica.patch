@@ -1,0 +1,175 @@
+From 1fe617c293bea66820dca205c59409d1a1e2649b Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Wed, 12 Feb 2014 14:11:37 +0000
+Subject: [PATCH 606/795] YARN-1641. ZK store should attempt a write periodically to ensure it is still Active. (kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1567629 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b6fb773ca0739cc6df958e433f2d34c4083f2fec)
+---
+ .../resourcemanager/recovery/RMStateStore.java     |    6 ++--
+ .../resourcemanager/recovery/ZKRMStateStore.java   |   33 ++++++++++++++++++++
+ .../recovery/TestZKRMStateStore.java               |   33 ++------------------
+ 3 files changed, 39 insertions(+), 33 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+index c5fd365..fc4537c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+@@ -700,11 +700,11 @@ protected void handleStoreEvent(RMStateStoreEvent event) {
+ 
+   @SuppressWarnings("unchecked")
+   /**
+-   * In {#handleStoreEvent}, this method is called to notify the
+-   * ResourceManager that the store operation has failed.
++   * This method is called to notify the ResourceManager that the store
++   * operation has failed.
+    * @param failureCause the exception due to which the operation failed
+    */
+-  private void notifyStoreOperationFailed(Exception failureCause) {
++  protected void notifyStoreOperationFailed(Exception failureCause) {
+     RMFatalEventType type;
+     if (failureCause instanceof StoreFencedException) {
+       type = RMFatalEventType.STATE_STORE_FENCED;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 3b894b8..9f06b85 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -139,6 +139,7 @@
+   private String fencingNodePath;
+   private Op createFencingNodePathOp;
+   private Op deleteFencingNodePathOp;
++  private Thread verifyActiveStatusThread;
+   private String zkRootNodeUsername;
+   private final String zkRootNodePassword = Long.toString(random.nextLong());
+ 
+@@ -251,6 +252,8 @@ public synchronized void startInternal() throws Exception {
+     createRootDir(zkRootNodePath);
+     if (HAUtil.isHAEnabled(getConfig())){
+       fence();
++      verifyActiveStatusThread = new VerifyActiveStatusThread();
++      verifyActiveStatusThread.start();
+     }
+     createRootDir(rmAppRoot);
+     createRootDir(rmDTSecretManagerRoot);
+@@ -343,6 +346,10 @@ private synchronized void closeZkClients() throws IOException {
+ 
+   @Override
+   protected synchronized void closeInternal() throws Exception {
++    if (verifyActiveStatusThread != null) {
++      verifyActiveStatusThread.interrupt();
++      verifyActiveStatusThread.join(1000);
++    }
+     closeZkClients();
+   }
+ 
+@@ -894,6 +901,32 @@ public void setDataWithRetries(final String path, final byte[] data,
+     }.runWithRetries();
+   }
+ 
++  /**
++   * Helper class that periodically attempts creating a znode to ensure that
++   * this RM continues to be the Active.
++   */
++  private class VerifyActiveStatusThread extends Thread {
++    private List<Op> emptyOpList = new ArrayList<Op>();
++
++    VerifyActiveStatusThread() {
++      super(VerifyActiveStatusThread.class.getName());
++    }
++
++    public void run() {
++      try {
++        while (true) {
++          doMultiWithRetries(emptyOpList);
++          Thread.sleep(zkSessionTimeout);
++        }
++      } catch (InterruptedException ie) {
++        LOG.info(VerifyActiveStatusThread.class.getName() + " thread " +
++            "interrupted! Exiting!");
++      } catch (Exception e) {
++        notifyStoreOperationFailed(new StoreFencedException());
++      }
++    }
++  }
++
+   private abstract class ZKAction<T> {
+     // run() expects synchronization on ZKRMStateStore.this
+     abstract T run() throws KeeperException, InterruptedException;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+index 6b8a358..2174ae5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+@@ -23,10 +23,7 @@
+ import static org.mockito.Mockito.mock;
+ 
+ import java.io.IOException;
+-import java.nio.ByteBuffer;
+-import java.util.ArrayList;
+ import java.util.List;
+-import java.util.Map;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -34,15 +31,8 @@
+ import org.apache.hadoop.ha.HAServiceProtocol;
+ import org.apache.hadoop.ha.HAServiceProtocol.StateChangeRequestInfo;
+ import org.apache.hadoop.service.Service;
+-import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
+-import org.apache.hadoop.yarn.api.records.ApplicationId;
+-import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+-import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
+-import org.apache.hadoop.yarn.api.records.Priority;
+-import org.apache.hadoop.yarn.api.records.Resource;
+ import org.apache.hadoop.yarn.conf.HAUtil;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+-import org.apache.hadoop.yarn.server.resourcemanager.ClientRMService;
+ import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMStateVersion;
+ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.RMStateVersionPBImpl;
+@@ -54,6 +44,7 @@
+ public class TestZKRMStateStore extends RMStateStoreTestBase {
+ 
+   public static final Log LOG = LogFactory.getLog(TestZKRMStateStore.class);
++  private static final int ZK_TIMEOUT_MS = 1000;
+ 
+   class TestZKRMStateStoreTester implements RMStateStoreHelper {
+ 
+@@ -141,6 +132,7 @@ private Configuration createHARMConf(
+     conf.setBoolean(YarnConfiguration.RECOVERY_ENABLED, true);
+     conf.set(YarnConfiguration.RM_STORE, ZKRMStateStore.class.getName());
+     conf.set(YarnConfiguration.RM_ZK_ADDRESS, hostPort);
++    conf.setInt(YarnConfiguration.RM_ZK_TIMEOUT_MS, ZK_TIMEOUT_MS);
+     conf.set(YarnConfiguration.RM_HA_ID, rmId);
+     conf.set(YarnConfiguration.RM_WEBAPP_ADDRESS, "localhost:0");
+ 
+@@ -184,26 +176,7 @@ public void testFencing() throws Exception {
+         HAServiceProtocol.HAServiceState.ACTIVE,
+         rm2.getRMContext().getRMAdminService().getServiceStatus().getState());
+ 
+-    // Submitting an application to RM1 to trigger a state store operation.
+-    // RM1 should realize that it got fenced and is not the Active RM anymore.
+-    Map mockMap = mock(Map.class);
+-    ApplicationSubmissionContext asc =
+-        ApplicationSubmissionContext.newInstance(
+-            ApplicationId.newInstance(1000, 1),
+-            "testApplication", // app Name
+-            "default", // queue name
+-            Priority.newInstance(0),
+-            ContainerLaunchContext.newInstance(mockMap, mockMap,
+-                new ArrayList<String>(), mockMap, mock(ByteBuffer.class),
+-                mockMap),
+-            false, // unmanaged AM
+-            true, // cancelTokens
+-            1, // max app attempts
+-            Resource.newInstance(1024, 1));
+-    ClientRMService rmService = rm1.getClientRMService();
+-    rmService.submitApplication(SubmitApplicationRequest.newInstance(asc));
+-
+-    for (int i = 0; i < 30; i++) {
++    for (int i = 0; i < ZK_TIMEOUT_MS / 50; i++) {
+       if (HAServiceProtocol.HAServiceState.ACTIVE ==
+           rm1.getRMContext().getRMAdminService().getServiceStatus().getState()) {
+         Thread.sleep(100);
+-- 
+1.7.0.4
+

@@ -1,0 +1,353 @@
+From c58c92bdf3996f0c286f2ab6577bb4b9709bb077 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Mon, 3 Mar 2014 19:42:24 +0000
+Subject: [PATCH 503/795] YARN-1758. Fixed ResourceManager to not mandate the presence of site specific configuration files and thus fix failures in downstream tests. Contributed by Xuan Gong.
+ svn merge --ignore-ancestry -c 1573695 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1573697 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a3be29feae1182f84b913b173755beddb11a4b13)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+---
+ .../yarn/FileSystemBasedConfigurationProvider.java |    7 +-
+ .../yarn/server/resourcemanager/AdminService.java  |    8 ++-
+ .../resourcemanager/ApplicationMasterService.java  |   11 ++-
+ .../server/resourcemanager/ClientRMService.java    |   11 ++-
+ .../server/resourcemanager/ResourceManager.java    |   20 ++++--
+ .../resourcemanager/ResourceTrackerService.java    |   11 ++-
+ .../scheduler/capacity/CapacityScheduler.java      |   14 +++-
+ .../server/resourcemanager/TestRMAdminService.java |   69 ++++++--------------
+ 8 files changed, 79 insertions(+), 72 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/FileSystemBasedConfigurationProvider.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/FileSystemBasedConfigurationProvider.java
+index d87759e..bf50cad 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/FileSystemBasedConfigurationProvider.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/FileSystemBasedConfigurationProvider.java
+@@ -54,13 +54,14 @@ public synchronized InputStream getConfigurationInputStream(
+     if (YarnConfiguration.RM_CONFIGURATION_FILES.contains(name)) {
+       filePath = new Path(this.configDir, name);
+       if (!fs.exists(filePath)) {
+-        throw new YarnException("Can not find Configuration: " + name + " in "
+-            + configDir);
++        LOG.info(filePath + " not found");
++        return null;
+       }
+     } else {
+       filePath = new Path(name);
+       if (!fs.exists(filePath)) {
+-        throw new YarnException("Can not find file: " + name);
++        LOG.info(filePath + " not found");
++        return null;
+       }
+     }
+     return fs.open(filePath);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+index c53d40f..c5b2651 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/AdminService.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.yarn.server.resourcemanager;
+ 
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.net.InetSocketAddress;
+ import java.util.Map;
+ import java.util.Set;
+@@ -538,8 +539,11 @@ public UpdateNodeResourceResponse updateNodeResource(
+ 
+   private synchronized Configuration getConfiguration(Configuration conf,
+       String confFileName) throws YarnException, IOException {
+-    conf.addResource(this.rmContext.getConfigurationProvider()
+-        .getConfigurationInputStream(conf, confFileName));
++    InputStream confFileInputStream = this.rmContext.getConfigurationProvider()
++        .getConfigurationInputStream(conf, confFileName);
++    if (confFileInputStream != null) {
++      conf.addResource(confFileInputStream);
++    }
+     return conf;
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
+index 4c05d13..0dae6e5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.yarn.server.resourcemanager;
+ 
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.net.InetSocketAddress;
+ import java.util.ArrayList;
+ import java.util.HashSet;
+@@ -139,9 +140,13 @@ protected void serviceStart() throws Exception {
+     if (conf.getBoolean(
+         CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, 
+         false)) {
+-      conf.addResource(this.rmContext.getConfigurationProvider()
+-          .getConfigurationInputStream(conf,
+-              YarnConfiguration.HADOOP_POLICY_CONFIGURATION_FILE));
++      InputStream inputStream =
++          this.rmContext.getConfigurationProvider()
++              .getConfigurationInputStream(conf,
++                  YarnConfiguration.HADOOP_POLICY_CONFIGURATION_FILE);
++      if (inputStream != null) {
++        conf.addResource(inputStream);
++      }
+       refreshServiceAcls(conf, RMPolicyProvider.getInstance());
+     }
+     
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
+index 608579e..d676f06 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.yarn.server.resourcemanager;
+ 
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.net.InetSocketAddress;
+ import java.security.AccessControlException;
+ import java.util.ArrayList;
+@@ -169,9 +170,13 @@ protected void serviceStart() throws Exception {
+     if (conf.getBoolean(
+         CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, 
+         false)) {
+-      conf.addResource(this.rmContext.getConfigurationProvider()
+-          .getConfigurationInputStream(conf,
+-              YarnConfiguration.HADOOP_POLICY_CONFIGURATION_FILE));
++      InputStream inputStream =
++          this.rmContext.getConfigurationProvider()
++              .getConfigurationInputStream(conf,
++                  YarnConfiguration.HADOOP_POLICY_CONFIGURATION_FILE);
++      if (inputStream != null) {
++        conf.addResource(inputStream);
++      }
+       refreshServiceAcls(conf, RMPolicyProvider.getInstance());
+     }
+     
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 7443ef3..dc133c1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.yarn.server.resourcemanager;
+ 
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.util.List;
+ import java.util.concurrent.BlockingQueue;
+ import java.util.concurrent.LinkedBlockingQueue;
+@@ -188,13 +189,20 @@ protected void serviceInit(Configuration conf) throws Exception {
+     rmContext.setConfigurationProvider(configurationProvider);
+ 
+     // load yarn-site.xml
+-    this.conf.addResource(this.configurationProvider
+-        .getConfigurationInputStream(this.conf,
+-            YarnConfiguration.YARN_SITE_CONFIGURATION_FILE));
++    InputStream yarnSiteXMLInputStream =
++        this.configurationProvider.getConfigurationInputStream(this.conf,
++            YarnConfiguration.YARN_SITE_CONFIGURATION_FILE);
++    if (yarnSiteXMLInputStream != null) {
++      this.conf.addResource(yarnSiteXMLInputStream);
++    }
+     // load core-site.xml
+-    this.conf.addResource(this.configurationProvider
+-        .getConfigurationInputStream(this.conf,
+-            YarnConfiguration.CORE_SITE_CONFIGURATION_FILE));
++    InputStream coreSiteXMLInputStream =
++        this.configurationProvider.getConfigurationInputStream(this.conf,
++            YarnConfiguration.CORE_SITE_CONFIGURATION_FILE);
++    if (coreSiteXMLInputStream != null) {
++      this.conf.addResource(coreSiteXMLInputStream);
++    }
++
+     // Do refreshUserToGroupsMappings with loaded core-site.xml
+     Groups.getUserToGroupsMappingServiceWithLoadedConfiguration(this.conf)
+         .refresh();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceTrackerService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceTrackerService.java
+index fe889df..aad4d92 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceTrackerService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceTrackerService.java
+@@ -18,6 +18,7 @@
+ package org.apache.hadoop.yarn.server.resourcemanager;
+ 
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.net.InetSocketAddress;
+ 
+ import org.apache.commons.logging.Log;
+@@ -163,9 +164,13 @@ protected void serviceStart() throws Exception {
+     if (conf.getBoolean(
+         CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, 
+         false)) {
+-      conf.addResource(this.rmContext.getConfigurationProvider()
+-          .getConfigurationInputStream(conf,
+-              YarnConfiguration.HADOOP_POLICY_CONFIGURATION_FILE));
++      InputStream inputStream =
++          this.rmContext.getConfigurationProvider()
++              .getConfigurationInputStream(conf,
++                  YarnConfiguration.HADOOP_POLICY_CONFIGURATION_FILE);
++      if (inputStream != null) {
++        conf.addResource(inputStream);
++      }
+       refreshServiceAcls(conf, RMPolicyProvider.getInstance());
+     }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+index b8f2376..6c392b5 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
+ 
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.util.ArrayList;
+ import java.util.Comparator;
+ import java.util.HashMap;
+@@ -1024,10 +1025,15 @@ public synchronized boolean checkAccess(UserGroupInformation callerUGI,
+   private CapacitySchedulerConfiguration loadCapacitySchedulerConfiguration(
+       Configuration configuration) throws IOException {
+     try {
+-      configuration.addResource(this.rmContext.getConfigurationProvider()
+-          .getConfigurationInputStream(configuration,
+-              YarnConfiguration.CS_CONFIGURATION_FILE));
+-      return new CapacitySchedulerConfiguration(configuration, false);
++      InputStream CSInputStream =
++          this.rmContext.getConfigurationProvider()
++              .getConfigurationInputStream(configuration,
++                  YarnConfiguration.CS_CONFIGURATION_FILE);
++      if (CSInputStream != null) {
++        configuration.addResource(CSInputStream);
++        return new CapacitySchedulerConfiguration(configuration, false);
++      }
++      return new CapacitySchedulerConfiguration(configuration, true);
+     } catch (Exception e) {
+       throw new IOException(e);
+     }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index 9966065..8a0444e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -126,14 +126,6 @@ public void testAdminRefreshQueuesWithFileSystemBasedConfigurationProvider()
+       throws IOException, YarnException {
+     configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
+         "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
+-    try {
+-      rm = new MockRM(configuration);
+-      rm.init(configuration);
+-      rm.start();
+-      fail("Should throw an exception");
+-    } catch(Exception ex) {
+-      // Expect exception here
+-    }
+ 
+     //upload default configurations
+     uploadDefaultConfiguration();
+@@ -180,14 +172,6 @@ public void testAdminAclsWithFileSystemBasedConfigurationProvider()
+       throws IOException, YarnException {
+     configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
+         "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
+-    try {
+-      rm = new MockRM(configuration);
+-      rm.init(configuration);
+-      rm.start();
+-      fail("Should throw an exception");
+-    } catch(Exception ex) {
+-      // Expect exception here
+-    }
+ 
+     //upload default configurations
+     uploadDefaultConfiguration();
+@@ -246,14 +230,6 @@ public void testServiceAclsRefreshWithFileSystemBasedConfigurationProvider()
+         "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
+     ResourceManager resourceManager = null;
+     try {
+-      try {
+-        resourceManager = new ResourceManager();
+-        resourceManager.init(configuration);
+-        resourceManager.start();
+-        fail("Should throw an exception");
+-      } catch (Exception ex) {
+-        // expect to get an exception here
+-      }
+ 
+       //upload default configurations
+       uploadDefaultConfiguration();
+@@ -350,14 +326,6 @@ private void verifyServiceACLsRefresh(ServiceAuthorizationManager manager,
+       throws IOException, YarnException {
+     configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
+         "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
+-    try {
+-      rm = new MockRM(configuration);
+-      rm.init(configuration);
+-      rm.start();
+-      fail("Should throw an exception");
+-    } catch(Exception ex) {
+-      // Expect exception here
+-    }
+ 
+     //upload default configurations
+     uploadDefaultConfiguration();
+@@ -408,14 +376,6 @@ public void testRefreshUserToGroupsMappingsWithLocalConfigurationProvider() {
+           throws IOException, YarnException {
+     configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
+         "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
+-    try {
+-      rm = new MockRM(configuration);
+-      rm.init(configuration);
+-      rm.start();
+-      fail("Should throw an exception");
+-    } catch (Exception ex) {
+-      // Expect exception here
+-    }
+ 
+     String user = UserGroupInformation.getCurrentUser().getUserName();
+     List<String> groupWithInit =
+@@ -484,14 +444,6 @@ public void testRefreshNodesWithFileSystemBasedConfigurationProvider()
+       throws IOException, YarnException {
+     configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
+         "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
+-    try {
+-      rm = new MockRM(configuration);
+-      rm.init(configuration);
+-      rm.start();
+-      fail("Should throw an exception");
+-    } catch (Exception ex) {
+-      // Expect exception here
+-    }
+ 
+     // upload default configurations
+     uploadDefaultConfiguration();
+@@ -616,6 +568,27 @@ public void testRMHAWithFileSystemBasedConfiguration() throws IOException,
+     }
+   }
+ 
++  @Test
++  public void testRMStartsWithoutConfigurationFilesProvided() {
++    // enable FileSystemBasedConfigurationProvider without uploading
++    // any configuration files into Remote File System.
++    configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
++        "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
++
++    // The configurationProvider will return NULL instead of
++    // throwing out Exceptions, if there are no configuration files provided.
++    // RM will not load the remote Configuration files,
++    // and should start successfully.
++    try {
++      rm = new MockRM(configuration);
++      rm.init(configuration);
++      rm.start();
++    } catch (Exception ex) {
++      fail("Should not get any exceptions");
++    }
++
++  }
++
+   private String writeConfigurationXML(Configuration conf, String confXMLName)
+       throws IOException {
+     DataOutputStream output = null;
+-- 
+1.7.0.4
+

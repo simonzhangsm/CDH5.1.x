@@ -1,0 +1,46 @@
+From 1723ed239250bb7ca0bc136e4d781f493a359e88 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Sat, 15 Feb 2014 00:52:59 +0000
+Subject: [PATCH 378/795] HDFS-5953. TestBlockReaderFactory fails in trunk. (Akira Ajisaka via wang)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568569 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7dd28e5962ad81987bf2226670be5d4de22c1740)
+---
+ .../apache/hadoop/hdfs/TestBlockReaderFactory.java |    7 +++++++
+ 1 files changed, 7 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderFactory.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderFactory.java
+index 6b496e2..aa0e8d0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderFactory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderFactory.java
+@@ -36,6 +36,7 @@
+ import org.apache.hadoop.net.unix.TemporarySocketDirectory;
+ import org.junit.After;
+ import org.junit.Assert;
++import org.junit.Assume;
+ import org.junit.Before;
+ import org.junit.Test;
+ 
+@@ -47,6 +48,7 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_SKIP_CHECKSUM_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC;
++import static org.hamcrest.CoreMatchers.equalTo;
+ 
+ public class TestBlockReaderFactory {
+   static final Log LOG = LogFactory.getLog(TestBlockReaderFactory.class);
+@@ -56,6 +58,11 @@ public void init() {
+     DomainSocket.disableBindPathValidation();
+   }
+ 
++  @Before
++  public void before() {
++    Assume.assumeThat(DomainSocket.getLoadingFailureReason(), equalTo(null));
++  }
++
+   @After
+   public void cleanup() {
+     DFSInputStream.tcpReadsDisabledForTesting = false;
+-- 
+1.7.0.4
+

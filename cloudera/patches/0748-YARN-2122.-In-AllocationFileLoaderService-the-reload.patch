@@ -1,0 +1,158 @@
+From 78c1cb54f1a7432b2ed2359588f84fd971d04f8b Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Sat, 7 Jun 2014 00:51:50 +0000
+Subject: [PATCH 748/795] YARN-2122. In AllocationFileLoaderService, the reloadThread should be created in init() and started in start(). (Robert Kanter via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1601046 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 987b2630d9e94f386de6f3af158dcb81c39cc4a4)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java
+---
+ .../hadoop-yarn/dev-support/findbugs-exclude.xml   |    5 +
+ .../fair/AllocationFileLoaderService.java          |   93 +++++++++++---------
+ 2 files changed, 58 insertions(+), 40 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml b/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
+index 0fac0b9..0bac1c4 100644
+--- a/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
++++ b/hadoop-yarn-project/hadoop-yarn/dev-support/findbugs-exclude.xml
+@@ -142,6 +142,11 @@
+     <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.logaggregation.LogAggregationService" />
+     <Bug pattern="IS2_INCONSISTENT_SYNC" />
+   </Match>
++  <Match>
++    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.AllocationFileLoaderService" />
++    <Field name="allocFile" />
++    <Bug pattern="IS2_INCONSISTENT_SYNC" />
++  </Match>
+   <!-- Inconsistent sync warning - reinitialize read from other queue does not need sync-->
+   <Match>
+     <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.LeafQueue" />
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java
+index 9ce3059..fcb028d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AllocationFileLoaderService.java
+@@ -63,6 +63,8 @@
+   /** Time to wait between checks of the allocation file */
+   public static final long ALLOC_RELOAD_INTERVAL_MS = 10 * 1000;
+ 
++  public static final long THREAD_JOIN_TIMEOUT_MS = 1000;
++
+   /**
+    * Time to wait after the allocation has been modified before reloading it
+    * (this is done to prevent loading a file that hasn't been fully written).
+@@ -96,58 +98,69 @@ public AllocationFileLoaderService(Clock clock) {
+   }
+   
+   @Override
+-  public void init(Configuration conf) {
++  public void serviceInit(Configuration conf) throws Exception {
+     this.allocFile = getAllocationFile(conf);
+-    super.init(conf);
+-  }
+-  
+-  @Override
+-  public void start() {
+-    if (allocFile == null) {
+-      return;
+-    }
+-    reloadThread = new Thread() {
+-      public void run() {
+-        while (running) {
+-          long time = clock.getTime();
+-          long lastModified = allocFile.lastModified();
+-          if (lastModified > lastSuccessfulReload &&
+-              time > lastModified + ALLOC_RELOAD_WAIT_MS) {
+-            try {
+-              reloadAllocations();
+-            } catch (Exception ex) {
++    if (allocFile != null) {
++      reloadThread = new Thread() {
++        @Override
++        public void run() {
++          while (running) {
++            long time = clock.getTime();
++            long lastModified = allocFile.lastModified();
++            if (lastModified > lastSuccessfulReload &&
++                time > lastModified + ALLOC_RELOAD_WAIT_MS) {
++              try {
++                reloadAllocations();
++              } catch (Exception ex) {
++                if (!lastReloadAttemptFailed) {
++                  LOG.error("Failed to reload fair scheduler config file - " +
++                      "will use existing allocations.", ex);
++                }
++                lastReloadAttemptFailed = true;
++              }
++            } else if (lastModified == 0l) {
+               if (!lastReloadAttemptFailed) {
+-                LOG.error("Failed to reload fair scheduler config file - " +
+-                    "will use existing allocations.", ex);
++                LOG.warn("Failed to reload fair scheduler config file because" +
++                    " last modified returned 0. File exists: "
++                    + allocFile.exists());
+               }
+               lastReloadAttemptFailed = true;
+             }
+-          } else if (lastModified == 0l) {
+-            if (!lastReloadAttemptFailed) {
+-              LOG.warn("Failed to reload fair scheduler config file because" +
+-                  " last modified returned 0. File exists: " + allocFile.exists());
++            try {
++              Thread.sleep(reloadIntervalMs);
++            } catch (InterruptedException ex) {
++              LOG.info(
++                  "Interrupted while waiting to reload alloc configuration");
+             }
+-            lastReloadAttemptFailed = true;
+-          }
+-          try {
+-            Thread.sleep(reloadIntervalMs);
+-          } catch (InterruptedException ex) {
+-            LOG.info("Interrupted while waiting to reload alloc configuration");
+           }
+         }
+-      }
+-    };
+-    reloadThread.setName("AllocationFileReloader");
+-    reloadThread.setDaemon(true);
+-    reloadThread.start();
+-    super.start();
++      };
++      reloadThread.setName("AllocationFileReloader");
++      reloadThread.setDaemon(true);
++    }
++    super.serviceInit(conf);
+   }
+   
+   @Override
+-  public void stop() {
++  public void serviceStart() throws Exception {
++    if (reloadThread != null) {
++      reloadThread.start();
++    }
++    super.serviceStart();
++  }
++  
++  @Override
++  public void serviceStop() throws Exception {
+     running = false;
+-    reloadThread.interrupt();
+-    super.stop();
++    if (reloadThread != null) {
++      reloadThread.interrupt();
++      try {
++        reloadThread.join(THREAD_JOIN_TIMEOUT_MS);
++      } catch (InterruptedException e) {
++        LOG.warn("reloadThread fails to join.");
++      }
++    }
++    super.serviceStop();
+   }
+   
+   /**
+-- 
+1.7.0.4
+

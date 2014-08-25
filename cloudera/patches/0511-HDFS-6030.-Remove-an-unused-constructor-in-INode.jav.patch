@@ -1,0 +1,30 @@
+From 5715440c2fe41eba87fc6bd89da9326af6d8dd25 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Fri, 28 Feb 2014 18:47:31 +0000
+Subject: [PATCH 511/795] HDFS-6030.  Remove an unused constructor in INode.java (yzhang via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1573031 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 93848c5a6f26df982d8b90e3c290c75cd5cf5fb7)
+---
+ .../apache/hadoop/hdfs/server/namenode/INode.java  |    5 -----
+ 1 files changed, 0 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+index 9242812..b08324f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+@@ -752,11 +752,6 @@ public void dumpTreeRecursively(PrintWriter out, StringBuilder prefix,
+      */
+     private List<Block> toDeleteList;
+     
+-    public BlocksMapUpdateInfo(List<Block> toDeleteList) {
+-      this.toDeleteList = toDeleteList == null ? new ArrayList<Block>()
+-          : toDeleteList;
+-    }
+-    
+     public BlocksMapUpdateInfo() {
+       toDeleteList = new ChunkedArrayList<Block>();
+     }
+-- 
+1.7.0.4
+

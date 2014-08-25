@@ -1,0 +1,129 @@
+From 29b5935eed17719a3029cfd60ba3e7bc8a17d187 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Wed, 19 Feb 2014 23:38:46 +0000
+Subject: [PATCH 455/795] HDFS-5868. Make hsync implementation pluggable. (Contributed by Buddy Taylor)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1569978 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a403c537cd569022ef1b3bbd8d085ffc97e0b4a1)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/datanode/BlockReceiver.java |   20 +++++++---------
+ .../datanode/fsdataset/ReplicaOutputStreams.java   |   23 +++++++++++++++++++-
+ 2 files changed, 31 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
+index 4bc91ec..ca2eaad 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
+@@ -78,7 +78,6 @@
+   private boolean needsChecksumTranslation;
+   private OutputStream out = null; // to block file at local disk
+   private FileDescriptor outFd;
+-  private OutputStream cout = null; // output stream for cehcksum file
+   private DataOutputStream checksumOut = null; // to crc file at local disk
+   private int bytesPerChecksum;
+   private int checksumSize;
+@@ -223,9 +222,8 @@
+         LOG.warn("Could not get file descriptor for outputstream of class " +
+             out.getClass());
+       }
+-      this.cout = streams.getChecksumOut();
+       this.checksumOut = new DataOutputStream(new BufferedOutputStream(
+-          cout, HdfsConstants.SMALL_BUFFER_SIZE));
++          streams.getChecksumOut(), HdfsConstants.SMALL_BUFFER_SIZE));
+       // write data chunk header if creating a new replica
+       if (isCreate) {
+         BlockMetadataHeader.writeHeader(checksumOut, diskChecksum);
+@@ -280,9 +278,9 @@ public void close() throws IOException {
+         long flushStartNanos = System.nanoTime();
+         checksumOut.flush();
+         long flushEndNanos = System.nanoTime();
+-        if (syncOnClose && (cout instanceof FileOutputStream)) {
++        if (syncOnClose) {
+           long fsyncStartNanos = flushEndNanos;
+-          ((FileOutputStream)cout).getChannel().force(true);
++          streams.syncChecksumOut();
+           datanode.metrics.addFsyncNanos(System.nanoTime() - fsyncStartNanos);
+         }
+         flushTotalNanos += flushEndNanos - flushStartNanos;
+@@ -302,9 +300,9 @@ public void close() throws IOException {
+         long flushStartNanos = System.nanoTime();
+         out.flush();
+         long flushEndNanos = System.nanoTime();
+-        if (syncOnClose && (out instanceof FileOutputStream)) {
++        if (syncOnClose) {
+           long fsyncStartNanos = flushEndNanos;
+-          ((FileOutputStream)out).getChannel().force(true);
++          streams.syncDataOut();
+           datanode.metrics.addFsyncNanos(System.nanoTime() - fsyncStartNanos);
+         }
+         flushTotalNanos += flushEndNanos - flushStartNanos;
+@@ -338,9 +336,9 @@ void flushOrSync(boolean isSync) throws IOException {
+       long flushStartNanos = System.nanoTime();
+       checksumOut.flush();
+       long flushEndNanos = System.nanoTime();
+-      if (isSync && (cout instanceof FileOutputStream)) {
++      if (isSync) {
+         long fsyncStartNanos = flushEndNanos;
+-        ((FileOutputStream)cout).getChannel().force(true);
++        streams.syncChecksumOut();
+         datanode.metrics.addFsyncNanos(System.nanoTime() - fsyncStartNanos);
+       }
+       flushTotalNanos += flushEndNanos - flushStartNanos;
+@@ -349,9 +347,9 @@ void flushOrSync(boolean isSync) throws IOException {
+       long flushStartNanos = System.nanoTime();
+       out.flush();
+       long flushEndNanos = System.nanoTime();
+-      if (isSync && (out instanceof FileOutputStream)) {
++      if (isSync) {
+         long fsyncStartNanos = flushEndNanos;
+-        ((FileOutputStream)out).getChannel().force(true);
++        streams.syncDataOut();
+         datanode.metrics.addFsyncNanos(System.nanoTime() - fsyncStartNanos);
+       }
+       flushTotalNanos += flushEndNanos - flushStartNanos;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/ReplicaOutputStreams.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/ReplicaOutputStreams.java
+index 3866392..95044c8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/ReplicaOutputStreams.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/ReplicaOutputStreams.java
+@@ -18,7 +18,9 @@
+ package org.apache.hadoop.hdfs.server.datanode.fsdataset;
+ 
+ import java.io.Closeable;
++import java.io.FileOutputStream;
+ import java.io.OutputStream;
++import java.io.IOException;
+ 
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.util.DataChecksum;
+@@ -62,4 +64,23 @@ public void close() {
+     IOUtils.closeStream(dataOut);
+     IOUtils.closeStream(checksumOut);
+   }
+-}
+\ No newline at end of file
++
++  /**
++   * Sync the data stream if it supports it.
++   */
++  public void syncDataOut() throws IOException {
++    if (dataOut instanceof FileOutputStream) {
++      ((FileOutputStream)dataOut).getChannel().force(true);
++    }
++  }
++  
++  /**
++   * Sync the checksum stream if it supports it.
++   */
++  public void syncChecksumOut() throws IOException {
++    if (checksumOut instanceof FileOutputStream) {
++      ((FileOutputStream)checksumOut).getChannel().force(true);
++    }
++  }
++
++}
+-- 
+1.7.0.4
+

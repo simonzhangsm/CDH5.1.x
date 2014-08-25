@@ -1,0 +1,82 @@
+From a78fd8f558787f99d2eac22694038c1fd83b504b Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 28 Feb 2014 01:23:52 +0000
+Subject: [PATCH 482/795] HDFS-6032. -rollingUpgrade query hits NPE after the NN restarts. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1572801 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit ed0eae2906b6e3b9994cb32747e7ee9cb1fa0712)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    3 ++
+ .../hadoop/hdfs/server/namenode/FSImage.java       |    5 +++-
+ .../org/apache/hadoop/hdfs/TestRollingUpgrade.java |   26 ++++++++++++++++++++
+ 3 files changed, 33 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index 0121ec9..002afcd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -120,3 +120,6 @@ HDFS-5535 subtasks:
+ 
+     HDFS-6029. Secondary NN fails to checkpoint after -rollingUpgrade prepare.
+     (jing9)
++
++    HDFS-6032. -rollingUpgrade query hits NPE after the NN restarts. (Haohui Mai
++    via jing9)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index b71d016..bed1860 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -885,9 +885,12 @@ private void loadFSImage(File imageFile, FSNamesystem target,
+    */
+   private void loadFSImage(File curFile, MD5Hash expectedMd5,
+       FSNamesystem target, MetaRecoveryContext recovery) throws IOException {
++    // BlockPoolId is required when the FsImageLoader loads the rolling upgrade
++    // information. Make sure the ID is properly set.
++    target.setBlockPoolId(this.getBlockPoolID());
++
+     FSImageFormat.LoaderDelegator loader = FSImageFormat.newLoader(conf, target);
+     loader.load(curFile);
+-    target.setBlockPoolId(this.getBlockPoolID());
+ 
+     // Check that the image digest we loaded matches up with what
+     // we expected
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+index f500379..321f884 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+@@ -432,6 +432,32 @@ public void testQuery() throws Exception {
+     }
+   }
+ 
++  @Test (timeout = 300000)
++  public void testQueryAfterRestart() throws IOException, InterruptedException {
++    final Configuration conf = new Configuration();
++    MiniDFSCluster cluster = null;
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
++      cluster.waitActive();
++      DistributedFileSystem dfs = cluster.getFileSystem();
++
++      dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
++      // start rolling upgrade
++      dfs.rollingUpgrade(RollingUpgradeAction.PREPARE);
++      queryForPreparation(dfs);
++      dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
++      dfs.saveNamespace();
++      dfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
++
++      cluster.restartNameNodes();
++      dfs.rollingUpgrade(RollingUpgradeAction.QUERY);
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
++
+   @Test(timeout = 300000)
+   public void testCheckpoint() throws IOException, InterruptedException {
+     final Configuration conf = new Configuration();
+-- 
+1.7.0.4
+

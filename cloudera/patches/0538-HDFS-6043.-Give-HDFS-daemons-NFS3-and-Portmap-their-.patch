@@ -1,0 +1,44 @@
+From 69f0505c6dacfa71195ce357c4f9a587b87a269f Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Wed, 5 Mar 2014 18:50:45 +0000
+Subject: [PATCH 538/795] HDFS-6043. Give HDFS daemons NFS3 and Portmap their own OPTS. Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1574616 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 67751676339a0d483719bad4c73bf25148427315)
+---
+ .../hadoop-common/src/main/conf/hadoop-env.sh      |    3 +++
+ hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs  |    2 ++
+ 2 files changed, 5 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/conf/hadoop-env.sh b/hadoop-common-project/hadoop-common/src/main/conf/hadoop-env.sh
+index 5836a8a..8e642b2 100644
+--- a/hadoop-common-project/hadoop-common/src/main/conf/hadoop-env.sh
++++ b/hadoop-common-project/hadoop-common/src/main/conf/hadoop-env.sh
+@@ -53,6 +53,9 @@ export HADOOP_DATANODE_OPTS="-Dhadoop.security.logger=ERROR,RFAS $HADOOP_DATANOD
+ 
+ export HADOOP_SECONDARYNAMENODE_OPTS="-Dhadoop.security.logger=${HADOOP_SECURITY_LOGGER:-INFO,RFAS} -Dhdfs.audit.logger=${HDFS_AUDIT_LOGGER:-INFO,NullAppender} $HADOOP_SECONDARYNAMENODE_OPTS"
+ 
++export HADOOP_NFS3_OPTS="$HADOOP_NFS3_OPTS"
++export HADOOP_PORTMAP_OPTS="-Xmx512m $HADOOP_PORTMAP_OPTS"
++
+ # The following applies to multiple commands (fs, dfs, fsck, distcp etc)
+ export HADOOP_CLIENT_OPTS="-Xmx512m $HADOOP_CLIENT_OPTS"
+ #HADOOP_JAVA_PLATFORM_OPTS="-XX:-UsePerfData $HADOOP_JAVA_PLATFORM_OPTS"
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs b/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+index 16f2e2a..ea9439d 100755
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/bin/hdfs
+@@ -154,8 +154,10 @@ elif [ "$COMMAND" = "lsSnapshottableDir" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.snapshot.LsSnapshottableDir
+ elif [ "$COMMAND" = "portmap" ] ; then
+   CLASS=org.apache.hadoop.portmap.Portmap
++  HADOOP_OPTS="$HADOOP_OPTS $HADOOP_PORTMAP_OPTS"
+ elif [ "$COMMAND" = "nfs3" ] ; then
+   CLASS=org.apache.hadoop.hdfs.nfs.nfs3.Nfs3
++  HADOOP_OPTS="$HADOOP_OPTS $HADOOP_NFS3_OPTS"
+ elif [ "$COMMAND" = "cacheadmin" ] ; then
+   CLASS=org.apache.hadoop.hdfs.tools.CacheAdmin
+ else
+-- 
+1.7.0.4
+

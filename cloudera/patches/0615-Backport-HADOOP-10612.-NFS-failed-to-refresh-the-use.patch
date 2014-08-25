@@ -1,0 +1,46 @@
+From 03ebe9ef6f65b8ad4de293d22b0e9db9084619f1 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Wed, 28 May 2014 14:57:43 -0700
+Subject: [PATCH 615/795] Backport HADOOP-10612. NFS failed to refresh the user group id mapping table. Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1596075 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../org/apache/hadoop/nfs/nfs3/IdUserGroup.java    |    5 +++--
+ 1 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+index b818901..79f291d 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+@@ -24,6 +24,7 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.util.Time;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.collect.BiMap;
+@@ -79,7 +80,7 @@ public long getTimeout() {
+   }
+   
+   synchronized private boolean isExpired() {
+-    return lastUpdateTime - System.currentTimeMillis() > timeout;
++    return Time.monotonicNow() - lastUpdateTime > timeout;
+   }
+ 
+   // If can't update the maps, will keep using the old ones
+@@ -195,7 +196,7 @@ synchronized public void updateMaps() throws IOException {
+ 
+     uidNameMap = uMap;
+     gidNameMap = gMap;
+-    lastUpdateTime = System.currentTimeMillis();
++    lastUpdateTime = Time.monotonicNow();
+   }
+ 
+   synchronized public int getUid(String user) throws IOException {
+-- 
+1.7.0.4
+

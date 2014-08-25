@@ -1,0 +1,76 @@
+From 1795c15e49c923f1565a4df3e6eaf088fa1da0e5 Mon Sep 17 00:00:00 2001
+From: Tsz-wo Sze <szetszwo@apache.org>
+Date: Fri, 7 Mar 2014 23:47:43 +0000
+Subject: [PATCH 698/795] HDFS-6076. DataNode with SimulatedDataSet should not create DatanodeRegistration with namenode layout version and namenode node type.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1575452 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hdfs/server/datanode/BPOfferService.java       |    2 +-
+ .../hadoop/hdfs/server/datanode/DataNode.java      |   11 ++++++++---
+ 2 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java
+index 7cb1728..2977bfc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java
+@@ -329,7 +329,7 @@ private static void checkNSEquality(
+     }
+   }
+ 
+-  synchronized DatanodeRegistration createRegistration() throws IOException {
++  synchronized DatanodeRegistration createRegistration() {
+     Preconditions.checkState(bpNSInfo != null,
+         "getRegistration() can only be called after initial handshake");
+     return dn.createBPRegistration(bpNSInfo);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index 732e8b0..c5b9d37 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -21,6 +21,7 @@
+ import com.google.common.base.Joiner;
+ import com.google.common.base.Preconditions;
+ import com.google.protobuf.BlockingService;
++
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
+@@ -48,6 +49,7 @@
+ import org.apache.hadoop.hdfs.security.token.block.*;
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager.AccessMode;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NodeType;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.JspHelper;
+@@ -89,6 +91,7 @@
+ import org.mortbay.util.ajax.JSON;
+ 
+ import javax.management.ObjectName;
++
+ import java.io.*;
+ import java.lang.management.ManagementFactory;
+ import java.net.*;
+@@ -811,12 +814,14 @@ private synchronized void checkDatanodeUuid() throws IOException {
+    * Create a DatanodeRegistration for a specific block pool.
+    * @param nsInfo the namespace info from the first part of the NN handshake
+    */
+-  DatanodeRegistration createBPRegistration(NamespaceInfo nsInfo)
+-      throws IOException {
++  DatanodeRegistration createBPRegistration(NamespaceInfo nsInfo) {
+     StorageInfo storageInfo = storage.getBPStorage(nsInfo.getBlockPoolID());
+     if (storageInfo == null) {
+       // it's null in the case of SimulatedDataSet
+-      storageInfo = new StorageInfo(nsInfo);
++      storageInfo = new StorageInfo(
++          DataNodeLayoutVersion.CURRENT_LAYOUT_VERSION,
++          nsInfo.getNamespaceID(), nsInfo.clusterID, nsInfo.getCTime(),
++          NodeType.DATA_NODE);
+     }
+ 
+     DatanodeID dnId = new DatanodeID(
+-- 
+1.7.0.4
+

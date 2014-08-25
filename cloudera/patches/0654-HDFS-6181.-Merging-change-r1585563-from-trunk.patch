@@ -1,0 +1,735 @@
+From 9b27b6bc92fcd9efe9916597339cb8dbb89dccdc Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Mon, 7 Apr 2014 20:40:01 +0000
+Subject: [PATCH 654/795] HDFS-6181. Merging change r1585563 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1585581 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 77056c0bfe72abd0426353cd0e47ecf1bb50337e)
+
+Conflicts:
+
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+	hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+---
+ .../hadoop/hdfs/nfs/mount/RpcProgramMountd.java    |    4 +-
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |    4 +-
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |   25 +++++++++----------
+ .../main/java/org/apache/hadoop/hdfs/DFSUtil.java  |    4 +-
+ .../hdfs/protocol/ClientDatanodeProtocol.java      |    2 +-
+ .../hadoop/hdfs/protocol/ClientProtocol.java       |    2 +-
+ .../hdfs/protocolPB/ClientDatanodeProtocolPB.java  |    2 +-
+ .../hdfs/protocolPB/ClientNamenodeProtocolPB.java  |    2 +-
+ .../hadoop/hdfs/protocolPB/DatanodeProtocolPB.java |    4 +-
+ .../hdfs/protocolPB/InterDatanodeProtocolPB.java   |    4 +-
+ .../hadoop/hdfs/protocolPB/JournalProtocolPB.java  |    4 +-
+ .../hadoop/hdfs/protocolPB/NamenodeProtocolPB.java |    4 +-
+ .../hdfs/qjournal/protocol/QJournalProtocol.java   |    4 +-
+ .../qjournal/protocolPB/QJournalProtocolPB.java    |    4 +-
+ .../qjournal/server/GetJournalEditServlet.java     |    2 +-
+ .../hadoop/hdfs/qjournal/server/JournalNode.java   |    2 +-
+ .../qjournal/server/JournalNodeHttpServer.java     |    2 +-
+ .../hadoop/hdfs/server/datanode/DataNode.java      |    2 +-
+ .../hadoop/hdfs/server/namenode/ImageServlet.java  |    6 ++--
+ .../hadoop/hdfs/server/namenode/NameNode.java      |   10 ++++----
+ .../hdfs/server/namenode/NameNodeHttpServer.java   |    2 +-
+ .../hdfs/server/namenode/SecondaryNameNode.java    |    4 +-
+ .../hdfs/server/namenode/ha/BootstrapStandby.java  |    4 +-
+ .../hdfs/server/protocol/DatanodeProtocol.java     |    4 +-
+ .../server/protocol/InterDatanodeProtocol.java     |    4 +-
+ .../hdfs/server/protocol/JournalProtocol.java      |    4 +-
+ .../hdfs/server/protocol/NamenodeProtocol.java     |    2 +-
+ .../org/apache/hadoop/hdfs/tools/DFSAdmin.java     |    8 +++---
+ .../org/apache/hadoop/hdfs/tools/DFSHAAdmin.java   |    2 +-
+ .../hadoop/hdfs/tools/DFSZKFailoverController.java |    4 +-
+ .../org/apache/hadoop/hdfs/tools/GetGroups.java    |    2 +-
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |   20 +++++++++------
+ .../server/datanode/TestStartSecureDataNode.java   |    6 ++--
+ .../hdfs/server/namenode/TestGetImageServlet.java  |    4 +-
+ .../TestSecureNameNodeWithExternalKdc.java         |    4 +-
+ 35 files changed, 85 insertions(+), 82 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
+index 757a4df..29b227a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
+@@ -17,7 +17,7 @@
+  */
+ package org.apache.hadoop.hdfs.nfs.mount;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_KEYTAB_FILE_KEY;
+-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_USER_NAME_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_KERBEROS_PRINCIPAL_KEY;
+ 
+ import java.io.IOException;
+ import java.net.DatagramSocket;
+@@ -91,7 +91,7 @@ public RpcProgramMountd(Configuration config, DatagramSocket registrationSocket,
+     this.mounts = Collections.synchronizedList(new ArrayList<MountEntry>());
+     UserGroupInformation.setConfiguration(config);
+     SecurityUtil.login(config, DFS_NFS_KEYTAB_FILE_KEY,
+-            DFS_NFS_USER_NAME_KEY);
++            DFS_NFS_KERBEROS_PRINCIPAL_KEY);
+     this.dfsClient = new DFSClient(NameNode.getAddress(config), config);
+   }
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 334da4e..0c4f6c4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -131,7 +131,7 @@
+ import com.google.common.annotations.VisibleForTesting;
+ 
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_KEYTAB_FILE_KEY;
+-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_USER_NAME_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NFS_KERBEROS_PRINCIPAL_KEY;
+ 
+ /**
+  * RPC program corresponding to nfs daemon. See {@link Nfs3}.
+@@ -188,7 +188,7 @@ public RpcProgramNfs3(Configuration config, DatagramSocket registrationSocket,
+         Nfs3Constant.ENABLE_FILE_DUMP_DEFAULT);
+     UserGroupInformation.setConfiguration(config);
+     SecurityUtil.login(config, DFS_NFS_KEYTAB_FILE_KEY,
+-            DFS_NFS_USER_NAME_KEY);
++            DFS_NFS_KERBEROS_PRINCIPAL_KEY);
+ 
+     if (!enableDump) {
+       writeDumpDir = null;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 0a265ea..082ff05 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -488,17 +488,17 @@
+   public static final String  DFS_WEB_UGI_KEY = "dfs.web.ugi";
+   public static final String  DFS_NAMENODE_STARTUP_KEY = "dfs.namenode.startup";
+   public static final String  DFS_DATANODE_KEYTAB_FILE_KEY = "dfs.datanode.keytab.file";
+-  public static final String  DFS_DATANODE_USER_NAME_KEY = "dfs.datanode.kerberos.principal";
++  public static final String  DFS_DATANODE_KERBEROS_PRINCIPAL_KEY = "dfs.datanode.kerberos.principal";
+   public static final String  DFS_DATANODE_SHARED_FILE_DESCRIPTOR_PATHS = "dfs.datanode.shared.file.descriptor.paths";
+   public static final String  DFS_DATANODE_SHARED_FILE_DESCRIPTOR_PATHS_DEFAULT = "/dev/shm,/tmp";
+   public static final String  DFS_SHORT_CIRCUIT_SHARED_MEMORY_WATCHER_INTERRUPT_CHECK_MS = "dfs.short.circuit.shared.memory.watcher.interrupt.check.ms";
+   public static final int     DFS_SHORT_CIRCUIT_SHARED_MEMORY_WATCHER_INTERRUPT_CHECK_MS_DEFAULT = 60000;
+   public static final String  DFS_NAMENODE_KEYTAB_FILE_KEY = "dfs.namenode.keytab.file";
+-  public static final String  DFS_NAMENODE_USER_NAME_KEY = "dfs.namenode.kerberos.principal";
+-  public static final String  DFS_NAMENODE_INTERNAL_SPNEGO_USER_NAME_KEY = "dfs.namenode.kerberos.internal.spnego.principal";
++  public static final String  DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY = "dfs.namenode.kerberos.principal";
++  public static final String  DFS_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY = "dfs.namenode.kerberos.internal.spnego.principal";
+   public static final String  DFS_SECONDARY_NAMENODE_KEYTAB_FILE_KEY = "dfs.secondary.namenode.keytab.file";
+-  public static final String  DFS_SECONDARY_NAMENODE_USER_NAME_KEY = "dfs.secondary.namenode.kerberos.principal";
+-  public static final String  DFS_SECONDARY_NAMENODE_INTERNAL_SPNEGO_USER_NAME_KEY = "dfs.secondary.namenode.kerberos.internal.spnego.principal";
++  public static final String  DFS_SECONDARY_NAMENODE_KERBEROS_PRINCIPAL_KEY = "dfs.secondary.namenode.kerberos.principal";
++  public static final String  DFS_SECONDARY_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY = "dfs.secondary.namenode.kerberos.internal.spnego.principal";
+   public static final String  DFS_NAMENODE_NAME_CACHE_THRESHOLD_KEY = "dfs.namenode.name.cache.threshold";
+   public static final int     DFS_NAMENODE_NAME_CACHE_THRESHOLD_DEFAULT = 10;
+   
+@@ -555,8 +555,8 @@
+   public static final String  DFS_JOURNALNODE_HTTPS_ADDRESS_DEFAULT = "0.0.0.0:" + DFS_JOURNALNODE_HTTPS_PORT_DEFAULT;
+ 
+   public static final String  DFS_JOURNALNODE_KEYTAB_FILE_KEY = "dfs.journalnode.keytab.file";
+-  public static final String  DFS_JOURNALNODE_USER_NAME_KEY = "dfs.journalnode.kerberos.principal";
+-  public static final String  DFS_JOURNALNODE_INTERNAL_SPNEGO_USER_NAME_KEY = "dfs.journalnode.kerberos.internal.spnego.principal";
++  public static final String  DFS_JOURNALNODE_KERBEROS_PRINCIPAL_KEY = "dfs.journalnode.kerberos.principal";
++  public static final String  DFS_JOURNALNODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY = "dfs.journalnode.kerberos.internal.spnego.principal";
+ 
+   // Journal-node related configs for the client side.
+   public static final String  DFS_QJOURNAL_QUEUE_SIZE_LIMIT_KEY = "dfs.qjournal.queued-edits.limit.mb";
+@@ -615,8 +615,6 @@
+   public static final int     DFS_HTTP_CLIENT_FAILOVER_SLEEPTIME_BASE_DEFAULT = 500;
+   public static final String  DFS_HTTP_CLIENT_FAILOVER_SLEEPTIME_MAX_KEY = "dfs.http.client.failover.sleep.max.millis";
+   public static final int     DFS_HTTP_CLIENT_FAILOVER_SLEEPTIME_MAX_DEFAULT = 15000;
+-  public static final String DFS_NFS_KEYTAB_FILE_KEY = "dfs.nfs.keytab.file";
+-  public static final String DFS_NFS_USER_NAME_KEY = "dfs.nfs.kerberos.principal";
+ 
+   // hedged read properties
+   public static final String DFS_DFSCLIENT_HEDGED_READ_THRESHOLD_MILLIS =
+@@ -624,13 +622,14 @@
+   public static final long DEFAULT_DFSCLIENT_HEDGED_READ_THRESHOLD_MILLIS =
+       500;
+ 
+-  public static final String DFS_DFSCLIENT_HEDGED_READ_THREADPOOL_SIZE =
+-      "dfs.client.hedged.read.threadpool.size";
+-  public static final int    DEFAULT_DFSCLIENT_HEDGED_READ_THREADPOOL_SIZE = 0;
+-
+   public static final String  DFS_NFS_REGISTRATION_PORT_KEY = "dfs.nfs.registration.port";
+   public static final int     DFS_NFS_REGISTRATION_PORT_DEFAULT = 40; // Currently unassigned.
+   public static final String  DFS_NFS_ALLOW_INSECURE_PORTS_KEY = "dfs.nfs.allow.insecure.ports";
+   public static final boolean DFS_NFS_ALLOW_INSECURE_PORTS_DEFAULT = true;
+   
++  public static final String DFS_DFSCLIENT_HEDGED_READ_THREADPOOL_SIZE =
++      "dfs.client.hedged.read.threadpool.size";
++  public static final int DEFAULT_DFSCLIENT_HEDGED_READ_THREADPOOL_SIZE = 0;
++  public static final String DFS_NFS_KEYTAB_FILE_KEY = "dfs.nfs.keytab.file";
++  public static final String DFS_NFS_KERBEROS_PRINCIPAL_KEY = "dfs.nfs.kerberos.principal";
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+index 5aa8651..eb49590 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+@@ -685,7 +685,7 @@ public static String addKeySuffixes(String key, String... suffixes) {
+           Configuration confForNn = new Configuration(conf);
+           NameNode.initializeGenericKeys(confForNn, nsId, nnId);
+           String principal = SecurityUtil.getServerPrincipal(confForNn
+-              .get(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY),
++              .get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY),
+               NameNode.getAddress(confForNn).getHostName());
+           principals.add(principal);
+         }
+@@ -693,7 +693,7 @@ public static String addKeySuffixes(String key, String... suffixes) {
+         Configuration confForNn = new Configuration(conf);
+         NameNode.initializeGenericKeys(confForNn, nsId, null);
+         String principal = SecurityUtil.getServerPrincipal(confForNn
+-            .get(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY),
++            .get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY),
+             NameNode.getAddress(confForNn).getHostName());
+         principals.add(principal);
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientDatanodeProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientDatanodeProtocol.java
+index aa99a40..50955fa 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientDatanodeProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientDatanodeProtocol.java
+@@ -36,7 +36,7 @@
+ @InterfaceAudience.Private
+ @InterfaceStability.Evolving
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY)
+ @TokenInfo(BlockTokenSelector.class)
+ public interface ClientDatanodeProtocol {
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+index 036a1a9..0e08555 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+@@ -64,7 +64,7 @@
+ @InterfaceAudience.Private
+ @InterfaceStability.Evolving
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
+ @TokenInfo(DelegationTokenSelector.class)
+ public interface ClientProtocol {
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientDatanodeProtocolPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientDatanodeProtocolPB.java
+index df1a569..21073eb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientDatanodeProtocolPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientDatanodeProtocolPB.java
+@@ -26,7 +26,7 @@
+ import org.apache.hadoop.security.token.TokenInfo;
+ 
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY)
+ @TokenInfo(BlockTokenSelector.class)
+ @ProtocolInfo(protocolName = 
+     "org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol",
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolPB.java
+index 26cfaf3..4f25694 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/ClientNamenodeProtocolPB.java
+@@ -31,7 +31,7 @@
+ @InterfaceAudience.Private
+ @InterfaceStability.Stable
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
+ @TokenInfo(DelegationTokenSelector.class)
+ @ProtocolInfo(protocolName = HdfsConstants.CLIENT_NAMENODE_PROTOCOL_NAME, 
+     protocolVersion = 1)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/DatanodeProtocolPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/DatanodeProtocolPB.java
+index c69cde8..c66e74f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/DatanodeProtocolPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/DatanodeProtocolPB.java
+@@ -25,8 +25,8 @@
+ import org.apache.hadoop.security.KerberosInfo;
+ 
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, 
+-    clientPrincipal = DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, 
++    clientPrincipal = DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY)
+ @ProtocolInfo(
+     protocolName = "org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol", 
+     protocolVersion = 1)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/InterDatanodeProtocolPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/InterDatanodeProtocolPB.java
+index 45501a6..25ba8f1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/InterDatanodeProtocolPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/InterDatanodeProtocolPB.java
+@@ -24,8 +24,8 @@
+ import org.apache.hadoop.security.KerberosInfo;
+ 
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY,
+-    clientPrincipal = DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY,
++    clientPrincipal = DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY)
+ @ProtocolInfo(protocolName = 
+     "org.apache.hadoop.hdfs.server.protocol.InterDatanodeProtocol",
+     protocolVersion = 1)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/JournalProtocolPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/JournalProtocolPB.java
+index f8f45f7..25c9802 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/JournalProtocolPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/JournalProtocolPB.java
+@@ -31,8 +31,8 @@
+  * add annotations required for security.
+  */
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY,
+-    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY,
++    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
+ @ProtocolInfo(protocolName = 
+     "org.apache.hadoop.hdfs.server.protocol.JournalProtocol",
+     protocolVersion = 1)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/NamenodeProtocolPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/NamenodeProtocolPB.java
+index a884e7a..d8aee26 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/NamenodeProtocolPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/NamenodeProtocolPB.java
+@@ -32,8 +32,8 @@
+  * add annotations required for security.
+  */
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY,
+-    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY,
++    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
+ @ProtocolInfo(protocolName = 
+     "org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol",
+     protocolVersion = 1)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/protocol/QJournalProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/protocol/QJournalProtocol.java
+index 0c64e75..1586854 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/protocol/QJournalProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/protocol/QJournalProtocol.java
+@@ -43,8 +43,8 @@
+  * recovery of the nodes.
+  */
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_JOURNALNODE_USER_NAME_KEY,
+-    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_JOURNALNODE_KERBEROS_PRINCIPAL_KEY,
++    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
+ @InterfaceAudience.Private
+ public interface QJournalProtocol {
+   public static final long versionID = 1L;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/protocolPB/QJournalProtocolPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/protocolPB/QJournalProtocolPB.java
+index 240bbfb..308fa57 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/protocolPB/QJournalProtocolPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/protocolPB/QJournalProtocolPB.java
+@@ -30,8 +30,8 @@
+  * add annotations required for security.
+  */
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_JOURNALNODE_USER_NAME_KEY,
+-    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_JOURNALNODE_KERBEROS_PRINCIPAL_KEY,
++    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
+ @ProtocolInfo(protocolName = 
+     "org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocol",
+     protocolVersion = 1)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/GetJournalEditServlet.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/GetJournalEditServlet.java
+index e9387d7..070e669 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/GetJournalEditServlet.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/GetJournalEditServlet.java
+@@ -93,7 +93,7 @@ protected boolean isValidRequestor(HttpServletRequest request, Configuration con
+     validRequestors.addAll(DFSUtil.getAllNnPrincipals(conf));
+     validRequestors.add(
+         SecurityUtil.getServerPrincipal(conf
+-            .get(DFSConfigKeys.DFS_SECONDARY_NAMENODE_USER_NAME_KEY),
++            .get(DFSConfigKeys.DFS_SECONDARY_NAMENODE_KERBEROS_PRINCIPAL_KEY),
+             SecondaryNameNode.getHttpAddress(conf).getHostName()));
+ 
+     // Check the full principal name of all the configured valid requestors.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
+index e6d5042..344987f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNode.java
+@@ -134,7 +134,7 @@ public void start() throws IOException {
+ 
+     InetSocketAddress socAddr = JournalNodeRpcServer.getAddress(conf);
+     SecurityUtil.login(conf, DFSConfigKeys.DFS_JOURNALNODE_KEYTAB_FILE_KEY,
+-        DFSConfigKeys.DFS_JOURNALNODE_USER_NAME_KEY, socAddr.getHostName());
++        DFSConfigKeys.DFS_JOURNALNODE_KERBEROS_PRINCIPAL_KEY, socAddr.getHostName());
+     
+     registerJNMXBean();
+     
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNodeHttpServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNodeHttpServer.java
+index f58de60..668ba5c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNodeHttpServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/JournalNodeHttpServer.java
+@@ -58,7 +58,7 @@ void start() throws IOException {
+ 
+     HttpServer2.Builder builder = DFSUtil.httpServerTemplateForNNAndJN(conf,
+         httpAddr, httpsAddr, "journal",
+-        DFSConfigKeys.DFS_JOURNALNODE_INTERNAL_SPNEGO_USER_NAME_KEY,
++        DFSConfigKeys.DFS_JOURNALNODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
+         DFSConfigKeys.DFS_JOURNALNODE_KEYTAB_FILE_KEY);
+ 
+     httpServer = builder.build();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index aa2d416..89c386d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -1762,7 +1762,7 @@ public static DataNode instantiateDataNode(String args [], Configuration conf,
+     Collection<StorageLocation> dataLocations = getStorageLocations(conf);
+     UserGroupInformation.setConfiguration(conf);
+     SecurityUtil.login(conf, DFS_DATANODE_KEYTAB_FILE_KEY,
+-        DFS_DATANODE_USER_NAME_KEY);
++        DFS_DATANODE_KERBEROS_PRINCIPAL_KEY);
+     return makeInstance(dataLocations, conf, resources);
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ImageServlet.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ImageServlet.java
+index b1f127d..3e92079 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ImageServlet.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ImageServlet.java
+@@ -235,16 +235,16 @@ static boolean isValidRequestor(ServletContext context, String remoteUser,
+     Set<String> validRequestors = new HashSet<String>();
+ 
+     validRequestors.add(SecurityUtil.getServerPrincipal(conf
+-        .get(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY),
++        .get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY),
+         NameNode.getAddress(conf).getHostName()));
+     validRequestors.add(SecurityUtil.getServerPrincipal(
+-        conf.get(DFSConfigKeys.DFS_SECONDARY_NAMENODE_USER_NAME_KEY),
++        conf.get(DFSConfigKeys.DFS_SECONDARY_NAMENODE_KERBEROS_PRINCIPAL_KEY),
+         SecondaryNameNode.getHttpAddress(conf).getHostName()));
+ 
+     if (HAUtil.isHAEnabled(conf, DFSUtil.getNamenodeNameServiceId(conf))) {
+       Configuration otherNnConf = HAUtil.getConfForOtherNode(conf);
+       validRequestors.add(SecurityUtil.getServerPrincipal(otherNnConf
+-          .get(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY),
++          .get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY),
+           NameNode.getAddress(otherNnConf).getHostName()));
+     }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+index d9f40d8..c59ec53 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+@@ -180,8 +180,8 @@
+     DFS_NAMENODE_BACKUP_ADDRESS_KEY,
+     DFS_NAMENODE_BACKUP_HTTP_ADDRESS_KEY,
+     DFS_NAMENODE_BACKUP_SERVICE_RPC_ADDRESS_KEY,
+-    DFS_NAMENODE_USER_NAME_KEY,
+-    DFS_NAMENODE_INTERNAL_SPNEGO_USER_NAME_KEY,
++    DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY,
++    DFS_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
+     DFS_HA_FENCE_METHODS_KEY,
+     DFS_HA_ZKFC_PORT_KEY,
+     DFS_HA_FENCE_METHODS_KEY
+@@ -467,7 +467,7 @@ public static UserGroupInformation getRemoteUser() throws IOException {
+   void loginAsNameNodeUser(Configuration conf) throws IOException {
+     InetSocketAddress socAddr = getRpcServerAddress(conf);
+     SecurityUtil.login(conf, DFS_NAMENODE_KEYTAB_FILE_KEY,
+-        DFS_NAMENODE_USER_NAME_KEY, socAddr.getHostName());
++        DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, socAddr.getHostName());
+   }
+   
+   /**
+@@ -796,7 +796,7 @@ private static boolean format(Configuration conf, boolean force,
+     if (UserGroupInformation.isSecurityEnabled()) {
+       InetSocketAddress socAddr = getAddress(conf);
+       SecurityUtil.login(conf, DFS_NAMENODE_KEYTAB_FILE_KEY,
+-          DFS_NAMENODE_USER_NAME_KEY, socAddr.getHostName());
++          DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, socAddr.getHostName());
+     }
+     
+     Collection<URI> nameDirsToFormat = FSNamesystem.getNamespaceDirs(conf);
+@@ -899,7 +899,7 @@ private static boolean initializeSharedEdits(Configuration conf,
+     if (UserGroupInformation.isSecurityEnabled()) {
+       InetSocketAddress socAddr = getAddress(conf);
+       SecurityUtil.login(conf, DFS_NAMENODE_KEYTAB_FILE_KEY,
+-          DFS_NAMENODE_USER_NAME_KEY, socAddr.getHostName());
++          DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, socAddr.getHostName());
+     }
+ 
+     NNStorage existingStorage = null;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeHttpServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeHttpServer.java
+index 8977200..ae53209 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeHttpServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeHttpServer.java
+@@ -110,7 +110,7 @@ void start() throws IOException {
+ 
+     HttpServer2.Builder builder = DFSUtil.httpServerTemplateForNNAndJN(conf,
+         httpAddr, httpsAddr, "hdfs",
+-        DFSConfigKeys.DFS_NAMENODE_INTERNAL_SPNEGO_USER_NAME_KEY,
++        DFSConfigKeys.DFS_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
+         DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY);
+ 
+     httpServer = builder.build();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+index edaeb7c..2c308a3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+@@ -219,7 +219,7 @@ private void initialize(final Configuration conf,
+     if (UserGroupInformation.isSecurityEnabled()) {
+       SecurityUtil.login(conf,
+           DFSConfigKeys.DFS_SECONDARY_NAMENODE_KEYTAB_FILE_KEY,
+-          DFSConfigKeys.DFS_SECONDARY_NAMENODE_USER_NAME_KEY, infoBindAddress);
++          DFSConfigKeys.DFS_SECONDARY_NAMENODE_KERBEROS_PRINCIPAL_KEY, infoBindAddress);
+     }
+     // initiate Java VM metrics
+     DefaultMetricsSystem.initialize("SecondaryNameNode");
+@@ -263,7 +263,7 @@ private void initialize(final Configuration conf,
+ 
+     HttpServer2.Builder builder = DFSUtil.httpServerTemplateForNNAndJN(conf,
+         httpAddr, httpsAddr, "secondary",
+-        DFSConfigKeys.DFS_SECONDARY_NAMENODE_INTERNAL_SPNEGO_USER_NAME_KEY,
++        DFSConfigKeys.DFS_SECONDARY_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
+         DFSConfigKeys.DFS_SECONDARY_NAMENODE_KEYTAB_FILE_KEY);
+ 
+     infoServer = builder.build();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/BootstrapStandby.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/BootstrapStandby.java
+index 1942d24..ed6ff1a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/BootstrapStandby.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/BootstrapStandby.java
+@@ -18,7 +18,7 @@
+ package org.apache.hadoop.hdfs.server.namenode.ha;
+ 
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY;
+-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY;
+ 
+ import java.io.IOException;
+ import java.net.InetSocketAddress;
+@@ -97,7 +97,7 @@ public int run(String[] args) throws Exception {
+ 
+     InetSocketAddress myAddr = NameNode.getAddress(conf);
+     SecurityUtil.login(conf, DFS_NAMENODE_KEYTAB_FILE_KEY,
+-        DFS_NAMENODE_USER_NAME_KEY, myAddr.getHostName());
++        DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, myAddr.getHostName());
+ 
+     return SecurityUtil.doAsLoginUserOrFatal(new PrivilegedAction<Integer>() {
+       @Override
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeProtocol.java
+index c990b37..cbc5f67 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeProtocol.java
+@@ -39,8 +39,8 @@
+  *
+  **********************************************************************/
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, 
+-    clientPrincipal = DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, 
++    clientPrincipal = DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY)
+ @InterfaceAudience.Private
+ public interface DatanodeProtocol {
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/InterDatanodeProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/InterDatanodeProtocol.java
+index 97daeb0..62915b4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/InterDatanodeProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/InterDatanodeProtocol.java
+@@ -31,8 +31,8 @@
+ /** An inter-datanode protocol for updating generation stamp
+  */
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY,
+-    clientPrincipal = DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY,
++    clientPrincipal = DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY)
+ @InterfaceAudience.Private
+ public interface InterDatanodeProtocol {
+   public static final Log LOG = LogFactory.getLog(InterDatanodeProtocol.class);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/JournalProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/JournalProtocol.java
+index be514b9..dbaaf9b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/JournalProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/JournalProtocol.java
+@@ -28,8 +28,8 @@
+  * this is used to publish edits from the NameNode to a BackupNode.
+  */
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY,
+-    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY,
++    clientPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
+ @InterfaceAudience.Private
+ public interface JournalProtocol {
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/NamenodeProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/NamenodeProtocol.java
+index 29bbb3b..91f1e77 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/NamenodeProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/NamenodeProtocol.java
+@@ -34,7 +34,7 @@
+  * It's used to get part of the name node state
+  *****************************************************************************/
+ @KerberosInfo(
+-    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY)
++    serverPrincipal = DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY)
+ @InterfaceAudience.Private
+ public interface NamenodeProtocol {
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+index 220b127..400067b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+@@ -1005,7 +1005,7 @@ public int refreshServiceAcl() throws IOException {
+     // server principal for this call   
+     // should be NN's one.
+     conf.set(CommonConfigurationKeys.HADOOP_SECURITY_SERVICE_USER_NAME_KEY, 
+-        conf.get(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, ""));
++        conf.get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, ""));
+ 
+     // Create the client
+     RefreshAuthorizationPolicyProtocol refreshProtocol =
+@@ -1031,7 +1031,7 @@ public int refreshUserToGroupsMappings() throws IOException {
+     // server principal for this call   
+     // should be NN's one.
+     conf.set(CommonConfigurationKeys.HADOOP_SECURITY_SERVICE_USER_NAME_KEY, 
+-        conf.get(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, ""));
++        conf.get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, ""));
+  
+     // Create the client
+     RefreshUserMappingsProtocol refreshProtocol =
+@@ -1058,7 +1058,7 @@ public int refreshSuperUserGroupsConfiguration() throws IOException {
+     // server principal for this call 
+     // should be NAMENODE's one.
+     conf.set(CommonConfigurationKeys.HADOOP_SECURITY_SERVICE_USER_NAME_KEY, 
+-        conf.get(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, ""));
++        conf.get(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, ""));
+ 
+     // Create the client
+     RefreshUserMappingsProtocol refreshProtocol =
+@@ -1418,7 +1418,7 @@ private ClientDatanodeProtocol getDataNodeProxy(String datanode)
+ 
+     // For datanode proxy the server principal should be DN's one.
+     conf.set(CommonConfigurationKeys.HADOOP_SECURITY_SERVICE_USER_NAME_KEY,
+-        conf.get(DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY, ""));
++        conf.get(DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY, ""));
+ 
+     // Create the client
+     ClientDatanodeProtocol dnProtocol =     
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSHAAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSHAAdmin.java
+index 47c852d..e02dcbb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSHAAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSHAAdmin.java
+@@ -66,7 +66,7 @@ public static Configuration addSecurityConfiguration(Configuration conf) {
+     // force loading of hdfs-site.xml.
+     conf = new HdfsConfiguration(conf);
+     String nameNodePrincipal = conf.get(
+-        DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, "");
++        DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, "");
+     if (LOG.isDebugEnabled()) {
+       LOG.debug("Using NN principal: " + nameNodePrincipal);
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
+index e18c9a8..c55b4e9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
+@@ -18,7 +18,7 @@
+ package org.apache.hadoop.hdfs.tools;
+ 
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY;
+-import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY;
+ 
+ import java.io.IOException;
+ import java.net.InetSocketAddress;
+@@ -152,7 +152,7 @@ protected void initRPC() throws IOException {
+   public void loginAsFCUser() throws IOException {
+     InetSocketAddress socAddr = NameNode.getAddress(conf);
+     SecurityUtil.login(conf, DFS_NAMENODE_KEYTAB_FILE_KEY,
+-        DFS_NAMENODE_USER_NAME_KEY, socAddr.getHostName());
++        DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, socAddr.getHostName());
+   }
+   
+   @Override
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/GetGroups.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/GetGroups.java
+index 49d56d5..3c6d4c5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/GetGroups.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/GetGroups.java
+@@ -70,7 +70,7 @@ protected InetSocketAddress getProtocolAddress(Configuration conf)
+   public void setConf(Configuration conf) {
+     conf = new HdfsConfiguration(conf);
+     String nameNodePrincipal = conf.get(
+-        DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, "");
++        DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, "");
+     
+     if (LOG.isDebugEnabled()) {
+       LOG.debug("Using NN principal: " + nameNodePrincipal);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index 32a220f..b61d767 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -67,15 +67,19 @@ HDFS NFS Gateway
+ ----
+    The above are the only required configuration for the NFS gateway in non-secure mode. For Kerberized
+    hadoop clusters, the following configurations need to be added to hdfs-site.xml:
++
+ ----
+-<property>
+-  <name>dfs.nfsgateway.keytab.file</name>
+-  <value>/etc/hadoop/conf/nfsserver.keytab</value> <!-- path to the nfs gateway keytab -->
+-</property>
+-<property>
+-  <name>dfs.nfsgateway.kerberos.principal</name>
+-  <value>nfsserver/_HOST@YOUR-REALM.COM</value>
+-</property>
++  <property>
++    <name>dfs.nfs.keytab.file</name>
++    <value>/etc/hadoop/conf/nfsserver.keytab</value> <!-- path to the nfs gateway keytab -->
++  </property>
++----
++
++----
++  <property>
++    <name>dfs.nfs.kerberos.principal</name>
++    <value>nfsserver/_HOST@YOUR-REALM.COM</value>
++  </property>
+ ----
+    It's strongly recommended for the users to update a few configuration properties based on their use
+    cases. All the related configuration properties can be added or updated in hdfs-site.xml.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestStartSecureDataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestStartSecureDataNode.java
+index ba55872..0f2bccf 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestStartSecureDataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestStartSecureDataNode.java
+@@ -88,11 +88,11 @@ public void testSecureNameNode() throws IOException, InterruptedException {
+       Configuration conf = new HdfsConfiguration();
+       conf.set(CommonConfigurationKeys.HADOOP_SECURITY_AUTHENTICATION,
+         "kerberos");
+-      conf.set(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, nnPrincipal);
+-      conf.set(DFSConfigKeys.DFS_NAMENODE_INTERNAL_SPNEGO_USER_NAME_KEY,
++      conf.set(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, nnPrincipal);
++      conf.set(DFSConfigKeys.DFS_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
+         nnSpnegoPrincipal);
+       conf.set(DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY, nnKeyTab);
+-      conf.set(DFSConfigKeys.DFS_DATANODE_USER_NAME_KEY, dnPrincipal);
++      conf.set(DFSConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY, dnPrincipal);
+       conf.set(DFSConfigKeys.DFS_DATANODE_KEYTAB_FILE_KEY, dnKeyTab);
+       // Secure DataNode requires using ports lower than 1024.
+       conf.set(DFSConfigKeys.DFS_DATANODE_ADDRESS_KEY, "127.0.0.1:1004");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestGetImageServlet.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestGetImageServlet.java
+index 5249d9f..f79f879 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestGetImageServlet.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestGetImageServlet.java
+@@ -51,13 +51,13 @@ public void testIsValidRequestor() throws IOException {
+     // Set up NN1 HA configs.
+     conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY,
+         "ns1", "nn1"), "host1:1234");
+-    conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY,
++    conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY,
+         "ns1", "nn1"), "hdfs/_HOST@TEST-REALM.COM");
+     
+     // Set up NN2 HA configs.
+     conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY,
+         "ns1", "nn2"), "host2:1234");
+-    conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY,
++    conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY,
+         "ns1", "nn2"), "hdfs/_HOST@TEST-REALM.COM");
+     
+     // Initialize this conf object as though we're running on NN1.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSecureNameNodeWithExternalKdc.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSecureNameNodeWithExternalKdc.java
+index e98e112..d36b9c9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSecureNameNodeWithExternalKdc.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSecureNameNodeWithExternalKdc.java
+@@ -80,8 +80,8 @@ public void testSecureNameNode() throws IOException, InterruptedException {
+       Configuration conf = new HdfsConfiguration();
+       conf.set(CommonConfigurationKeys.HADOOP_SECURITY_AUTHENTICATION,
+           "kerberos");
+-      conf.set(DFSConfigKeys.DFS_NAMENODE_USER_NAME_KEY, nnPrincipal);
+-      conf.set(DFSConfigKeys.DFS_NAMENODE_INTERNAL_SPNEGO_USER_NAME_KEY,
++      conf.set(DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY, nnPrincipal);
++      conf.set(DFSConfigKeys.DFS_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
+           nnSpnegoPrincipal);
+       conf.set(DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY, nnKeyTab);
+ 
+-- 
+1.7.0.4
+

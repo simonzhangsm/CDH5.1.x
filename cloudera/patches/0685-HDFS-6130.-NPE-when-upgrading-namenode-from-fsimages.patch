@@ -1,0 +1,27 @@
+From a9fce4232ebc986d2c063558da2df7531d874610 Mon Sep 17 00:00:00 2001
+From: Haohui Mai <wheat9@apache.org>
+Date: Wed, 26 Mar 2014 07:30:20 +0000
+Subject: [PATCH 685/795] HDFS-6130. NPE when upgrading namenode from fsimages older than -32. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1581713 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c43c0712c5c1b0715978ad083cdcaea20117a4f3)
+---
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index b025776..0662910 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -628,6 +628,8 @@ private void loadFullNameINodes(long numFiles, DataInput in, Counter counter)
+         updateRootAttr(newNode.asDirectory());
+         continue;
+       }
++
++      namesystem.dir.addToInodeMap(newNode);
+       // check if the new inode belongs to the same parent
+       if(!isParent(pathComponents, parentPath)) {
+         parentINode = getParentINodeDirectory(pathComponents);
+-- 
+1.7.0.4
+

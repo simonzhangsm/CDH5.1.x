@@ -1,0 +1,44 @@
+From 09c653556ff428be5297c473b816741a1872b9fa Mon Sep 17 00:00:00 2001
+From: Tom White <tom@cloudera.com>
+Date: Mon, 19 Dec 2011 10:07:46 -0800
+Subject: [PATCH 019/795] MR1: CLOUDERA-BUILD. Disable MRUnit build.
+ (cherry picked from commit 4e4d666d0bda42459076f77e5776df9f8d484aba)
+
+(cherry picked from commit 028950895619d10074ed249d81543815ef7cf2a6)
+---
+ src/contrib/build.xml |    5 ++---
+ 1 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/src/contrib/build.xml b/src/contrib/build.xml
+index 99fbc9e..cac9ce0 100644
+--- a/src/contrib/build.xml
++++ b/src/contrib/build.xml
+@@ -28,7 +28,7 @@
+   <!-- ====================================================== -->
+   <target name="compile">
+     <subant target="compile">
+-      <fileset dir="." includes="*/build.xml"/>
++      <fileset dir="." includes="*/build.xml" excludes="mrunit/build.xml"/>
+     </subant>
+   </target>
+   
+@@ -37,7 +37,7 @@
+   <!-- ====================================================== -->
+   <target name="package">
+     <subant target="package">
+-      <fileset dir="." includes="*/build.xml"/>
++      <fileset dir="." includes="*/build.xml" excludes="mrunit/build.xml"/>
+     </subant>
+   </target>
+   
+@@ -54,7 +54,6 @@
+       <fileset dir="." includes="streaming/build.xml"/>
+       <fileset dir="." includes="fairscheduler/build.xml"/>
+       <fileset dir="." includes="capacity-scheduler/build.xml"/>
+-      <fileset dir="." includes="mrunit/build.xml"/>
+       <fileset dir="." includes="gridmix/build.xml"/>
+     </subant>
+      <available file="${build.contrib.dir}/testsfailed" property="testsfailed"/>
+-- 
+1.7.0.4
+

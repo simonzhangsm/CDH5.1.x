@@ -1,0 +1,93 @@
+From a1b0dbd7bbf0b74206e79308cce4ac86e168af68 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org =  cnauroth = Chris Nauroth cnauroth@apache.org@apache.org>
+Date: Fri, 11 Apr 2014 03:58:40 +0000
+Subject: [PATCH 569/795] HDFS-6231. Merging change r1586551 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1586553 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../org/apache/hadoop/hdfs/DFSInputStream.java     |   20 +++++++++++---------
+ .../java/org/apache/hadoop/hdfs/TestPread.java     |    6 +++++-
+ 2 files changed, 16 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+index 7ee1dbe..8d3c009 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+@@ -986,12 +986,15 @@ private void fetchBlockByteRange(LocatedBlock block, long start, long end,
+     return new Callable<ByteBuffer>() {
+       @Override
+       public ByteBuffer call() throws Exception {
+-        byte[] buf = bb.array();
+-        int offset = bb.position();
+-        actualGetFromOneDataNode(datanode, block, start, end, buf, offset,
+-            corruptedBlockMap);
+-        latch.countDown();
+-        return bb;
++        try {
++          byte[] buf = bb.array();
++          int offset = bb.position();
++          actualGetFromOneDataNode(datanode, block, start, end, buf, offset,
++              corruptedBlockMap);
++          return bb;
++        } finally {
++          latch.countDown();
++        }
+       }
+     };
+   }
+@@ -1104,7 +1107,7 @@ private void hedgedFetchBlockByteRange(LocatedBlock block, long start,
+       long end, byte[] buf, int offset,
+       Map<ExtendedBlock, Set<DatanodeInfo>> corruptedBlockMap)
+       throws IOException {
+-    ArrayList<Future<ByteBuffer>> futures = null;
++    ArrayList<Future<ByteBuffer>> futures = new ArrayList<Future<ByteBuffer>>();
+     ArrayList<DatanodeInfo> ignored = new ArrayList<DatanodeInfo>();
+     ByteBuffer bb = null;
+     int len = (int) (end - start + 1);
+@@ -1115,7 +1118,7 @@ private void hedgedFetchBlockByteRange(LocatedBlock block, long start,
+       DNAddrPair chosenNode = null;
+       Future<ByteBuffer> future = null;
+       // futures is null if there is no request already executing.
+-      if (futures == null) {
++      if (futures.isEmpty()) {
+         // chooseDataNode is a commitment.  If no node, we go to
+         // the NN to reget block locations.  Only go here on first read.
+         chosenNode = chooseDataNode(block, ignored);
+@@ -1133,7 +1136,6 @@ private void hedgedFetchBlockByteRange(LocatedBlock block, long start,
+           // Ignore this node on next go around.
+           ignored.add(chosenNode.info);
+           dfsClient.getHedgedReadMetrics().incHedgedReadOps();
+-          futures = new ArrayList<Future<ByteBuffer>>();
+           futures.add(future);
+           continue; // no need to refresh block locations
+         } catch (InterruptedException e) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
+index 8bd911c..5168eb5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
+@@ -243,7 +243,7 @@ public void testPreadDFSNoChecksum() throws IOException {
+   public void testHedgedPreadDFSBasic() throws IOException {
+     Configuration conf = new Configuration();
+     conf.setInt(DFSConfigKeys.DFS_DFSCLIENT_HEDGED_READ_THREADPOOL_SIZE, 5);
+-    conf.setLong(DFSConfigKeys.DFS_DFSCLIENT_HEDGED_READ_THRESHOLD_MILLIS, 100);
++    conf.setLong(DFSConfigKeys.DFS_DFSCLIENT_HEDGED_READ_THRESHOLD_MILLIS, 1);
+     dfsPreadTest(conf, false, true); // normal pread
+     dfsPreadTest(conf, true, true); // trigger read code path without
+                                     // transferTo.
+@@ -279,6 +279,10 @@ public Void answer(InvocationOnMock invocation) throws Throwable {
+     DistributedFileSystem fileSys = cluster.getFileSystem();
+     DFSClient dfsClient = fileSys.getClient();
+     DFSHedgedReadMetrics metrics = dfsClient.getHedgedReadMetrics();
++    // Metrics instance is static, so we need to reset counts from prior tests.
++    metrics.hedgedReadOps.set(0);
++    metrics.hedgedReadOpsWin.set(0);
++    metrics.hedgedReadOpsInCurThread.set(0);
+ 
+     try {
+       Path file1 = new Path("hedgedReadMaxOut.dat");
+-- 
+1.7.0.4
+

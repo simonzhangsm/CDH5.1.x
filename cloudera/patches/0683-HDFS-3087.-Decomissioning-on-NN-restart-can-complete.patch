@@ -1,0 +1,130 @@
+From 8e09814e4aa320dc3fb84ade763800c7109e34c5 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Mon, 24 Mar 2014 15:39:00 +0000
+Subject: [PATCH 683/795] HDFS-3087. Decomissioning on NN restart can complete without blocks being replicated. Contributed by Rushabh S Shah.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1580886 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9e77078cf1df369f1affa80194715c283c28081d)
+---
+ .../server/blockmanagement/DatanodeDescriptor.java |   15 +++++
+ .../server/blockmanagement/DatanodeManager.java    |    2 +-
+ .../org/apache/hadoop/hdfs/TestDecommission.java   |   60 ++++++++++++++++++++
+ 3 files changed, 76 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeDescriptor.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeDescriptor.java
+index 207398a..c0d4f0b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeDescriptor.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeDescriptor.java
+@@ -697,5 +697,20 @@ public long getLastCachingDirectiveSentTimeMs() {
+   public void setLastCachingDirectiveSentTimeMs(long time) {
+     this.lastCachingDirectiveSentTimeMs = time;
+   }
++  
++  /**
++   * checks whether atleast first block report has been received
++   * @return
++   */
++  public boolean checkBlockReportReceived() {
++    if(this.getStorageInfos().length == 0) {
++      return false;
++    }
++    for(DatanodeStorageInfo storageInfo: this.getStorageInfos()) {
++      if(storageInfo.getBlockReportCount() == 0 )
++        return false;
++    }
++    return true;
++ }
+ }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
+index f21a4cc..d7958fe 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
+@@ -705,7 +705,7 @@ private void checkDecommissioning(DatanodeDescriptor nodeReg) {
+   boolean checkDecommissionState(DatanodeDescriptor node) {
+     // Check to see if all blocks in this decommissioned
+     // node has reached their target replication factor.
+-    if (node.isDecommissionInProgress()) {
++    if (node.isDecommissionInProgress() && node.checkBlockReportReceived()) {
+       if (!blockManager.isReplicationInProgress(node)) {
+         node.setDecommissioned();
+         LOG.info("Decommission complete for " + node);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDecommission.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDecommission.java
+index c21a751..bd7a174 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDecommission.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDecommission.java
+@@ -23,6 +23,7 @@
+ 
+ import java.io.IOException;
+ import java.util.ArrayList;
++import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Iterator;
+ import java.util.Random;
+@@ -684,4 +685,63 @@ public void testDecommissionWithOpenfile() throws IOException, InterruptedExcept
+ 
+     fdos.close();
+   }
++  
++  /**
++   * Tests restart of namenode while datanode hosts are added to exclude file
++   **/
++  @Test(timeout=360000)
++  public void testDecommissionWithNamenodeRestart()throws IOException, InterruptedException {
++    LOG.info("Starting test testDecommissionWithNamenodeRestart");
++    int numNamenodes = 1;
++    int numDatanodes = 1;
++    int replicas = 1;
++    
++    startCluster(numNamenodes, numDatanodes, conf);
++    Path file1 = new Path("testDecommission.dat");
++    FileSystem fileSys = cluster.getFileSystem();
++    writeFile(fileSys, file1, replicas);
++        
++    DFSClient client = getDfsClient(cluster.getNameNode(), conf);
++    DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
++    DatanodeID excludedDatanodeID = info[0];
++    String excludedDatanodeName = info[0].getXferAddr();
++
++    writeConfigFile(excludeFile, new ArrayList<String>(Arrays.asList(excludedDatanodeName)));
++    
++    //Add a new datanode to cluster
++    cluster.startDataNodes(conf, 1, true, null, null, null, null);
++    numDatanodes+=1;
++    
++    assertEquals("Number of datanodes should be 2 ", 2, cluster.getDataNodes().size());
++    //Restart the namenode
++    cluster.restartNameNode();
++    DatanodeInfo datanodeInfo = NameNodeAdapter.getDatanode(
++        cluster.getNamesystem(), excludedDatanodeID);
++    waitNodeState(datanodeInfo, AdminStates.DECOMMISSIONED);
++    
++    // Ensure decommissioned datanode is not automatically shutdown
++    assertEquals("All datanodes must be alive", numDatanodes, 
++        client.datanodeReport(DatanodeReportType.LIVE).length);
++    // wait for the block to be replicated
++    int tries = 0;
++    while (tries++ < 20) {
++      try {
++        Thread.sleep(1000);
++        if (checkFile(fileSys, file1, replicas, datanodeInfo.getXferAddr(),
++            numDatanodes) == null) {
++          break;
++        }
++      } catch (InterruptedException ie) {
++      }
++    }
++    assertTrue("Checked if block was replicated after decommission, tried "
++        + tries + " times.", tries < 20);
++    cleanupFile(fileSys, file1);
++
++    // Restart the cluster and ensure recommissioned datanodes
++    // are allowed to register with the namenode
++    cluster.shutdown();
++    startCluster(numNamenodes, numDatanodes, conf);
++    cluster.shutdown();
++  }
+ }
+-- 
+1.7.0.4
+

@@ -1,0 +1,149 @@
+From a62da191a5d94877a06a064bc4897b5da32954d1 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 3 Jun 2014 00:09:08 -0700
+Subject: [PATCH 727/795] HADOOP-10211. Merging r1574697 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1574698 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../org/apache/hadoop/security/SaslRpcServer.java  |   17 ++++-----
+ .../src/main/resources/core-default.xml            |    2 +-
+ .../java/org/apache/hadoop/ipc/TestSaslRPC.java    |   39 ++++++++++++++++----
+ 3 files changed, 40 insertions(+), 18 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/SaslRpcServer.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/SaslRpcServer.java
+index b2db836..dbce13e 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/SaslRpcServer.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/SaslRpcServer.java
+@@ -57,6 +57,7 @@
+ import org.apache.hadoop.security.token.SecretManager;
+ import org.apache.hadoop.security.token.SecretManager.InvalidToken;
+ import org.apache.hadoop.security.token.TokenIdentifier;
++import org.apache.hadoop.util.StringUtils;
+ 
+ /**
+  * A utility class for dealing with SASL on RPC server
+@@ -179,18 +180,14 @@ public SaslServer run() throws SaslException  {
+   }
+ 
+   public static void init(Configuration conf) {
+-    QualityOfProtection saslQOP = QualityOfProtection.AUTHENTICATION;
+-    String rpcProtection = conf.get("hadoop.rpc.protection",
+-        QualityOfProtection.AUTHENTICATION.name().toLowerCase());
+-    if (QualityOfProtection.INTEGRITY.name().toLowerCase()
+-        .equals(rpcProtection)) {
+-      saslQOP = QualityOfProtection.INTEGRITY;
+-    } else if (QualityOfProtection.PRIVACY.name().toLowerCase().equals(
+-        rpcProtection)) {
+-      saslQOP = QualityOfProtection.PRIVACY;
++    String[] qop = conf.getStrings("hadoop.rpc.protection",
++        QualityOfProtection.AUTHENTICATION.toString());
++    
++    for (int i=0; i < qop.length; i++) {
++        qop[i] = QualityOfProtection.valueOf(qop[i].toUpperCase()).getSaslQop();
+     }
+     
+-    SASL_PROPS.put(Sasl.QOP, saslQOP.getSaslQop());
++    SASL_PROPS.put(Sasl.QOP, StringUtils.join(",", qop));
+     SASL_PROPS.put(Sasl.SERVER_AUTH, "true");
+     Security.addProvider(new SaslPlainServer.SecurityProvider());
+     saslFactory = new FastSaslServerFactory(SASL_PROPS);
+diff --git a/hadoop-common-project/hadoop-common/src/main/resources/core-default.xml b/hadoop-common-project/hadoop-common/src/main/resources/core-default.xml
+index 620f857..bce1378 100644
+--- a/hadoop-common-project/hadoop-common/src/main/resources/core-default.xml
++++ b/hadoop-common-project/hadoop-common/src/main/resources/core-default.xml
+@@ -256,7 +256,7 @@
+ <property>
+   <name>hadoop.rpc.protection</name>
+   <value>authentication</value>
+-  <description>This field sets the quality of protection for secured sasl 
++  <description>A comma-separated list of protection values for secured sasl 
+       connections. Possible values are authentication, integrity and privacy.
+       authentication means authentication only and no integrity or privacy; 
+       integrity implies authentication and integrity are enabled; and privacy 
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestSaslRPC.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestSaslRPC.java
+index eecefc7..d1bc7e7 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestSaslRPC.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/ipc/TestSaslRPC.java
+@@ -19,8 +19,15 @@
+ package org.apache.hadoop.ipc;
+ 
+ import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION;
+-import static org.apache.hadoop.security.SaslRpcServer.AuthMethod.*;
+-import static org.junit.Assert.*;
++import static org.apache.hadoop.security.SaslRpcServer.AuthMethod.KERBEROS;
++import static org.apache.hadoop.security.SaslRpcServer.AuthMethod.SIMPLE;
++import static org.apache.hadoop.security.SaslRpcServer.AuthMethod.TOKEN;
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertNotSame;
++import static org.junit.Assert.assertNull;
++import static org.junit.Assert.assertTrue;
+ 
+ import java.io.DataInput;
+ import java.io.DataOutput;
+@@ -87,15 +94,21 @@
+   public static Collection<Object[]> data() {
+     Collection<Object[]> params = new ArrayList<Object[]>();
+     for (QualityOfProtection qop : QualityOfProtection.values()) {
+-      params.add(new Object[]{ qop });
++      params.add(new Object[]{ new QualityOfProtection[]{qop},qop });
+     }
++    params.add(new Object[]{ new QualityOfProtection[]{
++        QualityOfProtection.PRIVACY,QualityOfProtection.AUTHENTICATION },
++        QualityOfProtection.PRIVACY });
+     return params;
+   }
+ 
++  QualityOfProtection[] qop;
+   QualityOfProtection expectedQop;
+   
+-  public TestSaslRPC(QualityOfProtection qop) {
+-    expectedQop = qop;
++  public TestSaslRPC(QualityOfProtection[] qop,
++      QualityOfProtection expectedQop) {
++    this.qop=qop;
++    this.expectedQop = expectedQop;
+   }
+   
+   private static final String ADDRESS = "0.0.0.0";
+@@ -134,19 +147,31 @@ public static void setupKerb() {
+   @Before
+   public void setup() {
+     LOG.info("---------------------------------");
+-    LOG.info("Testing QOP:"+expectedQop);
++    LOG.info("Testing QOP:"+ getQOPNames(qop));
+     LOG.info("---------------------------------");
+     conf = new Configuration();
+     // the specific tests for kerberos will enable kerberos.  forcing it
+     // for all tests will cause tests to fail if the user has a TGT
+     conf.set(HADOOP_SECURITY_AUTHENTICATION, SIMPLE.toString());
+-    conf.set("hadoop.rpc.protection", expectedQop.name().toLowerCase());
++    conf.set("hadoop.rpc.protection", getQOPNames(qop));
+     UserGroupInformation.setConfiguration(conf);
+     enableSecretManager = null;
+     forceSecretManager = null;
+     clientFallBackToSimpleAllowed = true;
+   }
+ 
++  static String getQOPNames (QualityOfProtection[] qops){
++    StringBuilder sb = new StringBuilder();
++    int i = 0;
++    for (QualityOfProtection qop:qops){
++     sb.append(qop.name().toLowerCase());
++     if (++i < qops.length){
++       sb.append(",");
++     }
++    }
++    return sb.toString();
++  }
++
+   static {
+     ((Log4JLogger) Client.LOG).getLogger().setLevel(Level.ALL);
+     ((Log4JLogger) Server.LOG).getLogger().setLevel(Level.ALL);
+-- 
+1.7.0.4
+

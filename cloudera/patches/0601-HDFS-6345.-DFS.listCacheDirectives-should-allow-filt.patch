@@ -1,0 +1,255 @@
+From 58a97d6a449593dc1f309b49fd4a6c8e9fc68caf Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Fri, 16 May 2014 01:19:17 +0000
+Subject: [PATCH 601/795] HDFS-6345. DFS.listCacheDirectives() should allow filtering based on cache directive ID. (wang)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1595087 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 3c363aac3b8c94cfc7f398ea9cf5fbcb566d025e)
+---
+ .../hdfs/protocol/CacheDirectiveIterator.java      |   70 +++++++++++++++++++-
+ .../hadoop/hdfs/server/namenode/CacheManager.java  |   26 ++++++-
+ .../org/apache/hadoop/hdfs/tools/CacheAdmin.java   |   10 ++-
+ .../hdfs/server/namenode/TestCacheDirectives.java  |    6 ++
+ .../src/test/resources/testCacheAdminConf.xml      |   24 +++++++
+ 5 files changed, 128 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/CacheDirectiveIterator.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/CacheDirectiveIterator.java
+index 773a284..50634ed 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/CacheDirectiveIterator.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/CacheDirectiveIterator.java
+@@ -23,6 +23,10 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.fs.BatchedRemoteIterator;
++import org.apache.hadoop.fs.InvalidRequestException;
++import org.apache.hadoop.ipc.RemoteException;
++
++import com.google.common.base.Preconditions;
+ 
+ /**
+  * CacheDirectiveIterator is a remote iterator that iterates cache directives.
+@@ -33,7 +37,7 @@
+ public class CacheDirectiveIterator
+     extends BatchedRemoteIterator<Long, CacheDirectiveEntry> {
+ 
+-  private final CacheDirectiveInfo filter;
++  private CacheDirectiveInfo filter;
+   private final ClientProtocol namenode;
+ 
+   public CacheDirectiveIterator(ClientProtocol namenode,
+@@ -43,10 +47,72 @@ public CacheDirectiveIterator(ClientProtocol namenode,
+     this.filter = filter;
+   }
+ 
++  private static CacheDirectiveInfo removeIdFromFilter(CacheDirectiveInfo filter) {
++    CacheDirectiveInfo.Builder builder = new CacheDirectiveInfo.Builder(filter);
++    builder.setId(null);
++    return builder.build();
++  }
++
++  /**
++   * Used for compatibility when communicating with a server version that
++   * does not support filtering directives by ID.
++   */
++  private static class SingleEntry implements
++      BatchedEntries<CacheDirectiveEntry> {
++
++    private final CacheDirectiveEntry entry;
++
++    public SingleEntry(final CacheDirectiveEntry entry) {
++      this.entry = entry;
++    }
++
++    @Override
++    public CacheDirectiveEntry get(int i) {
++      if (i > 0) {
++        return null;
++      }
++      return entry;
++    }
++
++    @Override
++    public int size() {
++      return 1;
++    }
++
++    @Override
++    public boolean hasMore() {
++      return false;
++    }
++  }
++
+   @Override
+   public BatchedEntries<CacheDirectiveEntry> makeRequest(Long prevKey)
+       throws IOException {
+-    return namenode.listCacheDirectives(prevKey, filter);
++    BatchedEntries<CacheDirectiveEntry> entries = null;
++    try {
++      entries = namenode.listCacheDirectives(prevKey, filter);
++    } catch (IOException e) {
++      if (e.getMessage().contains("Filtering by ID is unsupported")) {
++        // Retry case for old servers, do the filtering client-side
++        long id = filter.getId();
++        filter = removeIdFromFilter(filter);
++        // Using id - 1 as prevId should get us a window containing the id
++        // This is somewhat brittle, since it depends on directives being
++        // returned in order of ascending ID.
++        entries = namenode.listCacheDirectives(id - 1, filter);
++        for (int i=0; i<entries.size(); i++) {
++          CacheDirectiveEntry entry = entries.get(i);
++          if (entry.getInfo().getId().equals((Long)id)) {
++            return new SingleEntry(entry);
++          }
++        }
++        throw new RemoteException(InvalidRequestException.class.getName(),
++            "Did not find requested id " + id);
++      }
++      throw e;
++    }
++    Preconditions.checkNotNull(entries);
++    return entries;
+   }
+ 
+   @Override
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
+index 7be7a87..f7aa5db 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
+@@ -691,15 +691,25 @@ public void removeDirective(long id, FSPermissionChecker pc)
+     assert namesystem.hasReadLock();
+     final int NUM_PRE_ALLOCATED_ENTRIES = 16;
+     String filterPath = null;
+-    if (filter.getId() != null) {
+-      throw new IOException("Filtering by ID is unsupported.");
+-    }
+     if (filter.getPath() != null) {
+       filterPath = validatePath(filter);
+     }
+     if (filter.getReplication() != null) {
+-      throw new IOException("Filtering by replication is unsupported.");
++      throw new InvalidRequestException(
++          "Filtering by replication is unsupported.");
++    }
++
++    // Querying for a single ID
++    final Long id = filter.getId();
++    if (id != null) {
++      if (!directivesById.containsKey(id)) {
++        throw new InvalidRequestException("Did not find requested id " + id);
++      }
++      // Since we use a tailMap on directivesById, setting prev to id-1 gets
++      // us the directive with the id (if present)
++      prevId = id - 1;
+     }
++
+     ArrayList<CacheDirectiveEntry> replies =
+         new ArrayList<CacheDirectiveEntry>(NUM_PRE_ALLOCATED_ENTRIES);
+     int numReplies = 0;
+@@ -711,6 +721,14 @@ public void removeDirective(long id, FSPermissionChecker pc)
+       }
+       CacheDirective curDirective = cur.getValue();
+       CacheDirectiveInfo info = cur.getValue().toInfo();
++
++      // If the requested ID is present, it should be the first item.
++      // Hitting this case means the ID is not present, or we're on the second
++      // item and should break out.
++      if (id != null &&
++          !(info.getId().equals(id))) {
++        break;
++      }
+       if (filter.getPool() != null && 
+           !info.getPool().equals(filter.getPool())) {
+         continue;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
+index b674d09..7fceab3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
+@@ -503,19 +503,21 @@ public String getName() {
+ 
+     @Override
+     public String getShortUsage() {
+-      return "[" + getName() + " [-stats] [-path <path>] [-pool <pool>]]\n";
++      return "[" + getName()
++          + " [-stats] [-path <path>] [-pool <pool>] [-id <id>]\n";
+     }
+ 
+     @Override
+     public String getLongUsage() {
+       TableListing listing = getOptionDescriptionListing();
++      listing.addRow("-stats", "List path-based cache directive statistics.");
+       listing.addRow("<path>", "List only " +
+           "cache directives with this path. " +
+           "Note that if there is a cache directive for <path> " +
+           "in a cache pool that we don't have read access for, it " + 
+           "will not be listed.");
+       listing.addRow("<pool>", "List only path cache directives in that pool.");
+-      listing.addRow("-stats", "List path-based cache directive statistics.");
++      listing.addRow("<id>", "List the cache directive with this id.");
+       return getShortUsage() + "\n" +
+         "List cache directives.\n\n" +
+         listing.toString();
+@@ -534,6 +536,10 @@ public int run(Configuration conf, List<String> args) throws IOException {
+         builder.setPool(poolFilter);
+       }
+       boolean printStats = StringUtils.popOption("-stats", args);
++      String idFilter = StringUtils.popOptionWithArgument("-id", args);
++      if (idFilter != null) {
++        builder.setId(Long.parseLong(idFilter));
++      }
+       if (!args.isEmpty()) {
+         System.err.println("Can't understand argument: " + args.get(0));
+         return 1;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCacheDirectives.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCacheDirectives.java
+index 4ac7601..345d01c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCacheDirectives.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCacheDirectives.java
+@@ -471,6 +471,12 @@ public void testAddRemoveDirectives() throws Exception {
+     iter = dfs.listCacheDirectives(
+         new CacheDirectiveInfo.Builder().setPool("pool2").build());
+     validateListAll(iter, betaId);
++    iter = dfs.listCacheDirectives(
++        new CacheDirectiveInfo.Builder().setId(alphaId2).build());
++    validateListAll(iter, alphaId2);
++    iter = dfs.listCacheDirectives(
++        new CacheDirectiveInfo.Builder().setId(relativeId).build());
++    validateListAll(iter, relativeId);
+ 
+     dfs.removeCacheDirective(betaId);
+     iter = dfs.listCacheDirectives(
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testCacheAdminConf.xml b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testCacheAdminConf.xml
+index 13f1b9a..058eec5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testCacheAdminConf.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testCacheAdminConf.xml
+@@ -519,5 +519,29 @@
+         </comparator>
+       </comparators>
+     </test>
++
++    <test> <!--Tested -->
++      <description>Testing listing a single cache directive</description>
++      <test-commands>
++        <cache-admin-command>-addPool pool1</cache-admin-command>
++        <cache-admin-command>-addDirective -path /foo -pool pool1 -ttl 2d</cache-admin-command>
++        <cache-admin-command>-addDirective -path /bar -pool pool1 -ttl 24h</cache-admin-command>
++        <cache-admin-command>-addDirective -path /baz -replication 2 -pool pool1 -ttl 60m</cache-admin-command>
++        <cache-admin-command>-listDirectives -stats -id 30</cache-admin-command>
++      </test-commands>
++      <cleanup-commands>
++        <cache-admin-command>-removePool pool1</cache-admin-command>
++      </cleanup-commands>
++      <comparators>
++        <comparator>
++          <type>SubstringComparator</type>
++          <expected-output>Found 1 entry</expected-output>
++        </comparator>
++        <comparator>
++          <type>SubstringComparator</type>
++          <expected-output>30 pool1      1</expected-output>
++        </comparator>
++      </comparators>
++    </test>
+   </tests>
+ </configuration>
+-- 
+1.7.0.4
+

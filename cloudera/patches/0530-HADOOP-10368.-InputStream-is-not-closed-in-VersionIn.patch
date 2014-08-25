@@ -1,0 +1,49 @@
+From 732fdd3d30439203ddbeb5c21a82191c22222b6c Mon Sep 17 00:00:00 2001
+From: Tsz-wo Sze <szetszwo@apache.org>
+Date: Wed, 26 Feb 2014 19:57:16 +0000
+Subject: [PATCH 530/795] HADOOP-10368. InputStream is not closed in VersionInfo ctor.  Contributed by Tsuyoshi OZAWA
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1572220 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit ac83a2ff971a409d1b22e60e8fcd46c072372558)
+---
+ .../java/org/apache/hadoop/util/VersionInfo.java   |   10 +++++++---
+ 1 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/VersionInfo.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/VersionInfo.java
+index 1547577..1768567 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/VersionInfo.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/VersionInfo.java
+@@ -31,6 +31,7 @@
+ import java.io.IOException;
+ import java.io.InputStream;
+ import java.util.Properties;
++import org.apache.hadoop.io.IOUtils;
+ 
+ /**
+  * This class returns build information about Hadoop components.
+@@ -45,16 +46,19 @@
+   protected VersionInfo(String component) {
+     info = new Properties();
+     String versionInfoFile = component + "-version-info.properties";
++    InputStream is = null;
+     try {
+-      InputStream is = Thread.currentThread().getContextClassLoader()
++      is = Thread.currentThread().getContextClassLoader()
+         .getResourceAsStream(versionInfoFile);
+       if (is == null) {
+         throw new IOException("Resource not found");
+       }
+       info.load(is);
+     } catch (IOException ex) {
+-      LogFactory.getLog(getClass()).warn("Could not read '" + 
+-        versionInfoFile + "', " + ex.toString(), ex);
++      LogFactory.getLog(getClass()).warn("Could not read '" +
++          versionInfoFile + "', " + ex.toString(), ex);
++    } finally {
++      IOUtils.closeStream(is);
+     }
+   }
+ 
+-- 
+1.7.0.4
+

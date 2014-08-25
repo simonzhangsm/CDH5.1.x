@@ -1,0 +1,46 @@
+From 47c9c59e08b426814af44912c6c78072c57455f5 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 21 Feb 2014 18:57:41 +0000
+Subject: [PATCH 464/795] HDFS-5935. New Namenode UI FS browser should throw smarter error messages. Cotributed by Travis Thompson.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570664 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 027661766891fd55401865a1c0a850d521f7822a)
+---
+ .../hadoop-hdfs/src/main/webapps/hdfs/explorer.js  |   21 ++++++++++++++++---
+ 1 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
+index 5d80210..bcce8c1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
+@@ -66,10 +66,23 @@
+ 
+   function network_error_handler(url) {
+     return function (jqxhr, text, err) {
+-      var msg = '<p>Failed to retreive data from ' + url + ', cause: ' + err + '</p>';
+-      if (url.indexOf('/webhdfs/v1') === 0)  {
+-        msg += '<p>WebHDFS might be disabled. WebHDFS is required to browse the filesystem.</p>';
+-      }
++      switch(jqxhr.status) {
++        case 401:
++          var msg = '<p>Authentication failed when trying to open ' + url + ': Unauthrozied.</p>';
++          break;
++        case 403:
++          if(jqxhr.responseJSON !== undefined && jqxhr.responseJSON.RemoteException !== undefined) {
++            var msg = '<p>' + jqxhr.responseJSON.RemoteException.message + "</p>";
++            break;
++          }
++          var msg = '<p>Permission denied when trying to open ' + url + ': ' + err + '</p>';
++          break;
++        case 404:
++          var msg = '<p>Path does not exist on HDFS or WebHDFS is disabled.  Please check your path or enable WebHDFS</p>';
++          break;
++        default:
++          var msg = '<p>Failed to retreive data from ' + url + ': ' + err + '</p>';
++        }
+       show_err_msg(msg);
+     };
+   }
+-- 
+1.7.0.4
+

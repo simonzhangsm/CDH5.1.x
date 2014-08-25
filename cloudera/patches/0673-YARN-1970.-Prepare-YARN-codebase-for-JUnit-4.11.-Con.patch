@@ -1,0 +1,122 @@
+From e33ebba07a69222f67704181d9d9634efb0299b9 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Mon, 21 Apr 2014 23:31:18 +0000
+Subject: [PATCH 673/795] YARN-1970. Prepare YARN codebase for JUnit 4.11. Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1589001 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 97b49a8582fd894d998bbb3d130c20604acf4950)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../apache/hadoop/yarn/sls/utils/TestSLSUtils.java |    2 +-
+ .../apache/hadoop/yarn/sls/web/TestSLSWebApp.java  |    2 +-
+ .../hadoop/yarn/client/ProtocolHATestBase.java     |    2 +-
+ .../client/TestApplicationMasterServiceOnHA.java   |    2 +-
+ .../yarn/client/TestResourceTrackerOnHA.java       |    2 +-
+ .../yarn/server/resourcemanager/TestRMHA.java      |   10 +++++++++-
+ 6 files changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-tools/hadoop-sls/src/test/java/org/apache/hadoop/yarn/sls/utils/TestSLSUtils.java b/hadoop-tools/hadoop-sls/src/test/java/org/apache/hadoop/yarn/sls/utils/TestSLSUtils.java
+index d643c77..498615a 100644
+--- a/hadoop-tools/hadoop-sls/src/test/java/org/apache/hadoop/yarn/sls/utils/TestSLSUtils.java
++++ b/hadoop-tools/hadoop-sls/src/test/java/org/apache/hadoop/yarn/sls/utils/TestSLSUtils.java
+@@ -18,7 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.sls.utils;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import org.junit.Test;
+ 
+ public class TestSLSUtils {
+diff --git a/hadoop-tools/hadoop-sls/src/test/java/org/apache/hadoop/yarn/sls/web/TestSLSWebApp.java b/hadoop-tools/hadoop-sls/src/test/java/org/apache/hadoop/yarn/sls/web/TestSLSWebApp.java
+index 5060efa..1c1e63c 100644
+--- a/hadoop-tools/hadoop-sls/src/test/java/org/apache/hadoop/yarn/sls/web/TestSLSWebApp.java
++++ b/hadoop-tools/hadoop-sls/src/test/java/org/apache/hadoop/yarn/sls/web/TestSLSWebApp.java
+@@ -18,7 +18,7 @@
+ 
+ package org.apache.hadoop.yarn.sls.web;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import org.apache.commons.io.FileUtils;
+ import org.apache.hadoop.yarn.sls.SLSRunner;
+ import org.junit.Test;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/ProtocolHATestBase.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/ProtocolHATestBase.java
+index 69bb77b..dafd04f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/ProtocolHATestBase.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/ProtocolHATestBase.java
+@@ -28,7 +28,7 @@
+ import java.util.List;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.ha.ClientBaseWithFixes;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestApplicationMasterServiceOnHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestApplicationMasterServiceOnHA.java
+index 13020e8..4771ccb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestApplicationMasterServiceOnHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestApplicationMasterServiceOnHA.java
+@@ -21,7 +21,7 @@
+ import java.io.IOException;
+ import java.util.ArrayList;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.ipc.RPC;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestResourceTrackerOnHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestResourceTrackerOnHA.java
+index 498dbe3..363f666 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestResourceTrackerOnHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestResourceTrackerOnHA.java
+@@ -20,7 +20,7 @@
+ 
+ import java.io.IOException;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.hadoop.ipc.RPC;
+ import org.apache.hadoop.yarn.api.records.NodeId;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index 5252f56..eaf6e5d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -28,7 +28,7 @@
+ 
+ import javax.ws.rs.core.MediaType;
+ 
+-import junit.framework.Assert;
++import org.junit.Assert;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -37,6 +37,8 @@
+ import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
+ import org.apache.hadoop.ha.HAServiceProtocol.StateChangeRequestInfo;
+ import org.apache.hadoop.ha.HealthCheckFailedException;
++import org.apache.hadoop.metrics2.MetricsSystem;
++import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+ import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.security.AccessControlException;
+ import org.apache.hadoop.service.AbstractService;
+@@ -92,6 +94,12 @@ public void setUp() throws Exception {
+     // Enable webapp to test web-services also
+     configuration.setBoolean(MockRM.ENABLE_WEBAPP, true);
+     configuration.setBoolean(YarnConfiguration.YARN_ACL_ENABLE, true);
++    ClusterMetrics.destroy();
++    QueueMetrics.clearQueueMetrics();
++    MetricsSystem ms = DefaultMetricsSystem.instance();
++    if (ms.getSource("ClusterMetrics") != null) {
++      DefaultMetricsSystem.shutdown();
++    }
+   }
+ 
+   private void checkMonitorHealth() throws IOException {
+-- 
+1.7.0.4
+

@@ -1,0 +1,103 @@
+From 37c6a4d288ffb8f5d97c72eba2cc865fb69af1ee Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Thu, 13 Feb 2014 23:49:14 +0000
+Subject: [PATCH 364/795] HDFS-5934. Merging change r1568165 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568167 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 97294b9579482b0019623bb950e2f975f3ec7864)
+---
+ .../hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js |   33 ++++++++++++++-----
+ .../hadoop-hdfs/src/main/webapps/hdfs/explorer.js  |   20 +++++++++++-
+ 2 files changed, 43 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js
+index 946d218..3ab2154 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.js
+@@ -166,14 +166,29 @@
+ 
+   $('#ui-tabs a[href="#tab-snapshot"]').click(load_snapshot_info);
+ 
+-  var hash = window.location.hash;
+-  if (hash === "#tab-datanode") {
+-    load_datanode_info();
+-  } else if (hash === "#tab-snapshot") {
+-    load_snapshot_info();
+-  } else if (hash === "#tab-startup-progress") {
+-    load_startup_progress();
+-  } else {
+-    load_overview();
++  function load_page() {
++    var hash = window.location.hash;
++    switch(hash) {
++      case "#tab-datanode":
++        load_datanode_info();
++        break;
++      case "#tab-snapshot":
++        load_snapshot_info();
++        break;
++      case "#tab-startup-progress":
++        load_startup_progress();
++        break;
++      case "#tab-overview":
++        load_overview();
++        break;
++      default:
++        window.location.hash = "tab-overview";
++        break;
++    }
+   }
++  load_page();
++
++  $(window).bind('hashchange', function () {
++    load_page();
++  });
+ })();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
+index d82a0ab..5d80210 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/explorer.js
+@@ -52,6 +52,18 @@
+     $('#alert-panel').show();
+   }
+ 
++  $(window).bind('hashchange', function () {
++    $('#alert-panel').hide();
++
++    var dir = window.location.hash.slice(1);
++    if(dir == "") {
++      dir = "/";
++    }
++    if(current_directory != dir) {
++      browse_directory(dir);
++    }
++  });
++
+   function network_error_handler(url) {
+     return function (jqxhr, text, err) {
+       var msg = '<p>Failed to retreive data from ' + url + ', cause: ' + err + '</p>';
+@@ -145,6 +157,7 @@
+ 
+       current_directory = dir;
+       $('#directory').val(dir);
++      window.location.hash = dir;
+       dust.render('explorer', base.push(d), function(err, out) {
+         $('#panel').html(out);
+ 
+@@ -169,7 +182,12 @@
+ 
+     var b = function() { browse_directory($('#directory').val()); };
+     $('#btn-nav-directory').click(b);
+-    browse_directory('/');
++    var dir = window.location.hash.slice(1);
++    if(dir == "") {
++      window.location.hash = "/";
++    } else {
++      browse_directory(dir);
++    }
+   }
+ 
+   init();
+-- 
+1.7.0.4
+

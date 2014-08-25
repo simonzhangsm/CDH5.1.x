@@ -1,0 +1,105 @@
+From f1cd3a0e901399c7283b20e30ad725a8f6cd23b3 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Thu, 10 Jul 2014 03:54:20 +0000
+Subject: [PATCH 793/795] HDFS-6618. FSNamesystem#delete drops the FSN lock between removing INodes from the tree and deleting them from the inode map (kihwal via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1609381 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 2631c83a75ed03151fb3d0f89064674325a7c5ca)
+
+Conflicts:
+
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+(cherry picked from commit ae3ff1ccb8a36609052006c1cc9b48104838c205)
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |    6 ++--
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   23 ++++++++++++-------
+ 2 files changed, 17 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 943ff59..53834b7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -1012,7 +1012,7 @@ boolean unprotectedRenameTo(String src, String dst, long timestamp,
+                 dstIIP.getLatestSnapshotId(), collectedBlocks, removedINodes,
+                 true).get(Quota.NAMESPACE);
+             getFSNamesystem().removePathAndBlocks(src, collectedBlocks,
+-                removedINodes);
++                removedINodes, false);
+           }
+         }
+ 
+@@ -1356,7 +1356,7 @@ boolean delete(String src, BlocksMapUpdateInfo collectedBlocks,
+     fsImage.getEditLog().logDelete(src, now, logRetryCache);
+     incrDeletedFileCount(filesRemoved);
+     // Blocks/INodes will be handled later by the caller of this method
+-    getFSNamesystem().removePathAndBlocks(src, null, null);
++    getFSNamesystem().removePathAndBlocks(src, null, null, true);
+     return true;
+   }
+   
+@@ -1428,7 +1428,7 @@ void unprotectedDelete(String src, long mtime) throws UnresolvedLinkException,
+ 
+     if (filesRemoved >= 0) {
+       getFSNamesystem().removePathAndBlocks(src, collectedBlocks, 
+-          removedINodes);
++          removedINodes, false);
+     }
+   }
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 54f8be6..aa6a832 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -3416,6 +3416,8 @@ private boolean deleteInternal(String src, boolean recursive,
+       if (!dir.delete(src, collectedBlocks, removedINodes, logRetryCache)) {
+         return false;
+       }
++      // Blocks/INodes will be handled later
++      removePathAndBlocks(src, null, removedINodes, true);
+       ret = true;
+     } finally {
+       writeUnlock();
+@@ -3424,13 +3426,6 @@ private boolean deleteInternal(String src, boolean recursive,
+     removeBlocks(collectedBlocks); // Incremental deletion of blocks
+     collectedBlocks.clear();
+ 
+-    dir.writeLock();
+-    try {
+-      dir.removeFromInodeMap(removedINodes);
+-    } finally {
+-      dir.writeUnlock();
+-    }
+-    removedINodes.clear();
+     if (NameNode.stateChangeLog.isDebugEnabled()) {
+       NameNode.stateChangeLog.debug("DIR* Namesystem.delete: "
+         + src +" is removed");
+@@ -3468,14 +3463,24 @@ void removeBlocks(BlocksMapUpdateInfo blocks) {
+    * @param blocks Containing the list of blocks to be deleted from blocksMap
+    * @param removedINodes Containing the list of inodes to be removed from 
+    *                      inodesMap
++   * @param acquireINodeMapLock Whether to acquire the lock for inode removal
+    */
+   void removePathAndBlocks(String src, BlocksMapUpdateInfo blocks,
+-      List<INode> removedINodes) {
++      List<INode> removedINodes, final boolean acquireINodeMapLock) {
+     assert hasWriteLock();
+     leaseManager.removeLeaseWithPrefixPath(src);
+     // remove inodes from inodesMap
+     if (removedINodes != null) {
+-      dir.removeFromInodeMap(removedINodes);
++      if (acquireINodeMapLock) {
++        dir.writeLock();
++      }
++      try {
++        dir.removeFromInodeMap(removedINodes);
++      } finally {
++        if (acquireINodeMapLock) {
++          dir.writeUnlock();
++        }
++      }
+       removedINodes.clear();
+     }
+     if (blocks == null) {
+-- 
+1.7.0.4
+

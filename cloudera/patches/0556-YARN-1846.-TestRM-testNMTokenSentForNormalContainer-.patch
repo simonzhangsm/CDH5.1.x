@@ -1,0 +1,31 @@
+From 419c3d227b527efbe1355f6563ac91efa2d6c888 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Tue, 18 Mar 2014 07:00:29 +0000
+Subject: [PATCH 556/795] YARN-1846. TestRM#testNMTokenSentForNormalContainer assumes CapacityScheduler. (Robert Kanter via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1578767 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 391ba8d9395ebfd175f76ac0e7a35e912e0de03b)
+---
+ .../hadoop/yarn/server/resourcemanager/TestRM.java |    6 ++++--
+ 1 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
+index 22add26..42d8394 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRM.java
+@@ -177,8 +177,10 @@ public void testAppOnMultiNode() throws Exception {
+   // corresponding NM Token.
+   @Test (timeout = 20000)
+   public void testNMTokenSentForNormalContainer() throws Exception {
+-
+-    MockRM rm = new MockRM();
++    YarnConfiguration conf = new YarnConfiguration();
++    conf.set(YarnConfiguration.RM_SCHEDULER,
++        CapacityScheduler.class.getCanonicalName());
++    MockRM rm = new MockRM(conf);
+     rm.start();
+     MockNM nm1 = rm.registerNode("h1:1234", 5120);
+     RMApp app = rm.submitApp(2000);
+-- 
+1.7.0.4
+

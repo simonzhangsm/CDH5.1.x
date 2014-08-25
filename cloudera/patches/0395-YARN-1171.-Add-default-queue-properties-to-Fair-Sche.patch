@@ -1,0 +1,38 @@
+From 5b1777cacf70551c654c01c8d38efc184b26bc10 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Wed, 19 Feb 2014 21:30:30 +0000
+Subject: [PATCH 395/795] YARN-1171. Add default queue properties to Fair Scheduler documentation (Naren Koneru via Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1569924 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 919c05d7744b66b029cb60b3af5a12bfa1731f8f)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../src/site/apt/FairScheduler.apt.vm              |   10 +++++++++-
+ 1 files changed, 9 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
+index 655de70..a993783 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/apt/FairScheduler.apt.vm
+@@ -265,7 +265,15 @@ Allocation file format
+    its fair share before it will try to preempt containers to take resources from
+    other queues.
+ 
+- * <<A defaultQueueSchedulingPolicy element>>, which sets the default scheduling 
++ * <<A defaultMinSharePreemptionTimeout element>>, which sets the default number
++   of seconds the queue is under its minimum share before it will try to preempt
++   containers to take resources from other queues; overriden by
++   minSharePreemptionTimeout element in each queue if specified.
++
++ * <<A queueMaxAppsDefault element>>, which sets the default running app limit
++   for queues; overriden by maxRunningApps element in each queue.
++
++ * <<A defaultQueueSchedulingPolicy element>>, which sets the default scheduling
+    policy for queues; overriden by the schedulingPolicy element in each queue
+    if specified. Defaults to "fair".
+ 
+-- 
+1.7.0.4
+

@@ -1,0 +1,95 @@
+From 81cfbe5cfde1ecfad5f9ee031500f9b9deb6182e Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Tue, 4 Mar 2014 23:55:23 +0000
+Subject: [PATCH 507/795] HDFS-6051. HDFS cannot run on Windows since short-circuit memory segment changes (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2.4@1574260 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 6a60b1ae3daddd946a27696d2f77cfde1c3580b8)
+---
+ .../io/nativeio/SharedFileDescriptorFactory.java   |   13 +++++++++++--
+ .../hdfs/server/datanode/ShortCircuitRegistry.java |   20 +++++++++++++-------
+ 2 files changed, 24 insertions(+), 9 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/SharedFileDescriptorFactory.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/SharedFileDescriptorFactory.java
+index 1ef2904..97d7892 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/SharedFileDescriptorFactory.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/nativeio/SharedFileDescriptorFactory.java
+@@ -48,6 +48,16 @@
+   private final String prefix;
+   private final String path;
+ 
++  public static String getLoadingFailureReason() {
++    if (!NativeIO.isAvailable()) {
++      return "NativeIO is not available.";
++    }
++    if (!SystemUtils.IS_OS_UNIX) {
++      return "The OS is not UNIX.";
++    }
++    return null;
++  }
++
+   /**
+    * Create a SharedFileDescriptorFactory.
+    *
+@@ -56,8 +66,7 @@
+    */
+   public SharedFileDescriptorFactory(String prefix, String path)
+       throws IOException {
+-    Preconditions.checkArgument(NativeIO.isAvailable());
+-    Preconditions.checkArgument(SystemUtils.IS_OS_UNIX);
++    Preconditions.checkState(getLoadingFailureReason() == null);
+     this.prefix = prefix;
+     this.path = path;
+     deleteStaleTemporaryFiles0(prefix, path);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ShortCircuitRegistry.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ShortCircuitRegistry.java
+index ad3bf52..2d0b541 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ShortCircuitRegistry.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ShortCircuitRegistry.java
+@@ -149,23 +149,29 @@ public ShortCircuitRegistry(Configuration conf) throws IOException {
+     SharedFileDescriptorFactory shmFactory = null;
+     DomainSocketWatcher watcher = null;
+     try {
+-      if (!NativeIO.isAvailable()) {
+-        LOG.debug("Disabling ShortCircuitRegistry because NativeIO is " +
+-            "not available.");
++      String loadingFailureReason =
++          SharedFileDescriptorFactory.getLoadingFailureReason();
++      if (loadingFailureReason != null) {
++        if (LOG.isDebugEnabled()) {
++          LOG.debug("Disabling ShortCircuitRegistry because " +
++                    loadingFailureReason);
++        }
+         return;
+       }
+       String shmPath = conf.get(DFS_DATANODE_SHARED_FILE_DESCRIPTOR_PATH,
+           DFS_DATANODE_SHARED_FILE_DESCRIPTOR_PATH_DEFAULT);
+       if (shmPath.isEmpty()) {
+-        LOG.info("Disabling ShortCircuitRegistry because shmPath was not set.");
++        LOG.debug("Disabling ShortCircuitRegistry because shmPath was not set.");
+         return;
+       }
+       int interruptCheck = conf.getInt(
+           DFS_SHORT_CIRCUIT_SHARED_MEMORY_WATCHER_INTERRUPT_CHECK_MS,
+           DFS_SHORT_CIRCUIT_SHARED_MEMORY_WATCHER_INTERRUPT_CHECK_MS_DEFAULT);
+       if (interruptCheck <= 0) {
+-        LOG.info("Disabling ShortCircuitRegistry because interruptCheckMs " +
+-            "was set to " + interruptCheck);
++        if (LOG.isDebugEnabled()) {
++          LOG.debug("Disabling ShortCircuitRegistry because " +
++                    "interruptCheckMs was set to " + interruptCheck);
++        }
+         return;
+       }
+       shmFactory = 
+@@ -174,7 +180,7 @@ public ShortCircuitRegistry(Configuration conf) throws IOException {
+       enabled = true;
+       if (LOG.isDebugEnabled()) {
+         LOG.debug("created new ShortCircuitRegistry with interruptCheck=" +
+-          interruptCheck + ", shmPath=" + shmPath);
++                  interruptCheck + ", shmPath=" + shmPath);
+       }
+     } finally {
+       this.enabled = enabled;
+-- 
+1.7.0.4
+

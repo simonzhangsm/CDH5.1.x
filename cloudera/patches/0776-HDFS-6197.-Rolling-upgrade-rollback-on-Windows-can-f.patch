@@ -1,0 +1,50 @@
+From 9c68a61e44fd3bd3a5dffacd86000495470184ab Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Mon, 7 Apr 2014 21:21:46 +0000
+Subject: [PATCH 776/795] HDFS-6197. Rolling upgrade rollback on Windows can fail attempting to rename edit log segment files to a destination that already exists. Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1585586 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hdfs/server/namenode/FileJournalManager.java   |   10 ++++++----
+ .../org/apache/hadoop/hdfs/TestRollingUpgrade.java |    1 +
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
+index 61c9f20..9899271 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
+@@ -506,10 +506,12 @@ public void moveAsideEmptyFile() throws IOException {
+     private void renameSelf(String newSuffix) throws IOException {
+       File src = file;
+       File dst = new File(src.getParent(), src.getName() + newSuffix);
+-      boolean success = src.renameTo(dst);
+-      if (!success) {
+-        throw new IOException(
+-          "Couldn't rename log " + src + " to " + dst);
++      // renameTo fails on Windows if the destination file already exists.
++      if (!src.renameTo(dst)) {
++        if (!dst.delete() || !src.renameTo(dst)) {
++          throw new IOException(
++            "Couldn't rename log " + src + " to " + dst);
++        }
+       }
+       file = dst;
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+index 321f884..32f9899 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+@@ -195,6 +195,7 @@ public void testRollingUpgradeWithQJM() throws Exception {
+         Assert.assertEquals(info1, dfs.rollingUpgrade(RollingUpgradeAction.QUERY));
+   
+         dfs.mkdirs(bar);
++        cluster.shutdown();
+       }
+ 
+       // cluster2 takes over QJM
+-- 
+1.7.0.4
+

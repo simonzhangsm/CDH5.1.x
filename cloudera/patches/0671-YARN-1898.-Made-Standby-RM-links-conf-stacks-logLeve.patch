@@ -1,0 +1,108 @@
+From 673e31bf34e3aa17a6e2bd72f85dffe14aba5bbe Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org>
+Date: Wed, 2 Apr 2014 00:05:15 +0000
+Subject: [PATCH 671/795] YARN-1898. Made Standby RM links conf, stacks, logLevel, metrics, jmx, logs and static not be redirected to Active RM. Contributed by Xuan Gong.
+ svn merge --ignore-ancestry -c 1583833 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1583835 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 15ee7be86277119bbba119f8fbe8119f7fc7cc3a)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../apache/hadoop/yarn/client/TestRMFailover.java  |   24 ++++++++++++++++++++
+ .../resourcemanager/webapp/RMWebAppFilter.java     |   14 ++++++++++-
+ 2 files changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+index 1269f89..50edb32 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/test/java/org/apache/hadoop/yarn/client/TestRMFailover.java
+@@ -268,9 +268,33 @@ public void testRMWebAppRedirect() throws YarnException,
+     String header = getHeader("Refresh", rm2Url);
+     assertTrue(header.contains("; url=" + rm1Url));
+ 
++    // standby RM links /conf, /stacks, /logLevel, /metrics, /jmx,
++    // /static, /logs, /cluster/cluster as well as webService
++    // /ws/v1/cluster/info should not be redirected to active RM
+     header = getHeader("Refresh", rm2Url + "/cluster/cluster");
+     assertEquals(null, header);
+ 
++    header = getHeader("Refresh", rm2Url + "/conf");
++    assertEquals(null, header);
++
++    header = getHeader("Refresh", rm2Url + "/stacks");
++    assertEquals(null, header);
++
++    header = getHeader("Refresh", rm2Url + "/logLevel");
++    assertEquals(null, header);
++
++    header = getHeader("Refresh", rm2Url + "/metrics");
++    assertEquals(null, header);
++
++    header = getHeader("Refresh", rm2Url + "/jmx");
++    assertEquals(null, header);
++
++    header = getHeader("Refresh", rm2Url + "/static");
++    assertEquals(null, header);
++
++    header = getHeader("Refresh", rm2Url + "/logs");
++    assertEquals(null, header);
++
+     header = getHeader("Refresh", rm2Url + "/ws/v1/cluster/info");
+     assertEquals(null, header);
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebAppFilter.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebAppFilter.java
+index fd472dd..653432b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebAppFilter.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebAppFilter.java
+@@ -20,6 +20,7 @@
+ 
+ import java.io.IOException;
+ import java.io.PrintWriter;
++import java.util.Set;
+ 
+ import javax.inject.Inject;
+ import javax.inject.Singleton;
+@@ -30,6 +31,7 @@
+ 
+ import org.apache.hadoop.http.HtmlQuoting;
+ 
++import com.google.common.collect.Sets;
+ import com.google.inject.Injector;
+ import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
+ 
+@@ -42,6 +44,10 @@
+    */
+   private static final long serialVersionUID = 1L;
+ 
++  // define a set of URIs which do not need to do redirection
++  private static final Set<String> NON_REDIRECTED_URIS = Sets.newHashSet(
++      "/conf", "/stacks", "/logLevel", "/metrics", "/jmx", "/logs");
++
+   @Inject
+   public RMWebAppFilter(Injector injector) {
+     super(injector);
+@@ -61,8 +67,7 @@ public void doFilter(HttpServletRequest request,
+     RMWebApp rmWebApp = injector.getInstance(RMWebApp.class);
+     rmWebApp.checkIfStandbyRM();
+     if (rmWebApp.isStandby()
+-        && !uri.equals("/" + rmWebApp.wsName() + "/v1/cluster/info")
+-        && !uri.equals("/" + rmWebApp.name() + "/cluster")) {
++        && shouldRedirect(rmWebApp, uri)) {
+       String redirectPath = rmWebApp.getRedirectPath() + uri;
+ 
+       if (redirectPath != null && !redirectPath.isEmpty()) {
+@@ -80,4 +85,9 @@ public void doFilter(HttpServletRequest request,
+ 
+   }
+ 
++  private boolean shouldRedirect(RMWebApp rmWebApp, String uri) {
++    return !uri.equals("/" + rmWebApp.wsName() + "/v1/cluster/info")
++        && !uri.equals("/" + rmWebApp.name() + "/cluster")
++        && !NON_REDIRECTED_URIS.contains(uri);
++  }
+ }
+-- 
+1.7.0.4
+

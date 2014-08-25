@@ -1,0 +1,141 @@
+From 9e4e63217188c92ced70c8ebb58deaab0ab61c8a Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Wed, 16 Apr 2014 02:03:54 +0000
+Subject: [PATCH 672/795] Merge r1587776 from trunk. YARN-1934. Fixed a potential NPE in ZKRMStateStore caused by handling Disconnected event from ZK. Contributed by Karthik Kambatla
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1587778 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 3508e17f19de282b21966adb8d03306038ba6053)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../resourcemanager/recovery/ZKRMStateStore.java   |   42 ++++++++++++++-----
+ 1 files changed, 31 insertions(+), 11 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 9f06b85..4f2a7d0 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -280,10 +280,9 @@ public String run() throws KeeperException, InterruptedException {
+     }
+   }
+ 
+-  private void logRootNodeAcls(String prefix) throws KeeperException,
+-      InterruptedException {
++  private void logRootNodeAcls(String prefix) throws Exception {
+     Stat getStat = new Stat();
+-    List<ACL> getAcls = zkClient.getACL(zkRootNodePath, getStat);
++    List<ACL> getAcls = getACLWithRetries(zkRootNodePath, getStat);
+ 
+     StringBuilder builder = new StringBuilder();
+     builder.append(prefix);
+@@ -363,7 +362,7 @@ protected synchronized void storeVersion() throws Exception {
+     String versionNodePath = getNodePath(zkRootNodePath, VERSION_NODE);
+     byte[] data =
+         ((RMStateVersionPBImpl) CURRENT_VERSION_INFO).getProto().toByteArray();
+-    if (zkClient.exists(versionNodePath, true) != null) {
++    if (existsWithRetries(versionNodePath, true) != null) {
+       setDataWithRetries(versionNodePath, data, -1);
+     } else {
+       createWithRetries(versionNodePath, data, zkAcl, CreateMode.PERSISTENT);
+@@ -374,7 +373,7 @@ protected synchronized void storeVersion() throws Exception {
+   protected synchronized RMStateVersion loadVersion() throws Exception {
+     String versionNodePath = getNodePath(zkRootNodePath, VERSION_NODE);
+ 
+-    if (zkClient.exists(versionNodePath, true) != null) {
++    if (existsWithRetries(versionNodePath, true) != null) {
+       byte[] data = getDataWithRetries(versionNodePath, true);
+       RMStateVersion version =
+           new RMStateVersionPBImpl(RMStateVersionProto.parseFrom(data));
+@@ -442,7 +441,8 @@ private void loadRMSequentialNumberState(RMState rmState) throws Exception {
+   }
+ 
+   private void loadRMDelegationTokenState(RMState rmState) throws Exception {
+-    List<String> childNodes = zkClient.getChildren(delegationTokensRootPath, true);
++    List<String> childNodes =
++        getChildrenWithRetries(delegationTokensRootPath, true);
+     for (String childNodeName : childNodes) {
+       String childNodePath =
+           getNodePath(delegationTokensRootPath, childNodeName);
+@@ -567,7 +567,7 @@ public synchronized void updateApplicationStateInternal(ApplicationId appId,
+     }
+     byte[] appStateData = appStateDataPB.getProto().toByteArray();
+ 
+-    if (zkClient.exists(nodeUpdatePath, true) != null) {
++    if (existsWithRetries(nodeUpdatePath, true) != null) {
+       setDataWithRetries(nodeUpdatePath, appStateData, -1);
+     } else {
+       createWithRetries(nodeUpdatePath, appStateData, zkAcl,
+@@ -610,7 +610,7 @@ public synchronized void updateApplicationAttemptStateInternal(
+     }
+     byte[] attemptStateData = attemptStateDataPB.getProto().toByteArray();
+ 
+-    if (zkClient.exists(nodeUpdatePath, true) != null) {
++    if (existsWithRetries(nodeUpdatePath, true) != null) {
+       setDataWithRetries(nodeUpdatePath, attemptStateData, -1);
+     } else {
+       createWithRetries(nodeUpdatePath, attemptStateData, zkAcl,
+@@ -661,7 +661,7 @@ protected synchronized void removeRMDelegationTokenState(
+       LOG.debug("Removing RMDelegationToken_"
+           + rmDTIdentifier.getSequenceNumber());
+     }
+-    if (zkClient.exists(nodeRemovePath, true) != null) {
++    if (existsWithRetries(nodeRemovePath, true) != null) {
+       opList.add(Op.delete(nodeRemovePath, -1));
+     } else {
+       LOG.info("Attempted to delete a non-existing znode " + nodeRemovePath);
+@@ -677,7 +677,7 @@ protected void updateRMDelegationTokenAndSequenceNumberInternal(
+     String nodeRemovePath =
+         getNodePath(delegationTokensRootPath, DELEGATION_TOKEN_PREFIX
+             + rmDTIdentifier.getSequenceNumber());
+-    if (zkClient.exists(nodeRemovePath, true) == null) {
++    if (existsWithRetries(nodeRemovePath, true) == null) {
+       // in case znode doesn't exist
+       addStoreOrUpdateOps(
+           opList, rmDTIdentifier, renewDate, latestSequenceNumber, false);
+@@ -760,7 +760,7 @@ protected synchronized void removeRMDTMasterKeyState(
+     if (LOG.isDebugEnabled()) {
+       LOG.debug("Removing RMDelegationKey_" + delegationKey.getKeyId());
+     }
+-    if (zkClient.exists(nodeRemovePath, true) != null) {
++    if (existsWithRetries(nodeRemovePath, true) != null) {
+       doMultiWithRetries(Op.delete(nodeRemovePath, -1));
+     } else {
+       LOG.info("Attempted to delete a non-existing znode " + nodeRemovePath);
+@@ -891,6 +891,16 @@ public void setDataWithRetries(final String path, final byte[] data,
+     }.runWithRetries();
+   }
+ 
++  private List<ACL> getACLWithRetries(
++      final String path, final Stat stat) throws Exception {
++    return new ZKAction<List<ACL>>() {
++      @Override
++      public List<ACL> run() throws KeeperException, InterruptedException {
++        return zkClient.getACL(path, stat);
++      }
++    }.runWithRetries();
++  }
++
+   private List<String> getChildrenWithRetries(
+       final String path, final boolean watch) throws Exception {
+     return new ZKAction<List<String>>() {
+@@ -901,6 +911,16 @@ public void setDataWithRetries(final String path, final byte[] data,
+     }.runWithRetries();
+   }
+ 
++  private Stat existsWithRetries(
++      final String path, final boolean watch) throws Exception {
++    return new ZKAction<Stat>() {
++      @Override
++      Stat run() throws KeeperException, InterruptedException {
++        return zkClient.exists(path, watch);
++      }
++    }.runWithRetries();
++  }
++
+   /**
+    * Helper class that periodically attempts creating a znode to ensure that
+    * this RM continues to be the Active.
+-- 
+1.7.0.4
+

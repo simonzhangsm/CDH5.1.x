@@ -1,0 +1,35 @@
+From 17c16f23801b4c2d6c43b15f39d764bb6b0df5db Mon Sep 17 00:00:00 2001
+From: Michael Stack <stack@apache.org>
+Date: Tue, 4 Mar 2014 21:11:52 +0000
+Subject: [PATCH 522/795] HDFS-6047 TestPread NPE inside in DFSInputStream hedgedFetchBlockByteRange (stack)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1574206 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1e5d38ecea909103d1a6f863d8eafcde17f68ac7)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../org/apache/hadoop/hdfs/DFSInputStream.java     |    7 +++++--
+ 1 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+index 5badb24..3705a2f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+@@ -1177,8 +1177,11 @@ private void hedgedFetchBlockByteRange(LocatedBlock block, long start,
+           // exception already handled in the call method. getFirstToComplete
+           // will remove the failing future from the list. nothing more to do.
+         }
+-        // We got here if exception.  Ignore this node on next go around.
+-        ignored.add(chosenNode.info);
++        // We got here if exception.  Ignore this node on next go around IFF
++        // we found a chosenNode to hedge read against.
++        if (chosenNode != null && chosenNode.info != null) {
++          ignored.add(chosenNode.info);
++        }
+       }
+       // executed if we get an error from a data node
+       block = getBlockAt(block.getStartOffset(), false);
+-- 
+1.7.0.4
+

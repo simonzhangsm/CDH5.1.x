@@ -1,0 +1,58 @@
+From 3542361eee4ecb71eae50235b807cb9658a11491 Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Thu, 22 May 2014 06:13:24 +0000
+Subject: [PATCH 636/795] YARN-2089. FairScheduler: QueuePlacementPolicy and QueuePlacementRule are missing audience annotations. (Zhihai Xu via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1596765 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 71fd72e5564187edcf86b0e190702fb61ad892cf)
+---
+ .../scheduler/fair/QueuePlacementPolicy.java       |    4 ++++
+ .../scheduler/fair/QueuePlacementRule.java         |    4 ++++
+ 2 files changed, 8 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/QueuePlacementPolicy.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/QueuePlacementPolicy.java
+index 1fd18e7..476c0fd 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/QueuePlacementPolicy.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/QueuePlacementPolicy.java
+@@ -25,6 +25,8 @@
+ import java.util.Map;
+ import java.util.Set;
+ 
++import org.apache.hadoop.classification.InterfaceAudience.Private;
++import org.apache.hadoop.classification.InterfaceStability.Unstable;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.security.Groups;
+ import org.apache.hadoop.util.ReflectionUtils;
+@@ -32,6 +34,8 @@
+ import org.w3c.dom.Node;
+ import org.w3c.dom.NodeList;
+ 
++@Private
++@Unstable
+ public class QueuePlacementPolicy {
+   private static final Map<String, Class<? extends QueuePlacementRule>> ruleClasses;
+   static {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/QueuePlacementRule.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/QueuePlacementRule.java
+index 6acba27..939efcc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/QueuePlacementRule.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/QueuePlacementRule.java
+@@ -23,12 +23,16 @@
+ import java.util.List;
+ import java.util.Map;
+ 
++import org.apache.hadoop.classification.InterfaceAudience.Private;
++import org.apache.hadoop.classification.InterfaceStability.Unstable;
+ import org.apache.hadoop.security.Groups;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.w3c.dom.Element;
+ import org.w3c.dom.NamedNodeMap;
+ import org.w3c.dom.Node;
+ 
++@Private
++@Unstable
+ public abstract class QueuePlacementRule {
+   protected boolean create;
+   
+-- 
+1.7.0.4
+

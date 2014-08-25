@@ -1,0 +1,111 @@
+From 13ae2fa58eb55a3b2bfae35ec94503bd94f5c50d Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Thu, 15 May 2014 21:27:43 +0000
+Subject: [PATCH 646/795] HDFS-6361. Merging change r1595050 from trunk
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1595053 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fda94c0d143cbfa264b0913ea0bd91e0ea54b244)
+---
+ .../org/apache/hadoop/nfs/nfs3/IdUserGroup.java    |   22 ++++++++-
+ .../apache/hadoop/nfs/nfs3/TestIdUserGroup.java    |   45 ++++++++++++++++++++
+ 2 files changed, 64 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+index 203b7ed..1ed3d3f 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+@@ -114,7 +114,23 @@ private static void reportDuplicateEntry(final String header,
+           "The new entry is to be ignored for the following reason.",
+           DUPLICATE_NAME_ID_DEBUG_INFO));
+   }
+-      
++
++  /**
++   * uid and gid are defined as uint32 in linux. Some systems create
++   * (intended or unintended) <nfsnobody, 4294967294> kind of <name,Id>
++   * mapping, where 4294967294 is 2**32-2 as unsigned int32. As an example,
++   *   https://bugzilla.redhat.com/show_bug.cgi?id=511876.
++   * Because user or group id are treated as Integer (signed integer or int32)
++   * here, the number 4294967294 is out of range. The solution is to convert
++   * uint32 to int32, so to map the out-of-range ID to the negative side of
++   * Integer, e.g. 4294967294 maps to -2 and 4294967295 maps to -1.
++   */
++  private static Integer parseId(final String idStr) {
++    Long longVal = Long.parseLong(idStr);
++    int intVal = longVal.intValue();
++    return Integer.valueOf(intVal);
++  }
++  
+   /**
+    * Get the whole list of users and groups and save them in the maps.
+    * @throws IOException 
+@@ -135,8 +151,8 @@ public static void updateMapInternal(BiMap<Integer, String> map, String mapName,
+         }
+         LOG.debug("add to " + mapName + "map:" + nameId[0] + " id:" + nameId[1]);
+         // HDFS can't differentiate duplicate names with simple authentication
+-        final Integer key = Integer.valueOf(nameId[1]);
+-        final String value = nameId[0];        
++        final Integer key = parseId(nameId[1]);        
++        final String value = nameId[0];
+         if (map.containsKey(key)) {
+           final String prevValue = map.get(key);
+           if (value.equals(prevValue)) {
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+index 3adb308..c991f86 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+@@ -67,6 +67,51 @@ public void testDuplicates() throws IOException {
+   }
+   
+   @Test
++  public void testIdOutOfIntegerRange() throws IOException {
++    String GET_ALL_USERS_CMD = "echo \""
++        + "nfsnobody:x:4294967294:4294967294:Anonymous NFS User:/var/lib/nfs:/sbin/nologin\n"
++        + "nfsnobody1:x:4294967295:4294967295:Anonymous NFS User:/var/lib/nfs1:/sbin/nologin\n"
++        + "maxint:x:2147483647:2147483647:Grid Distributed File System:/home/maxint:/bin/bash\n"
++        + "minint:x:2147483648:2147483648:Grid Distributed File System:/home/minint:/bin/bash\n"
++        + "archivebackup:*:1031:4294967294:Archive Backup:/home/users/archivebackup:/bin/sh\n"
++        + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "daemon:x:2:2:daemon:/sbin:/sbin/nologin\""
++        + " | cut -d: -f1,3";
++    String GET_ALL_GROUPS_CMD = "echo \""
++        + "hdfs:*:11501:hrt_hdfs\n"
++        + "rpcuser:*:29:\n"
++        + "nfsnobody:*:4294967294:\n"
++        + "nfsnobody1:*:4294967295:\n"
++        + "maxint:*:2147483647:\n"
++        + "minint:*:2147483648:\n"
++        + "mapred3:x:498\"" 
++        + " | cut -d: -f1,3";
++    // Maps for id to name map
++    BiMap<Integer, String> uMap = HashBiMap.create();
++    BiMap<Integer, String> gMap = HashBiMap.create();
++
++    IdUserGroup.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":");
++    assertTrue(uMap.size() == 7);
++    assertEquals("nfsnobody", uMap.get(-2));
++    assertEquals("nfsnobody1", uMap.get(-1));
++    assertEquals("maxint", uMap.get(2147483647));
++    assertEquals("minint", uMap.get(-2147483648));
++    assertEquals("archivebackup", uMap.get(1031));
++    assertEquals("hdfs",uMap.get(11501));
++    assertEquals("daemon", uMap.get(2));
++
++    IdUserGroup.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":");
++    assertTrue(gMap.size() == 7);
++    assertEquals("hdfs",gMap.get(11501));
++    assertEquals("rpcuser", gMap.get(29));
++    assertEquals("nfsnobody", gMap.get(-2));
++    assertEquals("nfsnobody1", gMap.get(-1));
++    assertEquals("maxint", gMap.get(2147483647));
++    assertEquals("minint", gMap.get(-2147483648));
++    assertEquals("mapred3", gMap.get(498));
++  }
++
++  @Test
+   public void testUserUpdateSetting() throws IOException {
+     IdUserGroup iug = new IdUserGroup();
+     assertEquals(iug.getTimeout(), IdUserGroup.TIMEOUT_DEFAULT);
+-- 
+1.7.0.4
+

@@ -1,0 +1,197 @@
+From 5afacb808e240b0ec7c49208889db2a3691e1ec5 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Tue, 4 Mar 2014 06:51:50 +0000
+Subject: [PATCH 492/795] HDFS-6046. add dfs.client.mmap.enabled (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2.4@1573889 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7b9163b504decd7f12231740f28743ed39702c7a)
+---
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |    4 +
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    2 +
+ .../org/apache/hadoop/hdfs/DFSInputStream.java     |    5 +-
+ .../src/main/resources/hdfs-default.xml            |   18 ++++--
+ .../hadoop/fs/TestEnhancedByteBufferAccess.java    |   61 ++++++++++++++++++++
+ 5 files changed, 84 insertions(+), 6 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index 0096b36..ecaca3b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -277,6 +277,7 @@
+     final long shortCircuitStreamsCacheExpiryMs; 
+     final int shortCircuitSharedMemoryWatcherInterruptCheckMs;
+     
++    final boolean shortCircuitMmapEnabled;
+     final int shortCircuitMmapCacheSize;
+     final long shortCircuitMmapCacheExpiryMs;
+     final long shortCircuitMmapCacheRetryTimeout;
+@@ -396,6 +397,9 @@ public Conf(Configuration conf) {
+       shortCircuitStreamsCacheExpiryMs = conf.getLong(
+           DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_STREAMS_CACHE_EXPIRY_MS_KEY,
+           DFSConfigKeys.DFS_CLIENT_READ_SHORTCIRCUIT_STREAMS_CACHE_EXPIRY_MS_DEFAULT);
++      shortCircuitMmapEnabled = conf.getBoolean(
++          DFSConfigKeys.DFS_CLIENT_MMAP_ENABLED,
++          DFSConfigKeys.DFS_CLIENT_MMAP_ENABLED_DEFAULT);
+       shortCircuitMmapCacheSize = conf.getInt(
+           DFSConfigKeys.DFS_CLIENT_MMAP_CACHE_SIZE,
+           DFSConfigKeys.DFS_CLIENT_MMAP_CACHE_SIZE_DEFAULT);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 0f9e466..9743c73 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -439,6 +439,8 @@
+   public static final int DFS_CLIENT_READ_SHORTCIRCUIT_BUFFER_SIZE_DEFAULT = 1024 * 1024;
+   public static final String DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC = "dfs.client.domain.socket.data.traffic";
+   public static final boolean DFS_CLIENT_DOMAIN_SOCKET_DATA_TRAFFIC_DEFAULT = false;
++  public static final String DFS_CLIENT_MMAP_ENABLED= "dfs.client.mmap.enabled";
++  public static final boolean DFS_CLIENT_MMAP_ENABLED_DEFAULT = true;
+   public static final String DFS_CLIENT_MMAP_CACHE_SIZE = "dfs.client.mmap.cache.size";
+   public static final int DFS_CLIENT_MMAP_CACHE_SIZE_DEFAULT = 256;
+   public static final String DFS_CLIENT_MMAP_CACHE_TIMEOUT_MS = "dfs.client.mmap.cache.timeout.ms";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+index d342724..b711c7c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+@@ -1343,7 +1343,10 @@ public synchronized ByteBuffer read(ByteBufferPool bufferPool,
+             "at position " + pos);
+       }
+     }
+-    ByteBuffer buffer = tryReadZeroCopy(maxLength, opts);
++    ByteBuffer buffer = null;
++    if (dfsClient.getConf().shortCircuitMmapEnabled) {
++      buffer = tryReadZeroCopy(maxLength, opts);
++    }
+     if (buffer != null) {
+       return buffer;
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index 0df63d3..8375afd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -1533,25 +1533,33 @@
+ </property>
+ 
+ <property>
++  <name>dfs.client.mmap.enabled</name>
++  <value>true</value>
++  <description>
++    If this is set to false, the client won't attempt to perform memory-mapped reads.
++  </description>
++</property>
++
++<property>
+   <name>dfs.client.mmap.cache.size</name>
+-  <value>1024</value>
++  <value>256</value>
+   <description>
+     When zero-copy reads are used, the DFSClient keeps a cache of recently used
+     memory mapped regions.  This parameter controls the maximum number of
+     entries that we will keep in that cache.
+ 
+-    If this is set to 0, we will not allow mmap.
+-
+     The larger this number is, the more file descriptors we will potentially
+     use for memory-mapped files.  mmaped files also use virtual address space.
+     You may need to increase your ulimit virtual address space limits before
+     increasing the client mmap cache size.
++
++    Note that you can still do zero-copy reads when this size is set to 0.
+   </description>
+ </property>
+ 
+ <property>
+   <name>dfs.client.mmap.cache.timeout.ms</name>
+-  <value>900000</value>
++  <value>3600000</value>
+   <description>
+     The minimum length of time that we will keep an mmap entry in the cache
+     between uses.  If an entry is in the cache longer than this, and nobody
+@@ -1570,7 +1578,7 @@
+ 
+ <property>
+   <name>dfs.client.short.circuit.replica.stale.threshold.ms</name>
+-  <value>3000000</value>
++  <value>1800000</value>
+   <description>
+     The maximum amount of time that we will consider a short-circuit replica to
+     be valid, if there is no communication from the DataNode.  After this time
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestEnhancedByteBufferAccess.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestEnhancedByteBufferAccess.java
+index 9f75761..8b87fb1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestEnhancedByteBufferAccess.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/fs/TestEnhancedByteBufferAccess.java
+@@ -21,6 +21,8 @@
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MAX_LOCKED_MEMORY_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_PATH_BASED_CACHE_REFRESH_INTERVAL_MS;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CLIENT_MMAP_ENABLED;
++import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CLIENT_MMAP_CACHE_SIZE;
+ 
+ import java.io.File;
+ import java.io.FileInputStream;
+@@ -698,4 +700,63 @@ public void visit(int numOutstandingMmaps,
+       }
+     }, 10, 60000);
+   }
++  
++  @Test
++  public void testClientMmapDisable() throws Exception {
++    HdfsConfiguration conf = initZeroCopyTest();
++    conf.setBoolean(DFS_CLIENT_MMAP_ENABLED, false);
++    MiniDFSCluster cluster = null;
++    final Path TEST_PATH = new Path("/a");
++    final int TEST_FILE_LENGTH = 16385;
++    final int RANDOM_SEED = 23453;
++    final String CONTEXT = "testClientMmapDisable";
++    FSDataInputStream fsIn = null;
++    DistributedFileSystem fs = null;
++    conf.set(DFSConfigKeys.DFS_CLIENT_CONTEXT, CONTEXT);
++
++    try {
++      // With DFS_CLIENT_MMAP_ENABLED set to false, we should not do memory
++      // mapped reads.
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
++      cluster.waitActive();
++      fs = cluster.getFileSystem();
++      DFSTestUtil.createFile(fs, TEST_PATH,
++          TEST_FILE_LENGTH, (short)1, RANDOM_SEED);
++      DFSTestUtil.waitReplication(fs, TEST_PATH, (short)1);
++      fsIn = fs.open(TEST_PATH);
++      try {
++        fsIn.read(null, 1, EnumSet.of(ReadOption.SKIP_CHECKSUMS));
++        Assert.fail("expected zero-copy read to fail when client mmaps " +
++            "were disabled.");
++      } catch (UnsupportedOperationException e) {
++      }
++    } finally {
++      if (fsIn != null) fsIn.close();
++      if (fs != null) fs.close();
++      if (cluster != null) cluster.shutdown();
++    }
++
++    fsIn = null;
++    fs = null;
++    cluster = null;
++    try {
++      // Now try again with DFS_CLIENT_MMAP_CACHE_SIZE == 0.  It should work.
++      conf.setBoolean(DFS_CLIENT_MMAP_ENABLED, true);
++      conf.setInt(DFS_CLIENT_MMAP_CACHE_SIZE, 0);
++      conf.set(DFSConfigKeys.DFS_CLIENT_CONTEXT, CONTEXT + ".1");
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
++      cluster.waitActive();
++      fs = cluster.getFileSystem();
++      DFSTestUtil.createFile(fs, TEST_PATH,
++          TEST_FILE_LENGTH, (short)1, RANDOM_SEED);
++      DFSTestUtil.waitReplication(fs, TEST_PATH, (short)1);
++      fsIn = fs.open(TEST_PATH);
++      ByteBuffer buf = fsIn.read(null, 1, EnumSet.of(ReadOption.SKIP_CHECKSUMS));
++      fsIn.releaseBuffer(buf);
++    } finally {
++      if (fsIn != null) fsIn.close();
++      if (fs != null) fs.close();
++      if (cluster != null) cluster.shutdown();
++    }
++  }
+ }
+-- 
+1.7.0.4
+

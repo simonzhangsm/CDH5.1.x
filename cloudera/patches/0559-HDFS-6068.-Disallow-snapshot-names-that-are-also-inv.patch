@@ -1,0 +1,59 @@
+From 769095178995d9476574470efe5ba00ccdbda283 Mon Sep 17 00:00:00 2001
+From: Tsz-wo Sze <szetszwo@apache.org>
+Date: Tue, 18 Mar 2014 18:34:19 +0000
+Subject: [PATCH 559/795] HDFS-6068. Disallow snapshot names that are also invalid directory names.  Contributed by sathish
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1579004 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 647c741a8d36ab2f42581c8c9cc774d3f1213b68)
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    6 ++++++
+ .../server/namenode/snapshot/TestSnapshot.java     |    6 +++---
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 3d1b32a..2c314a0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -6965,6 +6965,12 @@ String createSnapshot(String snapshotRoot, String snapshotName)
+       if (snapshotName == null || snapshotName.isEmpty()) {
+         snapshotName = Snapshot.generateDefaultSnapshotName();
+       }
++      if(snapshotName != null){
++        if (!DFSUtil.isValidNameForComponent(snapshotName)) {
++            throw new InvalidPathException("Invalid snapshot name: "
++                + snapshotName);
++        }
++      }
+       dir.verifySnapshotName(snapshotName, snapshotRoot);
+       dir.writeLock();
+       try {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java
+index 37f94f5..1b7e356 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java
+@@ -337,12 +337,11 @@ public void testCreateSnapshotWithIllegalName() throws Exception {
+       hdfs.createSnapshot(dir, name1);
+       fail("Exception expected when an illegal name is given");
+     } catch (RemoteException e) {
+-      String errorMsg = "\"" + HdfsConstants.DOT_SNAPSHOT_DIR
+-          + "\" is a reserved name.";
++      String errorMsg = "Invalid path name Invalid snapshot name: " + name1; 
+       GenericTestUtils.assertExceptionContains(errorMsg, e);
+     }
+     
+-    String errorMsg = "Snapshot name cannot contain \"" + Path.SEPARATOR + "\"";
++    
+     final String[] badNames = new String[] { "foo" + Path.SEPARATOR,
+         Path.SEPARATOR + "foo", Path.SEPARATOR, "foo" + Path.SEPARATOR + "bar" };
+     for (String badName : badNames) {
+@@ -350,6 +349,7 @@ public void testCreateSnapshotWithIllegalName() throws Exception {
+         hdfs.createSnapshot(dir, badName);
+         fail("Exception expected when an illegal name is given");
+       } catch (RemoteException e) {
++    String errorMsg = "Invalid path name Invalid snapshot name: " + badName ;
+         GenericTestUtils.assertExceptionContains(errorMsg, e);
+       }
+     }
+-- 
+1.7.0.4
+

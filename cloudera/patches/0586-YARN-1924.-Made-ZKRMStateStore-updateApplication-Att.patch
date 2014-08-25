@@ -1,0 +1,151 @@
+From b2c7f9c0fb99f0940eb82b78f6ef731a01b643c7 Mon Sep 17 00:00:00 2001
+From: Zhijie Shen <zjshen@apache.org =  zjshen = Zhijie Shen zjshen@apache.org@apache.org>
+Date: Fri, 11 Apr 2014 03:38:27 +0000
+Subject: [PATCH 586/795] YARN-1924. Made ZKRMStateStore updateApplication(Attempt)StateInternal work when Application(Attempt) state hasn't been stored before. Contributed by Jian He.
+ svn merge --ignore-ancestry -c 1586547 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1586548 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8e08890ec7ac569734ac3653e8c439d51235ec1f)
+---
+ .../recovery/FileSystemRMStateStore.java           |    2 +
+ .../resourcemanager/recovery/RMStateStore.java     |    4 +-
+ .../resourcemanager/recovery/ZKRMStateStore.java   |   21 ++++++++++++++-
+ .../recovery/RMStateStoreTestBase.java             |   27 ++++++++++++++++++++
+ 4 files changed, 50 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+index cc25be7..1f6e175 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/FileSystemRMStateStore.java
+@@ -538,6 +538,8 @@ protected void updateFile(Path outputPath, byte[] data) throws Exception {
+   protected void replaceFile(Path srcPath, Path dstPath) throws Exception {
+     if (fs.exists(dstPath)) {
+       deleteFile(dstPath);
++    } else {
++      LOG.info("File doesn't exist. Skip deleting the file " + dstPath);
+     }
+     fs.rename(srcPath, dstPath);
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+index 8980a20..c5fd365 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStore.java
+@@ -628,7 +628,7 @@ protected void handleStoreEvent(RMStateStoreEvent event) {
+           notifyDoneUpdatingApplication(appId, storedException);
+         }
+       } catch (Exception e) {
+-        LOG.error("Error storing app: " + appId, e);
++        LOG.error("Error storing/updating app: " + appId, e);
+         notifyStoreOperationFailed(e);
+       }
+     } else if (event.getType().equals(RMStateStoreEventType.STORE_APP_ATTEMPT)
+@@ -679,7 +679,7 @@ protected void handleStoreEvent(RMStateStoreEvent event) {
+         }
+       } catch (Exception e) {
+         LOG.error(
+-            "Error storing appAttempt: " + attemptState.getAttemptId(), e);
++            "Error storing/updating appAttempt: " + attemptState.getAttemptId(), e);
+         notifyStoreOperationFailed(e);
+       }
+     } else if (event.getType().equals(RMStateStoreEventType.REMOVE_APP)) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 8c87055..3b894b8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -559,7 +559,15 @@ public synchronized void updateApplicationStateInternal(ApplicationId appId,
+           + nodeUpdatePath);
+     }
+     byte[] appStateData = appStateDataPB.getProto().toByteArray();
+-    setDataWithRetries(nodeUpdatePath, appStateData, 0);
++
++    if (zkClient.exists(nodeUpdatePath, true) != null) {
++      setDataWithRetries(nodeUpdatePath, appStateData, -1);
++    } else {
++      createWithRetries(nodeUpdatePath, appStateData, zkAcl,
++        CreateMode.PERSISTENT);
++      LOG.info(appId + " znode didn't exist. Created a new znode to"
++          + " update the application state.");
++    }
+   }
+ 
+   @Override
+@@ -594,7 +602,15 @@ public synchronized void updateApplicationAttemptStateInternal(
+           + " at: " + nodeUpdatePath);
+     }
+     byte[] attemptStateData = attemptStateDataPB.getProto().toByteArray();
+-    setDataWithRetries(nodeUpdatePath, attemptStateData, 0);
++
++    if (zkClient.exists(nodeUpdatePath, true) != null) {
++      setDataWithRetries(nodeUpdatePath, attemptStateData, -1);
++    } else {
++      createWithRetries(nodeUpdatePath, attemptStateData, zkAcl,
++        CreateMode.PERSISTENT);
++      LOG.info(appAttemptId + " znode didn't exist. Created a new znode to"
++          + " update the application attempt state.");
++    }
+   }
+ 
+   @Override
+@@ -928,6 +944,7 @@ T runWithRetries() throws Exception {
+             Thread.sleep(zkRetryInterval);
+             continue;
+           }
++          LOG.error("Error while doing ZK operation.", ke);
+           throw ke;
+         }
+       }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
+index b085762..9fb829b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/RMStateStoreTestBase.java
+@@ -310,6 +310,30 @@ void testRMAppStateStore(RMStateStoreHelper stateStoreHelper)
+           "myTrackingUrl", "attemptDiagnostics",
+           FinalApplicationStatus.SUCCEEDED);
+     store.updateApplicationAttemptState(newAttemptState);
++
++    // test updating the state of an app/attempt whose initial state was not
++    // saved.
++    ApplicationId dummyAppId = ApplicationId.newInstance(1234, 10);
++    ApplicationSubmissionContext dummyContext =
++        new ApplicationSubmissionContextPBImpl();
++    dummyContext.setApplicationId(dummyAppId);
++    ApplicationState dummyApp =
++        new ApplicationState(appState.submitTime, appState.startTime,
++          dummyContext, appState.user, RMAppState.FINISHED, "appDiagnostics",
++          1234);
++    store.updateApplicationState(dummyApp);
++
++    ApplicationAttemptId dummyAttemptId =
++        ApplicationAttemptId.newInstance(dummyAppId, 6);
++    ApplicationAttemptState dummyAttempt =
++        new ApplicationAttemptState(dummyAttemptId,
++          oldAttemptState.getMasterContainer(),
++          oldAttemptState.getAppAttemptCredentials(),
++          oldAttemptState.getStartTime(), RMAppAttemptState.FINISHED,
++          "myTrackingUrl", "attemptDiagnostics",
++          FinalApplicationStatus.SUCCEEDED);
++    store.updateApplicationAttemptState(dummyAttempt);
++
+     // let things settle down
+     Thread.sleep(1000);
+     store.close();
+@@ -320,6 +344,7 @@ void testRMAppStateStore(RMStateStoreHelper stateStoreHelper)
+     RMState newRMState = store.loadState();
+     Map<ApplicationId, ApplicationState> newRMAppState =
+         newRMState.getApplicationState();
++    assertNotNull(newRMAppState.get(dummyApp.getAppId()));
+     ApplicationState updatedAppState = newRMAppState.get(appId1);
+     assertEquals(appState.getAppId(),updatedAppState.getAppId());
+     assertEquals(appState.getSubmitTime(), updatedAppState.getSubmitTime());
+@@ -331,6 +356,8 @@ void testRMAppStateStore(RMStateStoreHelper stateStoreHelper)
+     assertEquals(1234, updatedAppState.getFinishTime());
+ 
+     // check updated attempt state
++    assertNotNull(newRMAppState.get(dummyApp.getAppId()).getAttempt(
++      dummyAttemptId));
+     ApplicationAttemptState updatedAttemptState =
+         updatedAppState.getAttempt(newAttemptState.getAttemptId());
+     assertEquals(oldAttemptState.getAttemptId(),
+-- 
+1.7.0.4
+

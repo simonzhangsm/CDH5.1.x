@@ -1,0 +1,47 @@
+From 42aa9304d47a85b39e8d589bdee6a25349445339 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Thu, 6 Mar 2014 19:29:11 +0000
+Subject: [PATCH 517/795] HDFS-6060. NameNode should not check DataNode layout version. Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1575021 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8271b4e141ba5718df4e46be236ddd48ddb73d46)
+---
+ .../hdfs/server/namenode/NameNodeRpcServer.java    |   15 ---------------
+ 1 files changed, 0 insertions(+), 15 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+index 98eeaaf..fa35046 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+@@ -105,7 +105,6 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
+ import org.apache.hadoop.hdfs.server.common.IncorrectVersionException;
+-import org.apache.hadoop.hdfs.server.datanode.DataNodeLayoutVersion;
+ import org.apache.hadoop.hdfs.server.namenode.NameNode.OperationCategory;
+ import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
+ import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
+@@ -1083,20 +1082,6 @@ private void verifyRequest(NodeRegistration nodeReg) throws IOException {
+           + " but the expected ID is " + expectedID);
+        throw new UnregisteredNodeException(nodeReg);
+     }
+-
+-    // verify layout version if there is no rolling upgrade.
+-    if (!namesystem.isRollingUpgrade()) {
+-      final int lv = nodeReg.getVersion();
+-      final int expectedLV = nodeReg instanceof NamenodeRegistration?
+-          NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION
+-          : DataNodeLayoutVersion.CURRENT_LAYOUT_VERSION;
+-      if (expectedLV != nodeReg.getVersion()) {
+-        LOG.warn("Layout versions mismatched: the "
+-            + nodeReg.getClass().getSimpleName() + " LV is " + lv
+-            + " but the expected LV is " + expectedLV);
+-         throw new UnregisteredNodeException(nodeReg);
+-      }
+-    }
+   }
+     
+ 
+-- 
+1.7.0.4
+

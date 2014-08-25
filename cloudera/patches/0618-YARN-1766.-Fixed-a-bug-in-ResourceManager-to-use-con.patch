@@ -1,0 +1,238 @@
+From 2edc366623bc0e0fe455687323488db14f2d8001 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Tue, 4 Mar 2014 23:35:51 +0000
+Subject: [PATCH 618/795] YARN-1766. Fixed a bug in ResourceManager to use configuration loaded from the configuration-provider when booting up. Contributed by Xuan Gong.
+ svn merge --ignore-ancestry -c 1574252 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1574253 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8125110cb83020088a8a3f3ff7e08e24daba356b)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../server/resourcemanager/ResourceManager.java    |   30 +++--
+ .../server/resourcemanager/TestRMAdminService.java |  134 ++++++++++++++++++++
+ 2 files changed, 152 insertions(+), 12 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index dc133c1..50dc537 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -35,6 +35,7 @@
+ import org.apache.hadoop.security.Groups;
+ import org.apache.hadoop.security.SecurityUtil;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.security.authorize.ProxyUsers;
+ import org.apache.hadoop.service.AbstractService;
+ import org.apache.hadoop.service.CompositeService;
+ import org.apache.hadoop.service.Service;
+@@ -179,7 +180,6 @@ protected static void setClusterTimeStamp(long timestamp) {
+ 
+   @Override
+   protected void serviceInit(Configuration conf) throws Exception {
+-    validateConfigs(conf);
+     this.conf = conf;
+     this.rmContext = new RMContextImpl();
+ 
+@@ -188,13 +188,6 @@ protected void serviceInit(Configuration conf) throws Exception {
+     this.configurationProvider.init(this.conf);
+     rmContext.setConfigurationProvider(configurationProvider);
+ 
+-    // load yarn-site.xml
+-    InputStream yarnSiteXMLInputStream =
+-        this.configurationProvider.getConfigurationInputStream(this.conf,
+-            YarnConfiguration.YARN_SITE_CONFIGURATION_FILE);
+-    if (yarnSiteXMLInputStream != null) {
+-      this.conf.addResource(yarnSiteXMLInputStream);
+-    }
+     // load core-site.xml
+     InputStream coreSiteXMLInputStream =
+         this.configurationProvider.getConfigurationInputStream(this.conf,
+@@ -207,6 +200,19 @@ protected void serviceInit(Configuration conf) throws Exception {
+     Groups.getUserToGroupsMappingServiceWithLoadedConfiguration(this.conf)
+         .refresh();
+ 
++    // Do refreshSuperUserGroupsConfiguration with loaded core-site.xml
++    ProxyUsers.refreshSuperUserGroupsConfiguration(this.conf);
++
++    // load yarn-site.xml
++    InputStream yarnSiteXMLInputStream =
++        this.configurationProvider.getConfigurationInputStream(this.conf,
++            YarnConfiguration.YARN_SITE_CONFIGURATION_FILE);
++    if (yarnSiteXMLInputStream != null) {
++      this.conf.addResource(yarnSiteXMLInputStream);
++    }
++
++    validateConfigs(this.conf);
++
+     // register the handlers for all AlwaysOn services using setupDispatcher().
+     rmDispatcher = setupDispatcher();
+     addIfService(rmDispatcher);
+@@ -216,15 +222,15 @@ protected void serviceInit(Configuration conf) throws Exception {
+     addService(adminService);
+     rmContext.setRMAdminService(adminService);
+ 
+-    this.rmContext.setHAEnabled(HAUtil.isHAEnabled(conf));
++    this.rmContext.setHAEnabled(HAUtil.isHAEnabled(this.conf));
+     if (this.rmContext.isHAEnabled()) {
+-      HAUtil.verifyAndSetConfiguration(conf);
++      HAUtil.verifyAndSetConfiguration(this.conf);
+     }
+     createAndInitActiveServices();
+ 
+-    webAppAddress = WebAppUtils.getRMWebAppURLWithoutScheme(conf);
++    webAppAddress = WebAppUtils.getRMWebAppURLWithoutScheme(this.conf);
+ 
+-    super.serviceInit(conf);
++    super.serviceInit(this.conf);
+   }
+   
+   protected QueueACLsManager createQueueACLsManager(ResourceScheduler scheduler,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index cb9f90d..79e7603 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -590,6 +590,140 @@ public void testRMStartsWithoutConfigurationFilesProvided() {
+ 
+   }
+ 
++  @Test
++  public void testRMInitialsWithFileSystemBasedConfigurationProvider()
++      throws Exception {
++    configuration.set(YarnConfiguration.RM_CONFIGURATION_PROVIDER_CLASS,
++        "org.apache.hadoop.yarn.FileSystemBasedConfigurationProvider");
++
++    // upload configurations
++    final File excludeHostsFile = new File(tmpDir.toString(), "excludeHosts");
++    if (excludeHostsFile.exists()) {
++      excludeHostsFile.delete();
++    }
++    if (!excludeHostsFile.createNewFile()) {
++      Assert.fail("Can not create " + "excludeHosts");
++    }
++    PrintWriter fileWriter = new PrintWriter(excludeHostsFile);
++    fileWriter.write("0.0.0.0:123");
++    fileWriter.close();
++    uploadToRemoteFileSystem(new Path(excludeHostsFile.getAbsolutePath()));
++
++    YarnConfiguration yarnConf = new YarnConfiguration();
++    yarnConf.set(YarnConfiguration.YARN_ADMIN_ACL, "world:anyone:rwcda");
++    yarnConf.set(YarnConfiguration.RM_NODES_EXCLUDE_FILE_PATH, this.workingPath
++        + "/excludeHosts");
++    uploadConfiguration(yarnConf, "yarn-site.xml");
++
++    CapacitySchedulerConfiguration csConf =
++        new CapacitySchedulerConfiguration();
++    csConf.set("yarn.scheduler.capacity.maximum-applications", "5000");
++    uploadConfiguration(csConf, "capacity-scheduler.xml");
++
++    String aclsString = "alice,bob users,wheel";
++    Configuration newConf = new Configuration();
++    newConf.set("security.applicationclient.protocol.acl", aclsString);
++    uploadConfiguration(newConf, "hadoop-policy.xml");
++
++    Configuration conf = new Configuration();
++    conf.setBoolean(
++        CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, true);
++    conf.set("hadoop.proxyuser.test.groups", "test_groups");
++    conf.set("hadoop.proxyuser.test.hosts", "test_hosts");
++    conf.setClass(CommonConfigurationKeys.HADOOP_SECURITY_GROUP_MAPPING,
++        MockUnixGroupsMapping.class,
++        GroupMappingServiceProvider.class);
++    uploadConfiguration(conf, "core-site.xml");
++
++    // update the groups
++    MockUnixGroupsMapping.updateGroups();
++
++    ResourceManager resourceManager = null;
++    try {
++      try {
++        resourceManager = new ResourceManager();
++        resourceManager.init(configuration);
++        resourceManager.start();
++      } catch (Exception ex) {
++        fail("Should not get any exceptions");
++      }
++
++      // validate values for excludeHosts
++      Set<String> excludeHosts =
++          resourceManager.getRMContext().getNodesListManager()
++              .getHostsReader().getExcludedHosts();
++      Assert.assertTrue(excludeHosts.size() == 1);
++      Assert.assertTrue(excludeHosts.contains("0.0.0.0:123"));
++
++      // validate values for admin-acls
++      String aclStringAfter =
++          resourceManager.adminService.getAccessControlList()
++              .getAclString().trim();
++      Assert.assertEquals(aclStringAfter, "world:anyone:rwcda");
++
++      // validate values for queue configuration
++      CapacityScheduler cs =
++          (CapacityScheduler) resourceManager.getRMContext().getScheduler();
++      int maxAppsAfter = cs.getConfiguration().getMaximumSystemApplications();
++      Assert.assertEquals(maxAppsAfter, 5000);
++
++      // verify service Acls for AdminService
++      ServiceAuthorizationManager adminServiceServiceManager =
++          resourceManager.adminService.getServer()
++              .getServiceAuthorizationManager();
++      verifyServiceACLsRefresh(adminServiceServiceManager,
++          org.apache.hadoop.yarn.api.ApplicationClientProtocolPB.class,
++          aclsString);
++
++      // verify service ACLs for ClientRMService
++      ServiceAuthorizationManager clientRMServiceServiceManager =
++          resourceManager.getRMContext().getClientRMService().getServer()
++              .getServiceAuthorizationManager();
++      verifyServiceACLsRefresh(clientRMServiceServiceManager,
++          org.apache.hadoop.yarn.api.ApplicationClientProtocolPB.class,
++          aclsString);
++
++      // verify service ACLs for ApplicationMasterService
++      ServiceAuthorizationManager appMasterService =
++          resourceManager.getRMContext().getApplicationMasterService()
++              .getServer().getServiceAuthorizationManager();
++      verifyServiceACLsRefresh(appMasterService,
++          org.apache.hadoop.yarn.api.ApplicationClientProtocolPB.class,
++          aclsString);
++
++      // verify service ACLs for ResourceTrackerService
++      ServiceAuthorizationManager RTService =
++          resourceManager.getRMContext().getResourceTrackerService()
++              .getServer().getServiceAuthorizationManager();
++      verifyServiceACLsRefresh(RTService,
++          org.apache.hadoop.yarn.api.ApplicationClientProtocolPB.class,
++          aclsString);
++
++      // verify ProxyUsers and ProxyHosts
++      Assert.assertTrue(ProxyUsers.getProxyGroups()
++          .get("hadoop.proxyuser.test.groups").size() == 1);
++      Assert.assertTrue(ProxyUsers.getProxyGroups()
++          .get("hadoop.proxyuser.test.groups").contains("test_groups"));
++
++      Assert.assertTrue(ProxyUsers.getProxyHosts()
++          .get("hadoop.proxyuser.test.hosts").size() == 1);
++      Assert.assertTrue(ProxyUsers.getProxyHosts()
++          .get("hadoop.proxyuser.test.hosts").contains("test_hosts"));
++
++      // verify UserToGroupsMappings
++      List<String> groupAfter =
++          Groups.getUserToGroupsMappingService(configuration).getGroups(
++              UserGroupInformation.getCurrentUser().getUserName());
++      Assert.assertTrue(groupAfter.contains("test_group_D")
++          && groupAfter.contains("test_group_E")
++          && groupAfter.contains("test_group_F") && groupAfter.size() == 3);
++    } finally {
++      if (resourceManager != null) {
++        resourceManager.stop();
++      }
++    }
++  }
++
+   private String writeConfigurationXML(Configuration conf, String confXMLName)
+       throws IOException {
+     DataOutputStream output = null;
+-- 
+1.7.0.4
+

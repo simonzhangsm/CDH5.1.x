@@ -1,0 +1,41 @@
+From 63eb93734d7b9a30dbe925616ad40c860318b34e Mon Sep 17 00:00:00 2001
+From: Alejandro Abdelnur <tucu@cloudera.com>
+Date: Tue, 15 May 2012 14:41:25 -0700
+Subject: [PATCH 097/795] MR1: CLOUDERA-BUILD. regression: unable to read har created with mr1
+
+  Reason: HAR files created with MR1 tools had wrong version
+  Author: Alejandro Abdelnur
+  Ref: CDH-5839
+(cherry picked from commit 3d541e54c10f4f61f82f4703487626bea2f61465)
+
+(cherry picked from commit edda1087beb0748f7740999480e294d7014d13fd)
+---
+ .../org/apache/hadoop/tools/HadoopArchives.java    |    5 ++++-
+ 1 files changed, 4 insertions(+), 1 deletions(-)
+
+diff --git a/src/tools/org/apache/hadoop/tools/HadoopArchives.java b/src/tools/org/apache/hadoop/tools/HadoopArchives.java
+index 6e4d578..eea2e95 100644
+--- a/src/tools/org/apache/hadoop/tools/HadoopArchives.java
++++ b/src/tools/org/apache/hadoop/tools/HadoopArchives.java
+@@ -641,6 +641,9 @@ public void close() throws IOException {
+     }
+   }
+   
++  // Hardcoding HAR version here because HARFileSystem comes from Hadoop2
++  private static final String HAR_VERSION = "1";
++	
+   /** the reduce for creating the index and the master index 
+    * 
+    */
+@@ -676,7 +679,7 @@ public void configure(JobConf conf) {
+         }
+         indexStream = fs.create(index);
+         outStream = fs.create(masterIndex);
+-        String version = HarFileSystem.VERSION + " \n";
++        String version = HAR_VERSION + " \n";
+         outStream.write(version.getBytes());
+         
+       } catch(IOException e) {
+-- 
+1.7.0.4
+

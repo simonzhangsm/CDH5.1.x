@@ -1,0 +1,33 @@
+From 1c254fc5a9aa6c1de0e72e6c559c78073af55333 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Tue, 18 Feb 2014 18:00:56 +0000
+Subject: [PATCH 415/795] YARN-1724. Race condition in Fair Scheduler when continuous scheduling is turned on (Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1569447 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 2ee2b0505e0d362632627854a4cad961a21402a1)
+---
+ .../scheduler/fair/FairScheduler.java              |    8 +++++++-
+ 1 files changed, 7 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index e8209e2..376a91f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -989,7 +989,13 @@ private synchronized void nodeUpdate(RMNode nm) {
+   private void continuousScheduling() {
+     while (true) {
+       List<NodeId> nodeIdList = new ArrayList<NodeId>(nodes.keySet());
+-      Collections.sort(nodeIdList, nodeAvailableResourceComparator);
++      // Sort the nodes by space available on them, so that we offer
++      // containers on emptier nodes first, facilitating an even spread. This
++      // requires holding the scheduler lock, so that the space available on a
++      // node doesn't change during the sort.
++      synchronized (this) {
++        Collections.sort(nodeIdList, nodeAvailableResourceComparator);
++      }
+ 
+       // iterate all nodes
+       for (NodeId nodeId : nodeIdList) {
+-- 
+1.7.0.4
+

@@ -1,0 +1,83 @@
+From 0f32ad083c5b09728c032e43b4ae7ae3824e1216 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Wed, 29 Jan 2014 23:53:13 +0000
+Subject: [PATCH 407/795] Add missing file for MAPREDUCE-5732
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1562642 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../mapreduce/jobhistory/JobQueueChangeEvent.java  |   63 ++++++++++++++++++++
+ 1 files changed, 63 insertions(+), 0 deletions(-)
+ create mode 100644 hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobQueueChangeEvent.java
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobQueueChangeEvent.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobQueueChangeEvent.java
+new file mode 100644
+index 0000000..86078e6
+--- /dev/null
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/JobQueueChangeEvent.java
+@@ -0,0 +1,63 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.mapreduce.jobhistory;
++
++import org.apache.avro.util.Utf8;
++import org.apache.hadoop.mapreduce.JobID;
++
++@SuppressWarnings("deprecation")
++public class JobQueueChangeEvent implements HistoryEvent {
++  private JobQueueChange datum = new JobQueueChange();
++  
++  public JobQueueChangeEvent(JobID id, String queueName) {
++    datum.jobid = new Utf8(id.toString());
++    datum.jobQueueName = new Utf8(queueName);
++  }
++  
++  JobQueueChangeEvent() { }
++  
++  @Override
++  public EventType getEventType() {
++    return EventType.JOB_QUEUE_CHANGED;
++  }
++
++  @Override
++  public Object getDatum() {
++    return datum;
++  }
++
++  @Override
++  public void setDatum(Object datum) {
++    this.datum = (JobQueueChange) datum;
++  }
++  
++  /** Get the Job ID */
++  public JobID getJobId() {
++    return JobID.forName(datum.jobid.toString());
++  }
++  
++  /** Get the new Job queue name */
++  public String getJobQueueName() {
++    if (datum.jobQueueName != null) {
++      return datum.jobQueueName.toString();
++    }
++    return null;
++  }
++
++}
+-- 
+1.7.0.4
+

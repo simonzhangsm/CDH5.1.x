@@ -1,0 +1,38 @@
+From 83d57c02eebdaa45dfb8b60bf2f5f9ba6339524b Mon Sep 17 00:00:00 2001
+From: Stephen Chu <schu@cloudera.com>
+Date: Tue, 13 May 2014 10:01:54 -0700
+Subject: [PATCH 595/795] HDFS-6230. Expose upgrade status through NameNode web UI. Contributed by Mit Desai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1594040 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 7f97d7232a7b0526a7a7c5138d34eaa8b1748b55)
+---
+ .../src/main/webapps/hdfs/dfshealth.html           |    6 +++++-
+ 1 files changed, 5 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
+index 8ef3e3f..fe63623 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
+@@ -72,7 +72,7 @@
+ <script type="text/x-dust-template" id="tmpl-dfshealth">
+ 
+ {#nn}
+-{@if cond="{DistinctVersionCount} > 1 || '{RollingUpgradeStatus}'.length"}
++{@if cond="{DistinctVersionCount} > 1 || '{RollingUpgradeStatus}'.length || !'{UpgradeFinalized}'"}
+ <div class="alert alert-dismissable alert-info">
+   <button type="button" class="close" data-dismiss="alert" aria-hidden="true">&times;</button>
+ 
+@@ -92,6 +92,10 @@
+     {key} ({value}) {@sep},{/sep}
+     {/DistinctVersions}
+   {/if}
++
++  {^UpgradeFinalized}
++     <p>Upgrade in progress. Not yet finalized.</p>
++  {/UpgradeFinalized}
+ </div>
+ {/if}
+ 
+-- 
+1.7.0.4
+

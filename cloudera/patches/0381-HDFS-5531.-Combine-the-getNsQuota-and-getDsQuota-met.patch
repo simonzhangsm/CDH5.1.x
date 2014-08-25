@@ -1,0 +1,506 @@
+From 9abf031adb31ba3e0c8c9a8f334ea60405d68457 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 14 Feb 2014 01:40:08 +0000
+Subject: [PATCH 381/795] HDFS-5531. Combine the getNsQuota() and getDsQuota() methods in INode.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568186 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 852435ce955fbed6bb61e7e02d29612ebc13f61b)
+---
+ .../hadoop/hdfs/server/namenode/Content.java       |    2 +-
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   10 +++--
+ .../hadoop/hdfs/server/namenode/FSImage.java       |   12 ++++--
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |    5 +-
+ .../hdfs/server/namenode/FSImageSerialization.java |   14 ++++--
+ .../apache/hadoop/hdfs/server/namenode/INode.java  |   18 ++++----
+ .../hdfs/server/namenode/INodeDirectory.java       |    3 +-
+ .../server/namenode/INodeDirectoryAttributes.java  |   31 ++++---------
+ .../server/namenode/INodeDirectoryWithQuota.java   |   24 ++++-------
+ .../hdfs/server/namenode/INodeReference.java       |    9 +---
+ .../hdfs/server/namenode/NamenodeJspHelper.java    |    4 +-
+ .../apache/hadoop/hdfs/server/namenode/Quota.java  |    2 +-
+ .../snapshot/INodeDirectoryWithSnapshot.java       |    2 +-
+ .../org/apache/hadoop/hdfs/util/EnumCounters.java  |   44 +++++++++++++++----
+ 14 files changed, 94 insertions(+), 86 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Content.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Content.java
+index 5dfa3e9..c1caae5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Content.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Content.java
+@@ -47,7 +47,7 @@ public static Counts newInstance() {
+     }
+ 
+     private Counts() {
+-      super(Content.values());
++      super(Content.class);
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 8b9fad1..658b938 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -2448,8 +2448,9 @@ INodeDirectory unprotectedSetQuota(String src, long nsQuota, long dsQuota)
+     if (dirNode.isRoot() && nsQuota == HdfsConstants.QUOTA_RESET) {
+       throw new IllegalArgumentException("Cannot clear namespace quota on root.");
+     } else { // a directory inode
+-      long oldNsQuota = dirNode.getNsQuota();
+-      long oldDsQuota = dirNode.getDsQuota();
++      final Quota.Counts oldQuota = dirNode.getQuotaCounts();
++      final long oldNsQuota = oldQuota.get(Quota.NAMESPACE);
++      final long oldDsQuota = oldQuota.get(Quota.DISKSPACE);
+       if (nsQuota == HdfsConstants.QUOTA_DONT_SET) {
+         nsQuota = oldNsQuota;
+       }
+@@ -2501,8 +2502,9 @@ void setQuota(String src, long nsQuota, long dsQuota)
+     try {
+       INodeDirectory dir = unprotectedSetQuota(src, nsQuota, dsQuota);
+       if (dir != null) {
+-        fsImage.getEditLog().logSetQuota(src, dir.getNsQuota(), 
+-                                         dir.getDsQuota());
++        final Quota.Counts q = dir.getQuotaCounts();
++        fsImage.getEditLog().logSetQuota(src,
++            q.get(Quota.NAMESPACE), q.get(Quota.DISKSPACE));
+       }
+     } finally {
+       writeUnlock();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index ccbc6a3..3aadc65 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -757,18 +757,22 @@ private static void updateCountForQuotaRecursively(INodeDirectory dir,
+       
+     if (dir.isQuotaSet()) {
+       // check if quota is violated. It indicates a software bug.
++      final Quota.Counts q = dir.getQuotaCounts();
++
+       final long namespace = counts.get(Quota.NAMESPACE) - parentNamespace;
+-      if (Quota.isViolated(dir.getNsQuota(), namespace)) {
++      final long nsQuota = q.get(Quota.NAMESPACE);
++      if (Quota.isViolated(nsQuota, namespace)) {
+         LOG.error("BUG: Namespace quota violation in image for "
+             + dir.getFullPathName()
+-            + " quota = " + dir.getNsQuota() + " < consumed = " + namespace);
++            + " quota = " + nsQuota + " < consumed = " + namespace);
+       }
+ 
+       final long diskspace = counts.get(Quota.DISKSPACE) - parentDiskspace;
+-      if (Quota.isViolated(dir.getDsQuota(), diskspace)) {
++      final long dsQuota = q.get(Quota.DISKSPACE);
++      if (Quota.isViolated(dsQuota, diskspace)) {
+         LOG.error("BUG: Diskspace quota violation in image for "
+             + dir.getFullPathName()
+-            + " quota = " + dir.getDsQuota() + " < consumed = " + diskspace);
++            + " quota = " + dsQuota + " < consumed = " + diskspace);
+       }
+ 
+       ((INodeDirectoryWithQuota)dir).setSpaceConsumed(namespace, diskspace);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index 18032d9..fb18f68 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -383,8 +383,9 @@ void load(File curFile) throws IOException {
+ 
+   /** Update the root node's attributes */
+   private void updateRootAttr(INodeWithAdditionalFields root) {                                                           
+-    long nsQuota = root.getNsQuota();
+-    long dsQuota = root.getDsQuota();
++    final Quota.Counts q = root.getQuotaCounts();
++    final long nsQuota = q.get(Quota.NAMESPACE);
++    final long dsQuota = q.get(Quota.DISKSPACE);
+     FSDirectory fsDir = namesystem.dir;
+     if (nsQuota != -1 || dsQuota != -1) {
+       fsDir.rootDir.setQuota(nsQuota, dsQuota);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+index e27a2f1..654bc55 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+@@ -226,6 +226,12 @@ public static void writeINodeFileAttributes(INodeFileAttributes file,
+     out.writeLong(file.getPreferredBlockSize());
+   }
+ 
++  private static void writeQuota(Quota.Counts quota, DataOutput out)
++      throws IOException {
++    out.writeLong(quota.get(Quota.NAMESPACE));
++    out.writeLong(quota.get(Quota.DISKSPACE));
++  }
++
+   /**
+    * Serialize a {@link INodeDirectory}
+    * @param node The node to write
+@@ -241,8 +247,8 @@ public static void writeINodeDirectory(INodeDirectory node, DataOutput out)
+     out.writeLong(0);   // preferred block size
+     out.writeInt(-1);   // # of blocks
+ 
+-    out.writeLong(node.getNsQuota());
+-    out.writeLong(node.getDsQuota());
++    writeQuota(node.getQuotaCounts(), out);
++
+     if (node instanceof INodeDirectorySnapshottable) {
+       out.writeBoolean(true);
+     } else {
+@@ -263,9 +269,7 @@ public static void writeINodeDirectoryAttributes(
+     writeLocalName(a, out);
+     writePermissionStatus(a, out);
+     out.writeLong(a.getModificationTime());
+-
+-    out.writeLong(a.getNsQuota());
+-    out.writeLong(a.getDsQuota());
++    writeQuota(a.getQuotaCounts(), out);
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+index 1aff978..e5f26b0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+@@ -383,10 +383,11 @@ public final ContentSummary computeContentSummary() {
+   public final ContentSummary computeAndConvertContentSummary(
+       ContentSummaryComputationContext summary) {
+     Content.Counts counts = computeContentSummary(summary).getCounts();
++    final Quota.Counts q = getQuotaCounts();
+     return new ContentSummary(counts.get(Content.LENGTH),
+         counts.get(Content.FILE) + counts.get(Content.SYMLINK),
+-        counts.get(Content.DIRECTORY), getNsQuota(),
+-        counts.get(Content.DISKSPACE), getDsQuota());
++        counts.get(Content.DIRECTORY), q.get(Quota.NAMESPACE),
++        counts.get(Content.DISKSPACE), q.get(Quota.DISKSPACE));
+   }
+ 
+   /**
+@@ -412,18 +413,15 @@ public void addSpaceConsumed(long nsDelta, long dsDelta, boolean verify)
+ 
+   /**
+    * Get the quota set for this inode
+-   * @return the quota if it is set; -1 otherwise
++   * @return the quota counts.  The count is -1 if it is not set.
+    */
+-  public long getNsQuota() {
+-    return -1;
+-  }
+-
+-  public long getDsQuota() {
+-    return -1;
++  public Quota.Counts getQuotaCounts() {
++    return Quota.Counts.newInstance(-1, -1);
+   }
+   
+   public final boolean isQuotaSet() {
+-    return getNsQuota() >= 0 || getDsQuota() >= 0;
++    final Quota.Counts q = getQuotaCounts();
++    return q.get(Quota.NAMESPACE) >= 0 || q.get(Quota.DISKSPACE) >= 0;
+   }
+   
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+index 0355b30..8133de4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+@@ -612,8 +612,7 @@ public void destroyAndCollectBlocks(final BlocksMapUpdateInfo collectedBlocks,
+   @Override
+   public boolean metadataEquals(INodeDirectoryAttributes other) {
+     return other != null
+-        && getNsQuota() == other.getNsQuota()
+-        && getDsQuota() == other.getDsQuota()
++        && getQuotaCounts().equals(other.getQuotaCounts())
+         && getPermissionLong() == other.getPermissionLong();
+   }
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryAttributes.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryAttributes.java
+index 5bff5cd..b0ea44b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryAttributes.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryAttributes.java
+@@ -27,9 +27,7 @@
+  */
+ @InterfaceAudience.Private
+ public interface INodeDirectoryAttributes extends INodeAttributes {
+-  public long getNsQuota();
+-
+-  public long getDsQuota();
++  public Quota.Counts getQuotaCounts();
+ 
+   public boolean metadataEquals(INodeDirectoryAttributes other);
+   
+@@ -46,20 +44,14 @@ public SnapshotCopy(INodeDirectory dir) {
+     }
+ 
+     @Override
+-    public long getNsQuota() {
+-      return -1;
+-    }
+-
+-    @Override
+-    public long getDsQuota() {
+-      return -1;
++    public Quota.Counts getQuotaCounts() {
++      return Quota.Counts.newInstance(-1, -1);
+     }
+ 
+     @Override
+     public boolean metadataEquals(INodeDirectoryAttributes other) {
+       return other != null
+-          && getNsQuota() == other.getNsQuota()
+-          && getDsQuota() == other.getDsQuota()
++          && this.getQuotaCounts().equals(other.getQuotaCounts())
+           && getPermissionLong() == other.getPermissionLong();
+     }
+   }
+@@ -68,6 +60,7 @@ public boolean metadataEquals(INodeDirectoryAttributes other) {
+     private final long nsQuota;
+     private final long dsQuota;
+ 
++
+     public CopyWithQuota(byte[] name, PermissionStatus permissions,
+         long modificationTime, long nsQuota, long dsQuota) {
+       super(name, permissions, modificationTime);
+@@ -78,18 +71,14 @@ public CopyWithQuota(byte[] name, PermissionStatus permissions,
+     public CopyWithQuota(INodeDirectory dir) {
+       super(dir);
+       Preconditions.checkArgument(dir.isQuotaSet());
+-      this.nsQuota = dir.getNsQuota();
+-      this.dsQuota = dir.getDsQuota();
++      final Quota.Counts q = dir.getQuotaCounts();
++      this.nsQuota = q.get(Quota.NAMESPACE);
++      this.dsQuota = q.get(Quota.DISKSPACE);
+     }
+     
+     @Override
+-    public final long getNsQuota() {
+-      return nsQuota;
+-    }
+-
+-    @Override
+-    public final long getDsQuota() {
+-      return dsQuota;
++    public Quota.Counts getQuotaCounts() {
++      return Quota.Counts.newInstance(nsQuota, dsQuota);
+     }
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryWithQuota.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryWithQuota.java
+index e18420d..41f1984 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryWithQuota.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryWithQuota.java
+@@ -44,7 +44,7 @@
+    * @param dsQuota Diskspace quota to be assigned to this indoe
+    * @param other The other inode from which all other properties are copied
+    */
+-  public INodeDirectoryWithQuota(INodeDirectory other, boolean adopt,
++  INodeDirectoryWithQuota(INodeDirectory other, boolean adopt,
+       long nsQuota, long dsQuota) {
+     super(other, adopt);
+     final Quota.Counts counts = other.computeQuotaUsage();
+@@ -54,6 +54,11 @@ public INodeDirectoryWithQuota(INodeDirectory other, boolean adopt,
+     this.dsQuota = dsQuota;
+   }
+   
++  public INodeDirectoryWithQuota(INodeDirectory other, boolean adopt,
++      Quota.Counts quota) {
++    this(other, adopt, quota.get(Quota.NAMESPACE), quota.get(Quota.DISKSPACE));
++  }
++
+   /** constructor with no quota verification */
+   INodeDirectoryWithQuota(long id, byte[] name, PermissionStatus permissions,
+       long modificationTime, long nsQuota, long dsQuota) {
+@@ -67,20 +72,9 @@ public INodeDirectoryWithQuota(INodeDirectory other, boolean adopt,
+     super(id, name, permissions, 0L);
+   }
+   
+-  /** Get this directory's namespace quota
+-   * @return this directory's namespace quota
+-   */
+-  @Override
+-  public long getNsQuota() {
+-    return nsQuota;
+-  }
+-  
+-  /** Get this directory's diskspace quota
+-   * @return this directory's diskspace quota
+-   */
+   @Override
+-  public long getDsQuota() {
+-    return dsQuota;
++  public Quota.Counts getQuotaCounts() {
++    return Quota.Counts.newInstance(nsQuota, dsQuota);
+   }
+   
+   /** Set this directory's quota
+@@ -120,7 +114,7 @@ public ContentSummaryComputationContext computeContentSummary(
+   }
+   
+   private void checkDiskspace(final long computed) {
+-    if (-1 != getDsQuota() && diskspace != computed) {
++    if (-1 != getQuotaCounts().get(Quota.DISKSPACE) && diskspace != computed) {
+       NameNode.LOG.error("BUG: Inconsistent diskspace for directory "
+           + getFullPathName() + ". Cached = " + diskspace
+           + " != Computed = " + computed);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+index a049c01..f77863a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeReference.java
+@@ -295,16 +295,11 @@ public final INodeAttributes getSnapshotINode(Snapshot snapshot) {
+   }
+ 
+   @Override
+-  public final long getNsQuota() {
+-    return referred.getNsQuota();
++  public Quota.Counts getQuotaCounts() {
++    return referred.getQuotaCounts();
+   }
+ 
+   @Override
+-  public final long getDsQuota() {
+-    return referred.getDsQuota();
+-  }
+-  
+-  @Override
+   public final void clear() {
+     super.clear();
+     referred = null;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NamenodeJspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NamenodeJspHelper.java
+index 564df85..5a25d4f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NamenodeJspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NamenodeJspHelper.java
+@@ -23,7 +23,6 @@
+ import java.lang.management.ManagementFactory;
+ import java.lang.management.MemoryMXBean;
+ import java.lang.management.MemoryUsage;
+-import java.net.InetAddress;
+ import java.net.InetSocketAddress;
+ import java.net.URI;
+ import java.net.URLEncoder;
+@@ -63,7 +62,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.startupprogress.Step;
+ import org.apache.hadoop.hdfs.server.namenode.startupprogress.StepType;
+ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
+-import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.net.NodeBase;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -1090,7 +1088,7 @@ public void toXML(XMLOutputter doc) throws IOException {
+           doc.endTag();
+ 
+           doc.startTag("ds_quota");
+-          doc.pcdata(""+inode.getDsQuota());
++          doc.pcdata(""+inode.getQuotaCounts().get(Quota.DISKSPACE));
+           doc.endTag();
+ 
+           doc.startTag("permission_status");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Quota.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Quota.java
+index 36e803a..7abd017 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Quota.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Quota.java
+@@ -41,7 +41,7 @@ public static Counts newInstance() {
+     }
+     
+     Counts() {
+-      super(Quota.values());
++      super(Quota.class);
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
+index 6263a96..bb137e9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
+@@ -487,7 +487,7 @@ public INodeDirectoryWithSnapshot(INodeDirectory that) {
+ 
+   INodeDirectoryWithSnapshot(INodeDirectory that, boolean adopt,
+       DirectoryDiffList diffs) {
+-    super(that, adopt, that.getNsQuota(), that.getDsQuota());
++    super(that, adopt, that.getQuotaCounts());
+     this.diffs = diffs != null? diffs: new DirectoryDiffList();
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/EnumCounters.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/EnumCounters.java
+index 1df4e18..e3975f6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/EnumCounters.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/EnumCounters.java
+@@ -17,6 +17,7 @@
+  */
+ package org.apache.hadoop.hdfs.util;
+ 
++import java.util.Arrays;
+ import java.util.HashMap;
+ 
+ import com.google.common.base.Preconditions;
+@@ -34,21 +35,19 @@
+  * @param <E> the enum type
+  */
+ public class EnumCounters<E extends Enum<E>> {
+-  /** An array of enum constants. */
+-  private final E[] enumConstants;
++  /** The class of the enum. */
++  private final Class<E> enumClass;
+   /** The counter array, counters[i] corresponds to the enumConstants[i]. */
+   private final long[] counters;
+ 
+   /**
+    * Construct counters for the given enum constants.
+-   * @param enumConstants an array of enum constants such that, 
+-   *                      for all i, enumConstants[i].ordinal() == i.
++   * @param enumClass the enum class of the counters.
+    */
+-  public EnumCounters(final E[] enumConstants) {
+-    for(int i = 0; i < enumConstants.length; i++) {
+-      Preconditions.checkArgument(enumConstants[i].ordinal() == i);
+-    }
+-    this.enumConstants = enumConstants;
++  public EnumCounters(final Class<E> enumClass) {
++    final E[] enumConstants = enumClass.getEnumConstants();
++    Preconditions.checkNotNull(enumConstants);
++    this.enumClass = enumClass;
+     this.counters = new long[enumConstants.length];
+   }
+   
+@@ -69,6 +68,13 @@ public final void set(final E e, final long value) {
+     counters[e.ordinal()] = value;
+   }
+ 
++  /** Set this counters to that counters. */
++  public final void set(final EnumCounters<E> that) {
++    for(int i = 0; i < counters.length; i++) {
++      this.counters[i] = that.counters[i];
++    }
++  }
++
+   /** Add the given value to counter e. */
+   public final void add(final E e, final long value) {
+     counters[e.ordinal()] += value;
+@@ -86,7 +92,7 @@ public final void subtract(final E e, final long value) {
+     counters[e.ordinal()] -= value;
+   }
+ 
+-  /** Subtract that counters from this counters. */
++  /** Subtract this counters from that counters. */
+   public final void subtract(final EnumCounters<E> that) {
+     for(int i = 0; i < counters.length; i++) {
+       this.counters[i] -= that.counters[i];
+@@ -94,7 +100,25 @@ public final void subtract(final EnumCounters<E> that) {
+   }
+ 
+   @Override
++  public boolean equals(Object obj) {
++    if (obj == this) {
++      return true;
++    } else if (obj == null || !(obj instanceof EnumCounters)) {
++      return false;
++    }
++    final EnumCounters<?> that = (EnumCounters<?>)obj;
++    return this.enumClass == that.enumClass
++        && Arrays.equals(this.counters, that.counters);
++  }
++
++  @Override
++  public int hashCode() {
++    return Arrays.hashCode(counters);
++  }
++
++  @Override
+   public String toString() {
++    final E[] enumConstants = enumClass.getEnumConstants();
+     final StringBuilder b = new StringBuilder();
+     for(int i = 0; i < counters.length; i++) {
+       final String name = enumConstants[i].name();
+-- 
+1.7.0.4
+

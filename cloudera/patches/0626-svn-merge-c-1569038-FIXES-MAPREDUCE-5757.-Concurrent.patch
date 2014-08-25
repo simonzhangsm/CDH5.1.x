@@ -1,0 +1,44 @@
+From 4eb02ef825f7dd5cd33214faaf3700d86bfdc22b Mon Sep 17 00:00:00 2001
+From: Jason Darrell Lowe <jlowe@apache.org>
+Date: Mon, 17 Feb 2014 16:25:55 +0000
+Subject: [PATCH 626/795] svn merge -c 1569038 FIXES: MAPREDUCE-5757. ConcurrentModificationException in JobControl.toList. Contributed by Jason Lowe
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1569043 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 868513a8bbfc462af3b4752a11efef67801766a0)
+
+Conflicts:
+	hadoop-mapreduce-project/CHANGES.txt
+---
+ .../mapreduce/lib/jobcontrol/JobControl.java       |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/lib/jobcontrol/JobControl.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/lib/jobcontrol/JobControl.java
+index 59e3331..2ae6d0b 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/lib/jobcontrol/JobControl.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/lib/jobcontrol/JobControl.java
+@@ -77,7 +77,7 @@ public JobControl(String groupName) {
+     this.runnerState = ThreadState.READY;
+   }
+ 	
+-  synchronized private static List<ControlledJob> toList(
++  private static List<ControlledJob> toList(
+                    LinkedList<ControlledJob> jobs) {
+     ArrayList<ControlledJob> retv = new ArrayList<ControlledJob>();
+     for (ControlledJob job : jobs) {
+@@ -120,11 +120,11 @@ public JobControl(String groupName) {
+   /**
+    * @return the jobs in the success state
+    */
+-  public List<ControlledJob> getSuccessfulJobList() {
++  synchronized public List<ControlledJob> getSuccessfulJobList() {
+     return toList(this.successfulJobs);
+   }
+ 	
+-  public List<ControlledJob> getFailedJobList() {
++  synchronized public List<ControlledJob> getFailedJobList() {
+     return toList(this.failedJobs);
+   }
+ 	
+-- 
+1.7.0.4
+

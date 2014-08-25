@@ -1,0 +1,349 @@
+From 9ed391f71697bbb36c5916865420d89714e96b6a Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Thu, 27 Feb 2014 19:24:49 +0000
+Subject: [PATCH 593/795] MAPREDUCE-5770. Fixed MapReduce ApplicationMaster to correctly redirect to the YARN's web-app proxy with the correct scheme prefix. Contributed by Jian He.
+ svn merge --ignore-ancestry -c 1572711 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1572712 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 21e242e1406dee45ba279451f8105f43d77a98a5)
+---
+ .../hadoop/mapreduce/v2/app/MRAppMaster.java       |    9 +-
+ .../mapreduce/v2/app/client/MRClientService.java   |   14 ++-
+ .../mapreduce/v2/app/webapp/TestAMWebApp.java      |  113 +++++++++++++++++++-
+ .../org/apache/hadoop/yarn/webapp/WebApps.java     |   23 ++++-
+ .../hadoop/yarn/webapp/util/WebAppUtils.java       |    5 +-
+ .../webproxy/amfilter/AmFilterInitializer.java     |   11 ++-
+ 6 files changed, 159 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
+index f471efc..ac69eb0 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
+@@ -1368,13 +1368,7 @@ public static void main(String[] args) {
+       JobConf conf = new JobConf(new YarnConfiguration());
+       conf.addResource(new Path(MRJobConfig.JOB_CONF_FILE));
+       
+-      // Explicitly disabling SSL for map reduce task as we can't allow MR users
+-      // to gain access to keystore file for opening SSL listener. We can trust
+-      // RM/NM to issue SSL certificates but definitely not MR-AM as it is
+-      // running in user-land.
+       MRWebAppUtil.initialize(conf);
+-      conf.set(YarnConfiguration.YARN_HTTP_POLICY_KEY,
+-          HttpConfig.Policy.HTTP_ONLY.name());
+       String jobUserName = System
+           .getenv(ApplicationConstants.Environment.USER.name());
+       conf.set(MRJobConfig.USER_NAME, jobUserName);
+@@ -1470,4 +1464,7 @@ protected void serviceStop() throws Exception {
+     LogManager.shutdown();
+   }
+ 
++  public ClientService getClientService() {
++    return clientService;
++  }
+ }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/client/MRClientService.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/client/MRClientService.java
+index 181fd37..3c0e100 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/client/MRClientService.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/client/MRClientService.java
+@@ -27,6 +27,7 @@
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
++import org.apache.hadoop.http.HttpConfig.Policy;
+ import org.apache.hadoop.ipc.Server;
+ import org.apache.hadoop.mapreduce.JobACL;
+ import org.apache.hadoop.mapreduce.MRJobConfig;
+@@ -133,8 +134,13 @@ protected void serviceStart() throws Exception {
+     this.bindAddress = NetUtils.getConnectAddress(server);
+     LOG.info("Instantiated MRClientService at " + this.bindAddress);
+     try {
+-      webApp = WebApps.$for("mapreduce", AppContext.class, appContext, "ws").with(conf).
+-          start(new AMWebApp());
++      // Explicitly disabling SSL for map reduce task as we can't allow MR users
++      // to gain access to keystore file for opening SSL listener. We can trust
++      // RM/NM to issue SSL certificates but definitely not MR-AM as it is
++      // running in user-land.
++      webApp =
++          WebApps.$for("mapreduce", AppContext.class, appContext, "ws")
++            .withHttpPolicy(conf, Policy.HTTP_ONLY).start(new AMWebApp());
+     } catch (Exception e) {
+       LOG.error("Webapps failed to start. Ignoring for now:", e);
+     }
+@@ -412,4 +418,8 @@ public CancelDelegationTokenResponse cancelDelegationToken(
+           " token");
+     }
+   }
++
++  public WebApp getWebApp() {
++    return webApp;
++  }
+ }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/webapp/TestAMWebApp.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/webapp/TestAMWebApp.java
+index 829ddb5..94e883e 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/webapp/TestAMWebApp.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/test/java/org/apache/hadoop/mapreduce/v2/app/webapp/TestAMWebApp.java
+@@ -21,23 +21,45 @@
+ import static org.apache.hadoop.mapreduce.v2.app.webapp.AMParams.APP_ID;
+ import static org.junit.Assert.assertEquals;
+ 
++import java.io.ByteArrayOutputStream;
++import java.io.InputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
+ import java.util.HashMap;
+ import java.util.Map;
+ import java.util.Map.Entry;
+ 
++import javax.net.ssl.SSLException;
++
++import junit.framework.Assert;
++
++import org.apache.commons.httpclient.HttpStatus;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.http.HttpConfig.Policy;
++import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.mapreduce.v2.api.records.JobId;
++import org.apache.hadoop.mapreduce.v2.api.records.JobState;
+ import org.apache.hadoop.mapreduce.v2.api.records.TaskId;
+ import org.apache.hadoop.mapreduce.v2.app.AppContext;
++import org.apache.hadoop.mapreduce.v2.app.MRApp;
+ import org.apache.hadoop.mapreduce.v2.app.MockAppContext;
+ import org.apache.hadoop.mapreduce.v2.app.MockJobs;
++import org.apache.hadoop.mapreduce.v2.app.client.ClientService;
++import org.apache.hadoop.mapreduce.v2.app.client.MRClientService;
+ import org.apache.hadoop.mapreduce.v2.app.job.Job;
+ import org.apache.hadoop.mapreduce.v2.app.job.Task;
+ import org.apache.hadoop.mapreduce.v2.app.job.TaskAttempt;
+ import org.apache.hadoop.mapreduce.v2.util.MRApps;
++import org.apache.hadoop.net.NetUtils;
++import org.apache.hadoop.yarn.conf.YarnConfiguration;
++import org.apache.hadoop.yarn.server.webproxy.ProxyUriUtils;
++import org.apache.hadoop.yarn.server.webproxy.amfilter.AmFilterInitializer;
+ import org.apache.hadoop.yarn.webapp.WebApps;
+ import org.apache.hadoop.yarn.webapp.test.WebAppTests;
++import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ import org.junit.Test;
+ 
++import com.google.common.net.HttpHeaders;
+ import com.google.inject.Injector;
+ 
+ public class TestAMWebApp {
+@@ -147,7 +169,96 @@
+     WebAppTests.testPage(SingleCounterPage.class, AppContext.class,
+                          appContext, params);
+   }
+-  
++
++  @Test
++  public void testMRWebAppSSLDisabled() throws Exception {
++    MRApp app = new MRApp(2, 2, true, this.getClass().getName(), true) {
++      @Override
++      protected ClientService createClientService(AppContext context) {
++        return new MRClientService(context);
++      }
++    };
++    Configuration conf = new Configuration();
++    // MR is explicitly disabling SSL, even though setting as HTTPS_ONLY
++    conf.set(YarnConfiguration.YARN_HTTP_POLICY_KEY, Policy.HTTPS_ONLY.name());
++    Job job = app.submit(conf);
++
++    String hostPort =
++        NetUtils.getHostPortString(((MRClientService) app.getClientService())
++          .getWebApp().getListenerAddress());
++    // http:// should be accessible
++    URL httpUrl = new URL("http://" + hostPort);
++    HttpURLConnection conn = (HttpURLConnection) httpUrl.openConnection();
++    InputStream in = conn.getInputStream();
++    ByteArrayOutputStream out = new ByteArrayOutputStream();
++    IOUtils.copyBytes(in, out, 1024);
++    Assert.assertTrue(out.toString().contains("MapReduce Application"));
++
++    // https:// is not accessible.
++    URL httpsUrl = new URL("https://" + hostPort);
++    try {
++      HttpURLConnection httpsConn =
++          (HttpURLConnection) httpsUrl.openConnection();
++      httpsConn.getInputStream();
++      Assert.fail("https:// is not accessible, expected to fail");
++    } catch (Exception e) {
++      Assert.assertTrue(e instanceof SSLException);
++    }
++
++    app.waitForState(job, JobState.SUCCEEDED);
++    app.verifyCompleted();
++  }
++
++  static String webProxyBase = null;
++  public static class TestAMFilterInitializer extends AmFilterInitializer {
++
++    @Override
++    protected String getApplicationWebProxyBase() {
++      return webProxyBase;
++    }
++  }
++
++  @Test
++  public void testMRWebAppRedirection() throws Exception {
++
++    String[] schemePrefix =
++        { WebAppUtils.HTTP_PREFIX, WebAppUtils.HTTPS_PREFIX };
++    for (String scheme : schemePrefix) {
++      MRApp app = new MRApp(2, 2, true, this.getClass().getName(), true) {
++        @Override
++        protected ClientService createClientService(AppContext context) {
++          return new MRClientService(context);
++        }
++      };
++      Configuration conf = new Configuration();
++      conf.set(YarnConfiguration.PROXY_ADDRESS, "9.9.9.9");
++      conf.set(YarnConfiguration.YARN_HTTP_POLICY_KEY, scheme
++        .equals(WebAppUtils.HTTPS_PREFIX) ? Policy.HTTPS_ONLY.name()
++          : Policy.HTTP_ONLY.name());
++      webProxyBase = "/proxy/" + app.getAppID();
++      conf.set("hadoop.http.filter.initializers",
++        TestAMFilterInitializer.class.getName());
++      Job job = app.submit(conf);
++      String hostPort =
++          NetUtils.getHostPortString(((MRClientService) app.getClientService())
++            .getWebApp().getListenerAddress());
++      URL httpUrl = new URL("http://" + hostPort + "/mapreduce");
++
++      HttpURLConnection conn = (HttpURLConnection) httpUrl.openConnection();
++      conn.setInstanceFollowRedirects(false);
++      conn.connect();
++      String expectedURL =
++          scheme + conf.get(YarnConfiguration.PROXY_ADDRESS)
++              + ProxyUriUtils.getPath(app.getAppID(), "/mapreduce");
++      Assert.assertEquals(expectedURL,
++        conn.getHeaderField(HttpHeaders.LOCATION));
++      Assert.assertEquals(HttpStatus.SC_MOVED_TEMPORARILY,
++        conn.getResponseCode());
++      app.waitForState(job, JobState.SUCCEEDED);
++      app.verifyCompleted();
++    }
++  }
++
+   public static void main(String[] args) {
+     WebApps.$for("yarn", AppContext.class, new MockAppContext(0, 8, 88, 4)).
+         at(58888).inDevMode().start(new AMWebApp()).joinThread();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApps.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApps.java
+index 590cd96..f8c6f55 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApps.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApps.java
+@@ -35,6 +35,8 @@
+ import org.apache.commons.lang.StringUtils;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.http.HttpConfig.Policy;
++import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.http.HttpServer2;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+@@ -86,6 +88,7 @@
+     int port = 0;
+     boolean findPort = false;
+     Configuration conf;
++    Policy httpPolicy = null;
+     boolean devMode = false;
+     private String spnegoPrincipalKey;
+     private String spnegoKeytabKey;
+@@ -142,7 +145,13 @@
+       this.conf = conf;
+       return this;
+     }
+-    
++
++    public Builder<T> withHttpPolicy(Configuration conf, Policy httpPolicy) {
++      this.conf = conf;
++      this.httpPolicy = httpPolicy;
++      return this;
++    }
++
+     public Builder<T> withHttpSpnegoPrincipalKey(String spnegoPrincipalKey) {
+       this.spnegoPrincipalKey = spnegoPrincipalKey;
+       return this;
+@@ -218,10 +227,18 @@ public void setup() {
+             System.exit(1);
+           }
+         }
++        String httpScheme;
++        if (this.httpPolicy == null) {
++          httpScheme = WebAppUtils.getHttpSchemePrefix(conf);
++        } else {
++          httpScheme =
++              (httpPolicy == Policy.HTTPS_ONLY) ? WebAppUtils.HTTPS_PREFIX
++                  : WebAppUtils.HTTP_PREFIX;
++        }
+         HttpServer2.Builder builder = new HttpServer2.Builder()
+             .setName(name)
+             .addEndpoint(
+-                URI.create(WebAppUtils.getHttpSchemePrefix(conf) + bindAddress
++                URI.create(httpScheme + bindAddress
+                     + ":" + port)).setConf(conf).setFindPort(findPort)
+             .setACL(new AdminACLsManager(conf).getAdminAcl())
+             .setPathSpec(pathList.toArray(new String[0]));
+@@ -236,7 +253,7 @@ public void setup() {
+               .setSecurityEnabled(UserGroupInformation.isSecurityEnabled());
+         }
+ 
+-        if (YarnConfiguration.useHttps(conf)) {
++        if (httpScheme.equals(WebAppUtils.HTTPS_PREFIX)) {
+           WebAppUtils.loadSslConfiguration(builder);
+         }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java
+index 9d7718c..df466fc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java
+@@ -32,6 +32,9 @@
+ @Private
+ @Evolving
+ public class WebAppUtils {
++  public static final String HTTPS_PREFIX = "https://";
++  public static final String HTTP_PREFIX = "http://";
++
+   public static void setRMWebAppPort(Configuration conf, int port) {
+     String hostname = getRMWebAppURLWithoutScheme(conf);
+     hostname =
+@@ -159,7 +162,7 @@ public static String getURLWithScheme(String schemePrefix, String url) {
+    * @return the schmeme (HTTP / HTTPS)
+    */
+   public static String getHttpSchemePrefix(Configuration conf) {
+-    return YarnConfiguration.useHttps(conf) ? "https://" : "http://";
++    return YarnConfiguration.useHttps(conf) ? HTTPS_PREFIX : HTTP_PREFIX;
+   }
+ 
+   /**
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/amfilter/AmFilterInitializer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/amfilter/AmFilterInitializer.java
+index e35ed84..6ed56f7 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/amfilter/AmFilterInitializer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/amfilter/AmFilterInitializer.java
+@@ -27,6 +27,8 @@
+ import org.apache.hadoop.yarn.api.ApplicationConstants;
+ import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ 
++import com.google.common.annotations.VisibleForTesting;
++
+ public class AmFilterInitializer extends FilterInitializer {
+   private static final String FILTER_NAME = "AM_PROXY_FILTER";
+   private static final String FILTER_CLASS = AmIpFilter.class.getCanonicalName();
+@@ -37,10 +39,13 @@ public void initFilter(FilterContainer container, Configuration conf) {
+     String proxy = WebAppUtils.getProxyHostAndPort(conf);
+     String[] parts = proxy.split(":");
+     params.put(AmIpFilter.PROXY_HOST, parts[0]);
+-    params.put(AmIpFilter.PROXY_URI_BASE,
+-        WebAppUtils.getHttpSchemePrefix(conf) + proxy +
+-        System.getenv(ApplicationConstants.APPLICATION_WEB_PROXY_BASE_ENV));
++    params.put(AmIpFilter.PROXY_URI_BASE, WebAppUtils.getHttpSchemePrefix(conf)
++        + proxy + getApplicationWebProxyBase());
+     container.addFilter(FILTER_NAME, FILTER_CLASS, params);
+   }
+ 
++  @VisibleForTesting
++  protected String getApplicationWebProxyBase() {
++    return System.getenv(ApplicationConstants.APPLICATION_WEB_PROXY_BASE_ENV);
++  }
+ }
+-- 
+1.7.0.4
+

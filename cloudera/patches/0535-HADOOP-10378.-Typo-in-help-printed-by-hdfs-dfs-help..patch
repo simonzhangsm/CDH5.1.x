@@ -1,0 +1,41 @@
+From baf42adcf91fc1469cb2a2e49173efc2a322f348 Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Mon, 3 Mar 2014 22:08:49 +0000
+Subject: [PATCH 535/795] HADOOP-10378. Typo in help printed by hdfs dfs -help. Contributed by Mit Desai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1573776 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 4e7326725677aab5e0ff3c613ec09e8e5d09b859)
+---
+ .../java/org/apache/hadoop/fs/shell/Count.java     |    2 +-
+ .../hadoop-common/src/test/resources/testConf.xml  |    2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Count.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Count.java
+index c3b2e74..b8ccc0c 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Count.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Count.java
+@@ -48,7 +48,7 @@ public static void registerCommands(CommandFactory factory) {
+       "Count the number of directories, files and bytes under the paths\n" +
+       "that match the specified file pattern.  The output columns are:\n" +
+       "DIR_COUNT FILE_COUNT CONTENT_SIZE FILE_NAME or\n" +
+-      "QUOTA REMAINING_QUATA SPACE_QUOTA REMAINING_SPACE_QUOTA \n" +
++      "QUOTA REMAINING_QUOTA SPACE_QUOTA REMAINING_SPACE_QUOTA \n" +
+       "      DIR_COUNT FILE_COUNT CONTENT_SIZE FILE_NAME";
+   
+   private boolean showQuotas;
+diff --git a/hadoop-common-project/hadoop-common/src/test/resources/testConf.xml b/hadoop-common-project/hadoop-common/src/test/resources/testConf.xml
+index 2f310bd..d162ac0 100644
+--- a/hadoop-common-project/hadoop-common/src/test/resources/testConf.xml
++++ b/hadoop-common-project/hadoop-common/src/test/resources/testConf.xml
+@@ -234,7 +234,7 @@
+         </comparator>
+         <comparator>
+           <type>RegexpComparator</type>
+-          <expected-output>^( |\t)*QUOTA REMAINING_QUATA SPACE_QUOTA REMAINING_SPACE_QUOTA( )*</expected-output>
++          <expected-output>^( |\t)*QUOTA REMAINING_QUOTA SPACE_QUOTA REMAINING_SPACE_QUOTA( )*</expected-output>
+         </comparator>
+         <comparator>
+           <type>RegexpComparator</type>
+-- 
+1.7.0.4
+

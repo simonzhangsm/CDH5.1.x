@@ -1,0 +1,197 @@
+From aabb36be438ebf6b5a65564383e927c1c5235a3f Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Wed, 18 Jun 2014 01:00:32 +0000
+Subject: [PATCH 773/795] HDFS-6527. Edit log corruption due to defered INode removal. Contributed by Kihwal Lee and Jing Zhao.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1603340 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1553e149221befaeb029b69dcb2e53d37a5877e9)
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    8 +
+ .../hdfs/server/namenode/TestDeleteRace.java       |  149 ++++++++++++++++++++
+ 2 files changed, 157 insertions(+), 0 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeleteRace.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 8f3c2d8..54f8be6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -2995,6 +2995,13 @@ private INodeFile checkLease(String src, String holder, INode inode,
+           + (lease != null ? lease.toString()
+               : "Holder " + holder + " does not have any open files."));
+     }
++    // No further modification is allowed on a deleted file.
++    // A file is considered deleted, if it has no parent or is marked
++    // as deleted in the snapshot feature.
++    if (file.getParent() == null || (file.isWithSnapshot() &&
++        file.getFileWithSnapshotFeature().isCurrentFileDeleted())) {
++      throw new FileNotFoundException(src);
++    }
+     String clientName = file.getFileUnderConstructionFeature().getClientName();
+     if (holder != null && !clientName.equals(holder)) {
+       throw new LeaseExpiredException("Lease mismatch on " + ident +
+@@ -3416,6 +3423,7 @@ private boolean deleteInternal(String src, boolean recursive,
+     getEditLog().logSync(); 
+     removeBlocks(collectedBlocks); // Incremental deletion of blocks
+     collectedBlocks.clear();
++
+     dir.writeLock();
+     try {
+       dir.removeFromInodeMap(removedINodes);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeleteRace.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeleteRace.java
+new file mode 100644
+index 0000000..cf4b29f
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDeleteRace.java
+@@ -0,0 +1,149 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.namenode;
++
++import java.io.FileNotFoundException;
++import java.util.List;
++import java.util.Set;
++
++import org.apache.commons.logging.Log;
++import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FSDataOutputStream;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hdfs.DFSConfigKeys;
++import org.apache.hadoop.hdfs.DistributedFileSystem;
++import org.apache.hadoop.hdfs.HdfsConfiguration;
++import org.apache.hadoop.hdfs.MiniDFSCluster;
++import org.apache.hadoop.hdfs.StorageType;
++import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicy;
++import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyDefault;
++import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
++import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
++import org.apache.hadoop.net.Node;
++import org.apache.hadoop.test.GenericTestUtils;
++import org.junit.Assert;
++import org.junit.Test;
++import org.mockito.internal.util.reflection.Whitebox;
++
++
++/**
++ * Test race between delete and other operations.  For now only addBlock()
++ * is tested since all others are acquiring FSNamesystem lock for the 
++ * whole duration.
++ */
++public class TestDeleteRace {
++  private static final Log LOG = LogFactory.getLog(TestDeleteRace.class);
++  private static final Configuration conf = new HdfsConfiguration();
++  private MiniDFSCluster cluster;
++
++  @Test  
++  public void testDeleteAddBlockRace() throws Exception {
++    testDeleteAddBlockRace(false);
++  }
++
++  @Test  
++  public void testDeleteAddBlockRaceWithSnapshot() throws Exception {
++    testDeleteAddBlockRace(true);
++  }
++
++  private void testDeleteAddBlockRace(boolean hasSnapshot) throws Exception {
++    try {
++      conf.setClass(DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_KEY,
++          SlowBlockPlacementPolicy.class, BlockPlacementPolicy.class);
++      cluster = new MiniDFSCluster.Builder(conf).build();
++      FileSystem fs = cluster.getFileSystem();
++      final String fileName = "/testDeleteAddBlockRace";
++      Path filePath = new Path(fileName);
++
++      FSDataOutputStream out = null;
++      out = fs.create(filePath);
++      if (hasSnapshot) {
++        SnapshotTestHelper.createSnapshot((DistributedFileSystem) fs, new Path(
++            "/"), "s1");
++      }
++
++      Thread deleteThread = new DeleteThread(fs, filePath);
++      deleteThread.start();
++
++      try {
++        // write data and syn to make sure a block is allocated.
++        out.write(new byte[32], 0, 32);
++        out.hsync();
++        Assert.fail("Should have failed.");
++      } catch (FileNotFoundException e) {
++        GenericTestUtils.assertExceptionContains(filePath.getName(), e);
++      }
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
++
++  private static class SlowBlockPlacementPolicy extends
++      BlockPlacementPolicyDefault {
++    @Override
++    public DatanodeStorageInfo[] chooseTarget(String srcPath,
++                                      int numOfReplicas,
++                                      Node writer,
++                                      List<DatanodeStorageInfo> chosenNodes,
++                                      boolean returnChosenNodes,
++                                      Set<Node> excludedNodes,
++                                      long blocksize,
++                                      StorageType storageType) {
++      DatanodeStorageInfo[] results = super.chooseTarget(srcPath,
++          numOfReplicas, writer, chosenNodes, returnChosenNodes, excludedNodes,
++          blocksize, storageType);
++      try {
++        Thread.sleep(3000);
++      } catch (InterruptedException e) {}
++      return results;
++    }
++  }
++
++  private class DeleteThread extends Thread {
++    private FileSystem fs;
++    private Path path;
++
++    DeleteThread(FileSystem fs, Path path) {
++      this.fs = fs;
++      this.path = path;
++    }
++
++    @Override
++    public void run() {
++      try {
++        Thread.sleep(1000);
++        LOG.info("Deleting" + path);
++        final FSDirectory fsdir = cluster.getNamesystem().dir;
++        INode fileINode = fsdir.getINode4Write(path.toString());
++        INodeMap inodeMap = (INodeMap) Whitebox.getInternalState(fsdir,
++            "inodeMap");
++
++        fs.delete(path, false);
++        // after deletion, add the inode back to the inodeMap
++        inodeMap.put(fileINode);
++        LOG.info("Deleted" + path);
++      } catch (Exception e) {
++        LOG.info(e);
++      }
++    }
++  }
++}
+-- 
+1.7.0.4
+

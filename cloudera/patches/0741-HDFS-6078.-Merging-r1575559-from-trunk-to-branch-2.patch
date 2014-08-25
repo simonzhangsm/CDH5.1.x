@@ -1,0 +1,35 @@
+From a58b0a939109e41041cc958335bea43c224cbe22 Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Sat, 8 Mar 2014 16:40:27 +0000
+Subject: [PATCH 741/795] HDFS-6078. Merging r1575559 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1575561 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 90aa732809784e0ea66c705e8766cde743572b0b)
+---
+ .../datanode/TestIncrementalBlockReports.java      |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestIncrementalBlockReports.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestIncrementalBlockReports.java
+index 5faa0e7..2f08049 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestIncrementalBlockReports.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestIncrementalBlockReports.java
+@@ -20,6 +20,7 @@
+ import static junit.framework.Assert.assertFalse;
+ import static org.mockito.Matchers.any;
+ import static org.mockito.Matchers.anyString;
++import static org.mockito.Mockito.atLeastOnce;
+ import static org.mockito.Mockito.times;
+ 
+ import java.io.IOException;
+@@ -195,7 +196,7 @@ public void testReplaceReceivedBlock() throws InterruptedException, IOException 
+       Thread.sleep(2000);
+ 
+       // Ensure that the received block is reported.
+-      Mockito.verify(nnSpy, times(1)).blockReceivedAndDeleted(
++      Mockito.verify(nnSpy, atLeastOnce()).blockReceivedAndDeleted(
+           any(DatanodeRegistration.class),
+           anyString(),
+           any(StorageReceivedDeletedBlocks[].class));
+-- 
+1.7.0.4
+

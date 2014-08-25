@@ -1,0 +1,1251 @@
+From edffae34ea16738c64ac9e1544832c57da4db53e Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 14 Feb 2014 07:13:02 +0000
+Subject: [PATCH 383/795] HDFS-5286. Flatten INodeDirectory hierarchy: Replace INodeDirectoryWithQuota with DirectoryWithQuotaFeature.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568203 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b5576cf574619d3be2ebb14b04fa4899177c4fd1)
+---
+ .../server/namenode/DirectoryWithQuotaFeature.java |  168 ++++++++++++++++
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   62 ++----
+ .../hadoop/hdfs/server/namenode/FSImage.java       |    4 +-
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |   27 ++--
+ .../apache/hadoop/hdfs/server/namenode/INode.java  |   56 +++++
+ .../hdfs/server/namenode/INodeDirectory.java       |  145 +++++++++++---
+ .../server/namenode/INodeDirectoryWithQuota.java   |  212 --------------------
+ .../hadoop/hdfs/server/namenode/INodeFile.java     |   28 +--
+ .../snapshot/INodeDirectoryWithSnapshot.java       |    9 +-
+ .../hdfs/server/namenode/snapshot/Snapshot.java    |    2 +-
+ .../java/org/apache/hadoop/hdfs/TestQuota.java     |    5 +-
+ .../server/namenode/TestFSImageWithSnapshot.java   |    2 +-
+ .../hadoop/hdfs/server/namenode/TestFsLimits.java  |    6 +-
+ .../hadoop/hdfs/server/namenode/TestINodeFile.java |   13 +-
+ .../namenode/snapshot/TestRenameWithSnapshots.java |   22 ++-
+ .../namenode/snapshot/TestSnapshotDeletion.java    |   17 +-
+ .../java/org/apache/hadoop/hdfs/util/TestDiff.java |    2 +-
+ 17 files changed, 436 insertions(+), 344 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DirectoryWithQuotaFeature.java
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryWithQuota.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DirectoryWithQuotaFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DirectoryWithQuotaFeature.java
+new file mode 100644
+index 0000000..c03a797
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/DirectoryWithQuotaFeature.java
+@@ -0,0 +1,168 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.namenode;
++
++import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
++import org.apache.hadoop.hdfs.protocol.HdfsConstants;
++import org.apache.hadoop.hdfs.protocol.NSQuotaExceededException;
++import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
++
++/**
++ * Quota feature for {@link INodeDirectory}. 
++ */
++public final class DirectoryWithQuotaFeature extends INodeDirectory.Feature {
++  public static final long DEFAULT_NAMESPACE_QUOTA = Long.MAX_VALUE;
++  public static final long DEFAULT_DISKSPACE_QUOTA = HdfsConstants.QUOTA_RESET;
++
++  /** Name space quota */
++  private long nsQuota = DEFAULT_NAMESPACE_QUOTA;
++  /** Name space count */
++  private long namespace = 1L;
++  /** Disk space quota */
++  private long dsQuota = DEFAULT_DISKSPACE_QUOTA;
++  /** Disk space count */
++  private long diskspace = 0L;
++  
++  DirectoryWithQuotaFeature(long nsQuota, long dsQuota) {
++    this.nsQuota = nsQuota;
++    this.dsQuota = dsQuota;
++  }
++
++  /** @return the quota set or -1 if it is not set. */
++  Quota.Counts getQuota() {
++    return Quota.Counts.newInstance(nsQuota, dsQuota);
++  }
++  
++  /** Set this directory's quota
++   * 
++   * @param nsQuota Namespace quota to be set
++   * @param dsQuota Diskspace quota to be set
++   */
++  void setQuota(long nsQuota, long dsQuota) {
++    this.nsQuota = nsQuota;
++    this.dsQuota = dsQuota;
++  }
++  
++  Quota.Counts addNamespaceDiskspace(Quota.Counts counts) {
++    counts.add(Quota.NAMESPACE, namespace);
++    counts.add(Quota.DISKSPACE, diskspace);
++    return counts;
++  }
++
++  ContentSummaryComputationContext computeContentSummary(final INodeDirectory dir,
++      final ContentSummaryComputationContext summary) {
++    final long original = summary.getCounts().get(Content.DISKSPACE);
++    long oldYieldCount = summary.getYieldCount();
++    dir.computeDirectoryContentSummary(summary);
++    // Check only when the content has not changed in the middle.
++    if (oldYieldCount == summary.getYieldCount()) {
++      checkDiskspace(dir, summary.getCounts().get(Content.DISKSPACE) - original);
++    }
++    return summary;
++  }
++  
++  private void checkDiskspace(final INodeDirectory dir, final long computed) {
++    if (-1 != getQuota().get(Quota.DISKSPACE) && diskspace != computed) {
++      NameNode.LOG.error("BUG: Inconsistent diskspace for directory "
++          + dir.getFullPathName() + ". Cached = " + diskspace
++          + " != Computed = " + computed);
++    }
++  }
++
++  void addSpaceConsumed(final INodeDirectory dir, final long nsDelta,
++      final long dsDelta, boolean verify) throws QuotaExceededException {
++    if (dir.isQuotaSet()) { 
++      // The following steps are important: 
++      // check quotas in this inode and all ancestors before changing counts
++      // so that no change is made if there is any quota violation.
++
++      // (1) verify quota in this inode
++      if (verify) {
++        verifyQuota(nsDelta, dsDelta);
++      }
++      // (2) verify quota and then add count in ancestors 
++      dir.addSpaceConsumed2Parent(nsDelta, dsDelta, verify);
++      // (3) add count in this inode
++      addSpaceConsumed2Cache(nsDelta, dsDelta);
++    } else {
++      dir.addSpaceConsumed2Parent(nsDelta, dsDelta, verify);
++    }
++  }
++  
++  /** Update the size of the tree
++   * 
++   * @param nsDelta the change of the tree size
++   * @param dsDelta change to disk space occupied
++   */
++  public void addSpaceConsumed2Cache(long nsDelta, long dsDelta) {
++    namespace += nsDelta;
++    diskspace += dsDelta;
++  }
++  
++  /** 
++   * Sets namespace and diskspace take by the directory rooted 
++   * at this INode. This should be used carefully. It does not check 
++   * for quota violations.
++   * 
++   * @param namespace size of the directory to be set
++   * @param diskspace disk space take by all the nodes under this directory
++   */
++  void setSpaceConsumed(long namespace, long diskspace) {
++    this.namespace = namespace;
++    this.diskspace = diskspace;
++  }
++  
++  /** @return the namespace and diskspace consumed. */
++  public Quota.Counts getSpaceConsumed() {
++    return Quota.Counts.newInstance(namespace, diskspace);
++  }
++
++  /** Verify if the namespace quota is violated after applying delta. */
++  private void verifyNamespaceQuota(long delta) throws NSQuotaExceededException {
++    if (Quota.isViolated(nsQuota, namespace, delta)) {
++      throw new NSQuotaExceededException(nsQuota, namespace + delta);
++    }
++  }
++  /** Verify if the diskspace quota is violated after applying delta. */
++  private void verifyDiskspaceQuota(long delta) throws DSQuotaExceededException {
++    if (Quota.isViolated(dsQuota, diskspace, delta)) {
++      throw new DSQuotaExceededException(dsQuota, diskspace + delta);
++    }
++  }
++
++  /**
++   * @throws QuotaExceededException if namespace or diskspace quotas is
++   *         violated after applying the deltas.
++   */
++  void verifyQuota(long nsDelta, long dsDelta) throws QuotaExceededException {
++    verifyNamespaceQuota(nsDelta);
++    verifyDiskspaceQuota(dsDelta);
++  }
++
++  private String namespaceString() {
++    return "namespace: " + (nsQuota < 0? "-": namespace + "/" + nsQuota);
++  }
++  private String diskspaceString() {
++    return "diskspace: " + (dsQuota < 0? "-": diskspace + "/" + dsQuota);
++  }
++  
++  @Override
++  public String toString() {
++    return "Quota[" + namespaceString() + ", " + diskspaceString() + "]";
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index d48385b..ee99ac7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -87,11 +87,15 @@
+  * 
+  *************************************************/
+ public class FSDirectory implements Closeable {
+-  private static INodeDirectoryWithQuota createRoot(FSNamesystem namesystem) {
+-    final INodeDirectoryWithQuota r = new INodeDirectoryWithQuota(
++  private static INodeDirectorySnapshottable createRoot(FSNamesystem namesystem) {
++    final INodeDirectory r = new INodeDirectory(
+         INodeId.ROOT_INODE_ID,
+         INodeDirectory.ROOT_NAME,
+-        namesystem.createFsOwnerPermissions(new FsPermission((short) 0755)));
++        namesystem.createFsOwnerPermissions(new FsPermission((short) 0755)),
++        0L);
++    r.addDirectoryWithQuotaFeature(
++        DirectoryWithQuotaFeature.DEFAULT_NAMESPACE_QUOTA,
++        DirectoryWithQuotaFeature.DEFAULT_DISKSPACE_QUOTA);
+     final INodeDirectorySnapshottable s = new INodeDirectorySnapshottable(r);
+     s.setSnapshotQuota(0);
+     return s;
+@@ -107,7 +111,7 @@ private static INodeDirectoryWithQuota createRoot(FSNamesystem namesystem) {
+   public final static String DOT_INODES_STRING = ".inodes";
+   public final static byte[] DOT_INODES = 
+       DFSUtil.string2Bytes(DOT_INODES_STRING);
+-  INodeDirectoryWithQuota rootDir;
++  INodeDirectory rootDir;
+   FSImage fsImage;  
+   private final FSNamesystem namesystem;
+   private volatile boolean ready = false;
+@@ -201,7 +205,7 @@ private BlockManager getBlockManager() {
+   }
+ 
+   /** @return the root directory inode. */
+-  public INodeDirectoryWithQuota getRoot() {
++  public INodeDirectory getRoot() {
+     return rootDir;
+   }
+ 
+@@ -1840,9 +1844,8 @@ private static void unprotectedUpdateCount(INodesInPath inodesInPath,
+     final INode[] inodes = inodesInPath.getINodes();
+     for(int i=0; i < numOfINodes; i++) {
+       if (inodes[i].isQuotaSet()) { // a directory with quota
+-        INodeDirectoryWithQuota node = (INodeDirectoryWithQuota) inodes[i]
+-            .asDirectory(); 
+-        node.addSpaceConsumed2Cache(nsDelta, dsDelta);
++        inodes[i].asDirectory().getDirectoryWithQuotaFeature()
++            .addSpaceConsumed2Cache(nsDelta, dsDelta);
+       }
+     }
+   }
+@@ -2076,10 +2079,11 @@ private static void verifyQuota(INode[] inodes, int pos, long nsDelta,
+         // Stop checking for quota when common ancestor is reached
+         return;
+       }
+-      if (inodes[i].isQuotaSet()) { // a directory with quota
++      final DirectoryWithQuotaFeature q
++          = inodes[i].asDirectory().getDirectoryWithQuotaFeature();
++      if (q != null) { // a directory with quota
+         try {
+-          ((INodeDirectoryWithQuota) inodes[i].asDirectory()).verifyQuota(
+-              nsDelta, dsDelta);
++          q.verifyQuota(nsDelta, dsDelta);
+         } catch (QuotaExceededException e) {
+           e.setPathName(getFullPathName(inodes, i));
+           throw e;
+@@ -2427,35 +2431,14 @@ INodeDirectory unprotectedSetQuota(String src, long nsQuota, long dsQuota)
+       if (dsQuota == HdfsConstants.QUOTA_DONT_SET) {
+         dsQuota = oldDsQuota;
+       }        
++      if (oldNsQuota == nsQuota && oldDsQuota == dsQuota) {
++        return null;
++      }
+ 
+       final Snapshot latest = iip.getLatestSnapshot();
+-      if (dirNode instanceof INodeDirectoryWithQuota) {
+-        INodeDirectoryWithQuota quotaNode = (INodeDirectoryWithQuota) dirNode;
+-        Quota.Counts counts = null;
+-        if (!quotaNode.isQuotaSet()) {
+-          // dirNode must be an INodeDirectoryWithSnapshot whose quota has not
+-          // been set yet
+-          counts = quotaNode.computeQuotaUsage();
+-        }
+-        // a directory with quota; so set the quota to the new value
+-        quotaNode.setQuota(nsQuota, dsQuota);
+-        if (quotaNode.isQuotaSet() && counts != null) {
+-          quotaNode.setSpaceConsumed(counts.get(Quota.NAMESPACE),
+-              counts.get(Quota.DISKSPACE));
+-        } else if (!quotaNode.isQuotaSet() && latest == null) {
+-          // do not replace the node if the node is a snapshottable directory
+-          // without snapshots
+-          if (!(quotaNode instanceof INodeDirectoryWithSnapshot)) {
+-            // will not come here for root because root is snapshottable and
+-            // root's nsQuota is always set
+-            return quotaNode.replaceSelf4INodeDirectory(inodeMap);
+-          }
+-        }
+-      } else {
+-        // a non-quota directory; so replace it with a directory with quota
+-        return dirNode.replaceSelf4Quota(latest, nsQuota, dsQuota, inodeMap);
+-      }
+-      return (oldNsQuota != nsQuota || oldDsQuota != dsQuota) ? dirNode : null;
++      dirNode = dirNode.recordModification(latest, inodeMap);
++      dirNode.setQuota(nsQuota, dsQuota);
++      return dirNode;
+     }
+   }
+   
+@@ -2484,7 +2467,8 @@ void setQuota(String src, long nsQuota, long dsQuota)
+   long totalInodes() {
+     readLock();
+     try {
+-      return rootDir.numItemsInTree();
++      return rootDir.getDirectoryWithQuotaFeature().getSpaceConsumed()
++          .get(Quota.NAMESPACE);
+     } finally {
+       readUnlock();
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index 3aadc65..71f0a45 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -735,7 +735,7 @@ public long loadEdits(Iterable<EditLogInputStream> editStreams,
+    * This is an update of existing state of the filesystem and does not
+    * throw QuotaExceededException.
+    */
+-  static void updateCountForQuota(INodeDirectoryWithQuota root) {
++  static void updateCountForQuota(INodeDirectory root) {
+     updateCountForQuotaRecursively(root, Quota.Counts.newInstance());
+   }
+   
+@@ -775,7 +775,7 @@ private static void updateCountForQuotaRecursively(INodeDirectory dir,
+             + " quota = " + dsQuota + " < consumed = " + diskspace);
+       }
+ 
+-      ((INodeDirectoryWithQuota)dir).setSpaceConsumed(namespace, diskspace);
++      dir.getDirectoryWithQuotaFeature().setSpaceConsumed(namespace, diskspace);
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index 61bb7e1..f5e3185 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -387,7 +387,7 @@ private void updateRootAttr(INodeWithAdditionalFields root) {                   
+     final long dsQuota = q.get(Quota.DISKSPACE);
+     FSDirectory fsDir = namesystem.dir;
+     if (nsQuota != -1 || dsQuota != -1) {
+-      fsDir.rootDir.setQuota(nsQuota, dsQuota);
++      fsDir.rootDir.getDirectoryWithQuotaFeature().setQuota(nsQuota, dsQuota);
+     }
+     fsDir.rootDir.cloneModificationTime(root);
+     fsDir.rootDir.clonePermissionStatus(root);    
+@@ -745,10 +745,11 @@ INode loadINode(final byte[] localName, boolean isSnapshotINode,
+       if (counter != null) {
+         counter.increment();
+       }
+-      final INodeDirectory dir = nsQuota >= 0 || dsQuota >= 0?
+-          new INodeDirectoryWithQuota(inodeId, localName, permissions,
+-              modificationTime, nsQuota, dsQuota)
+-          : new INodeDirectory(inodeId, localName, permissions, modificationTime);
++      final INodeDirectory dir = new INodeDirectory(inodeId, localName,
++          permissions, modificationTime);
++      if (nsQuota >= 0 || dsQuota >= 0) {
++        dir.addDirectoryWithQuotaFeature(nsQuota, dsQuota);
++      }
+       return snapshottable ? new INodeDirectorySnapshottable(dir)
+           : withSnapshot ? new INodeDirectoryWithSnapshot(dir)
+           : dir;
+@@ -1140,13 +1141,14 @@ void save(File newFile, FSImageCompression compression) throws IOException {
+       checkNotSaved();
+ 
+       final FSNamesystem sourceNamesystem = context.getSourceNamesystem();
+-      FSDirectory fsDir = sourceNamesystem.dir;
++      final INodeDirectory rootDir = sourceNamesystem.dir.rootDir;
++      final long numINodes = rootDir.getDirectoryWithQuotaFeature()
++          .getSpaceConsumed().get(Quota.NAMESPACE);
+       String sdPath = newFile.getParentFile().getParentFile().getAbsolutePath();
+       Step step = new Step(StepType.INODES, sdPath);
+       StartupProgress prog = NameNode.getStartupProgress();
+       prog.beginStep(Phase.SAVING_CHECKPOINT, step);
+-      prog.setTotal(Phase.SAVING_CHECKPOINT, step,
+-        fsDir.rootDir.numItemsInTree());
++      prog.setTotal(Phase.SAVING_CHECKPOINT, step, numINodes);
+       Counter counter = prog.getCounter(Phase.SAVING_CHECKPOINT, step);
+       long startTime = now();
+       //
+@@ -1166,7 +1168,7 @@ void save(File newFile, FSImageCompression compression) throws IOException {
+         // fairness-related deadlock. See the comments on HDFS-2223.
+         out.writeInt(sourceNamesystem.unprotectedGetNamespaceInfo()
+             .getNamespaceID());
+-        out.writeLong(fsDir.rootDir.numItemsInTree());
++        out.writeLong(numINodes);
+         out.writeLong(sourceNamesystem.getGenerationStampV1());
+         out.writeLong(sourceNamesystem.getGenerationStampV2());
+         out.writeLong(sourceNamesystem.getGenerationStampAtblockIdSwitch());
+@@ -1183,14 +1185,13 @@ void save(File newFile, FSImageCompression compression) throws IOException {
+                  " using " + compression);
+ 
+         // save the root
+-        saveINode2Image(fsDir.rootDir, out, false, referenceMap, counter);
++        saveINode2Image(rootDir, out, false, referenceMap, counter);
+         // save the rest of the nodes
+-        saveImage(fsDir.rootDir, out, true, false, counter);
++        saveImage(rootDir, out, true, false, counter);
+         prog.endStep(Phase.SAVING_CHECKPOINT, step);
+         // Now that the step is finished, set counter equal to total to adjust
+         // for possible under-counting due to reference inodes.
+-        prog.setCount(Phase.SAVING_CHECKPOINT, step,
+-          fsDir.rootDir.numItemsInTree());
++        prog.setCount(Phase.SAVING_CHECKPOINT, step, numINodes);
+         // save files under construction
+         // TODO: for HDFS-5428, since we cannot break the compatibility of 
+         // fsimage, we store part of the under-construction files that are only
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+index e5f26b0..b16a719 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+@@ -406,6 +406,15 @@ public abstract ContentSummaryComputationContext computeContentSummary(
+    */
+   public void addSpaceConsumed(long nsDelta, long dsDelta, boolean verify) 
+       throws QuotaExceededException {
++    addSpaceConsumed2Parent(nsDelta, dsDelta, verify);
++  }
++
++  /**
++   * Check and add namespace/diskspace consumed to itself and the ancestors.
++   * @throws QuotaExceededException if quote is violated.
++   */
++  void addSpaceConsumed2Parent(long nsDelta, long dsDelta, boolean verify) 
++      throws QuotaExceededException {
+     if (parent != null) {
+       parent.addSpaceConsumed(nsDelta, dsDelta, verify);
+     }
+@@ -744,4 +753,51 @@ public void clear() {
+       toDeleteList.clear();
+     }
+   }
++
++  /** INode feature such as {@link FileUnderConstructionFeature}
++   *  and {@link DirectoryWithQuotaFeature}.
++   */
++  interface Feature<F extends Feature<F>> {
++    /** @return the next feature. */
++    public F getNextFeature();
++
++    /** Set the next feature. */
++    public void setNextFeature(F next);
++
++    /** Utility methods such as addFeature and removeFeature. */
++    static class Util {
++      /**
++       * Add a feature to the linked list.
++       * @return the new head.
++       */
++      static <F extends Feature<F>> F addFeature(F feature, F head) {
++        feature.setNextFeature(head);
++        return feature;
++      }
++
++      /**
++       * Remove a feature from the linked list.
++       * @return the new head.
++       */
++      static <F extends Feature<F>> F removeFeature(F feature, F head) {
++        if (feature == head) {
++          final F newHead = head.getNextFeature();
++          head.setNextFeature(null);
++          return newHead;
++        } else if (head != null) {
++          F prev = head;
++          F curr = head.getNextFeature();
++          for (; curr != null && curr != feature;
++              prev = curr, curr = curr.getNextFeature())
++            ;
++          if (curr != null) {
++            prev.setNextFeature(curr.getNextFeature());
++            curr.setNextFeature(null);
++            return head;
++          }
++        }
++        throw new IllegalStateException("Feature " + feature + " not found.");
++      }
++    }
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+index 68ce123..ae5077a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+@@ -46,6 +46,21 @@
+  */
+ public class INodeDirectory extends INodeWithAdditionalFields
+     implements INodeDirectoryAttributes {
++  /** Directory related features such as quota and snapshots. */
++  public static abstract class Feature implements INode.Feature<Feature> {
++    private Feature nextFeature;
++
++    @Override
++    public Feature getNextFeature() {
++      return nextFeature;
++    }
++
++    @Override
++    public void setNextFeature(Feature next) {
++      this.nextFeature = next;
++    }
++  }
++
+   /** Cast INode to INodeDirectory. */
+   public static INodeDirectory valueOf(INode inode, Object path
+       ) throws FileNotFoundException, PathIsNotDirectoryException {
+@@ -63,6 +78,9 @@ public static INodeDirectory valueOf(INode inode, Object path
+   final static byte[] ROOT_NAME = DFSUtil.string2Bytes("");
+ 
+   private List<INode> children = null;
++  
++  /** A linked list of {@link Feature}s. */
++  private Feature headFeature = null;
+ 
+   /** constructor */
+   public INodeDirectory(long id, byte[] name, PermissionStatus permissions,
+@@ -76,7 +94,7 @@ public INodeDirectory(long id, byte[] name, PermissionStatus permissions,
+    * @param adopt Indicate whether or not need to set the parent field of child
+    *              INodes to the new node
+    */
+-  public INodeDirectory(INodeDirectory other, boolean adopt) {
++  public INodeDirectory(INodeDirectory other, boolean adopt, boolean copyFeatures) {
+     super(other);
+     this.children = other.children;
+     if (adopt && this.children != null) {
+@@ -84,6 +102,9 @@ public INodeDirectory(INodeDirectory other, boolean adopt) {
+         child.setParent(this);
+       }
+     }
++    if (copyFeatures) {
++      this.headFeature = other.headFeature;
++    }
+   }
+ 
+   /** @return true unconditionally. */
+@@ -103,6 +124,73 @@ public boolean isSnapshottable() {
+     return false;
+   }
+ 
++  void setQuota(long nsQuota, long dsQuota) {
++    DirectoryWithQuotaFeature quota = getDirectoryWithQuotaFeature();
++    if (quota != null) {
++      // already has quota; so set the quota to the new values
++      quota.setQuota(nsQuota, dsQuota);
++      if (!isQuotaSet() && !isRoot()) {
++        removeFeature(quota);
++      }
++    } else {
++      final Quota.Counts c = computeQuotaUsage();
++      quota = addDirectoryWithQuotaFeature(nsQuota, dsQuota);
++      quota.setSpaceConsumed(c.get(Quota.NAMESPACE), c.get(Quota.DISKSPACE));
++    }
++  }
++
++  @Override
++  public Quota.Counts getQuotaCounts() {
++    final DirectoryWithQuotaFeature q = getDirectoryWithQuotaFeature();
++    return q != null? q.getQuota(): super.getQuotaCounts();
++  }
++
++  @Override
++  public void addSpaceConsumed(long nsDelta, long dsDelta, boolean verify) 
++      throws QuotaExceededException {
++    final DirectoryWithQuotaFeature q = getDirectoryWithQuotaFeature();
++    if (q != null) {
++      q.addSpaceConsumed(this, nsDelta, dsDelta, verify);
++    } else {
++      addSpaceConsumed2Parent(nsDelta, dsDelta, verify);
++    }
++  }
++
++  /**
++   * If the directory contains a {@link DirectoryWithQuotaFeature}, return it;
++   * otherwise, return null.
++   */
++  public final DirectoryWithQuotaFeature getDirectoryWithQuotaFeature() {
++    for(Feature f = headFeature; f != null; f = f.nextFeature) {
++      if (f instanceof DirectoryWithQuotaFeature) {
++        return (DirectoryWithQuotaFeature)f;
++      }
++    }
++    return null;
++  }
++
++  /** Is this directory with quota? */
++  final boolean isWithQuota() {
++    return getDirectoryWithQuotaFeature() != null;
++  }
++
++  DirectoryWithQuotaFeature addDirectoryWithQuotaFeature(
++      long nsQuota, long dsQuota) {
++    Preconditions.checkState(!isWithQuota(), "Directory is already with quota");
++    final DirectoryWithQuotaFeature quota = new DirectoryWithQuotaFeature(
++        nsQuota, dsQuota);
++    addFeature(quota);
++    return quota;
++  }
++
++  private void addFeature(Feature f) {
++    headFeature = INode.Feature.Util.addFeature(f, headFeature);
++  }
++
++  private void removeFeature(Feature f) {
++    headFeature = INode.Feature.Util.removeFeature(f, headFeature);
++  }
++
+   private int searchChildren(byte[] name) {
+     return children == null? -1: Collections.binarySearch(children, name);
+   }
+@@ -142,27 +230,6 @@ protected final boolean removeChild(final INode child) {
+     return true;
+   }
+ 
+-  /**
+-   * Replace itself with {@link INodeDirectoryWithQuota} or
+-   * {@link INodeDirectoryWithSnapshot} depending on the latest snapshot.
+-   */
+-  INodeDirectoryWithQuota replaceSelf4Quota(final Snapshot latest,
+-      final long nsQuota, final long dsQuota, final INodeMap inodeMap)
+-      throws QuotaExceededException {
+-    Preconditions.checkState(!(this instanceof INodeDirectoryWithQuota),
+-        "this is already an INodeDirectoryWithQuota, this=%s", this);
+-
+-    if (!this.isInLatestSnapshot(latest)) {
+-      final INodeDirectoryWithQuota q = new INodeDirectoryWithQuota(
+-          this, true, nsQuota, dsQuota);
+-      replaceSelf(q, inodeMap);
+-      return q;
+-    } else {
+-      final INodeDirectoryWithSnapshot s = new INodeDirectoryWithSnapshot(this);
+-      s.setQuota(nsQuota, dsQuota);
+-      return replaceSelf(s, inodeMap).saveSelf2Snapshot(latest, this);
+-    }
+-  }
+   /** Replace itself with an {@link INodeDirectorySnapshottable}. */
+   public INodeDirectorySnapshottable replaceSelf4INodeDirectorySnapshottable(
+       Snapshot latest, final INodeMap inodeMap) throws QuotaExceededException {
+@@ -183,7 +250,7 @@ public INodeDirectoryWithSnapshot replaceSelf4INodeDirectoryWithSnapshot(
+   public INodeDirectory replaceSelf4INodeDirectory(final INodeMap inodeMap) {
+     Preconditions.checkState(getClass() != INodeDirectory.class,
+         "the class is already INodeDirectory, this=%s", this);
+-    return replaceSelf(new INodeDirectory(this, true), inodeMap);
++    return replaceSelf(new INodeDirectory(this, true, true), inodeMap);
+   }
+ 
+   /** Replace itself with the given directory. */
+@@ -439,6 +506,21 @@ private void addChild(final INode node, final int insertionPoint) {
+   @Override
+   public Quota.Counts computeQuotaUsage(Quota.Counts counts, boolean useCache,
+       int lastSnapshotId) {
++    final DirectoryWithQuotaFeature q = getDirectoryWithQuotaFeature();
++    if (q != null) {
++      if (useCache && isQuotaSet()) {
++        q.addNamespaceDiskspace(counts);
++      } else {
++        computeDirectoryQuotaUsage(counts, false, lastSnapshotId);
++      }
++      return counts;
++    } else {
++      return computeDirectoryQuotaUsage(counts, useCache, lastSnapshotId);
++    }
++  }
++
++  Quota.Counts computeDirectoryQuotaUsage(Quota.Counts counts, boolean useCache,
++      int lastSnapshotId) {
+     if (children != null) {
+       for (INode child : children) {
+         child.computeQuotaUsage(counts, useCache, lastSnapshotId);
+@@ -456,6 +538,16 @@ private void addChild(final INode node, final int insertionPoint) {
+   @Override
+   public ContentSummaryComputationContext computeContentSummary(
+       ContentSummaryComputationContext summary) {
++    final DirectoryWithQuotaFeature q = getDirectoryWithQuotaFeature();
++    if (q != null) {
++      return q.computeContentSummary(this, summary);
++    } else {
++      return computeDirectoryContentSummary(summary);
++    }
++  }
++
++  ContentSummaryComputationContext computeDirectoryContentSummary(
++      ContentSummaryComputationContext summary) {
+     ReadOnlyList<INode> childrenList = getChildrenList(null);
+     // Explicit traversing is done to enable repositioning after relinquishing
+     // and reacquiring locks.
+@@ -570,7 +662,7 @@ public void destroyAndCollectBlocks(final BlocksMapUpdateInfo collectedBlocks,
+       Quota.Counts counts = cleanSubtreeRecursively(snapshot, prior,
+           collectedBlocks, removedINodes, null, countDiffChange);
+       if (isQuotaSet()) {
+-        ((INodeDirectoryWithQuota) this).addSpaceConsumed2Cache(
++        getDirectoryWithQuotaFeature().addSpaceConsumed2Cache(
+             -counts.get(Quota.NAMESPACE), -counts.get(Quota.DISKSPACE));
+       }
+       return counts;
+@@ -606,8 +698,9 @@ public void dumpTreeRecursively(PrintWriter out, StringBuilder prefix,
+       final Snapshot snapshot) {
+     super.dumpTreeRecursively(out, prefix, snapshot);
+     out.print(", childrenSize=" + getChildrenList(snapshot).size());
+-    if (this instanceof INodeDirectoryWithQuota) {
+-      out.print(((INodeDirectoryWithQuota)this).quotaString());
++    final DirectoryWithQuotaFeature q = getDirectoryWithQuotaFeature();
++    if (q != null) {
++      out.print(", " + q);
+     }
+     if (this instanceof Snapshot.Root) {
+       out.print(", snapshotId=" + snapshot.getId());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryWithQuota.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryWithQuota.java
+deleted file mode 100644
+index 41f1984..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectoryWithQuota.java
++++ /dev/null
+@@ -1,212 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.hdfs.server.namenode;
+-
+-import org.apache.hadoop.fs.permission.PermissionStatus;
+-import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
+-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+-import org.apache.hadoop.hdfs.protocol.NSQuotaExceededException;
+-import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+-
+-import com.google.common.annotations.VisibleForTesting;
+-
+-/**
+- * Directory INode class that has a quota restriction
+- */
+-public class INodeDirectoryWithQuota extends INodeDirectory {
+-  /** Name space quota */
+-  private long nsQuota = Long.MAX_VALUE;
+-  /** Name space count */
+-  private long namespace = 1L;
+-  /** Disk space quota */
+-  private long dsQuota = HdfsConstants.QUOTA_RESET;
+-  /** Disk space count */
+-  private long diskspace = 0L;
+-  
+-  /** Convert an existing directory inode to one with the given quota
+-   * 
+-   * @param nsQuota Namespace quota to be assigned to this inode
+-   * @param dsQuota Diskspace quota to be assigned to this indoe
+-   * @param other The other inode from which all other properties are copied
+-   */
+-  INodeDirectoryWithQuota(INodeDirectory other, boolean adopt,
+-      long nsQuota, long dsQuota) {
+-    super(other, adopt);
+-    final Quota.Counts counts = other.computeQuotaUsage();
+-    this.namespace = counts.get(Quota.NAMESPACE);
+-    this.diskspace = counts.get(Quota.DISKSPACE);
+-    this.nsQuota = nsQuota;
+-    this.dsQuota = dsQuota;
+-  }
+-  
+-  public INodeDirectoryWithQuota(INodeDirectory other, boolean adopt,
+-      Quota.Counts quota) {
+-    this(other, adopt, quota.get(Quota.NAMESPACE), quota.get(Quota.DISKSPACE));
+-  }
+-
+-  /** constructor with no quota verification */
+-  INodeDirectoryWithQuota(long id, byte[] name, PermissionStatus permissions,
+-      long modificationTime, long nsQuota, long dsQuota) {
+-    super(id, name, permissions, modificationTime);
+-    this.nsQuota = nsQuota;
+-    this.dsQuota = dsQuota;
+-  }
+-  
+-  /** constructor with no quota verification */
+-  INodeDirectoryWithQuota(long id, byte[] name, PermissionStatus permissions) {
+-    super(id, name, permissions, 0L);
+-  }
+-  
+-  @Override
+-  public Quota.Counts getQuotaCounts() {
+-    return Quota.Counts.newInstance(nsQuota, dsQuota);
+-  }
+-  
+-  /** Set this directory's quota
+-   * 
+-   * @param nsQuota Namespace quota to be set
+-   * @param dsQuota diskspace quota to be set
+-   */
+-  public void setQuota(long nsQuota, long dsQuota) {
+-    this.nsQuota = nsQuota;
+-    this.dsQuota = dsQuota;
+-  }
+-  
+-  @Override
+-  public Quota.Counts computeQuotaUsage(Quota.Counts counts, boolean useCache,
+-      int lastSnapshotId) {
+-    if (useCache && isQuotaSet()) {
+-      // use cache value
+-      counts.add(Quota.NAMESPACE, namespace);
+-      counts.add(Quota.DISKSPACE, diskspace);
+-    } else {
+-      super.computeQuotaUsage(counts, false, lastSnapshotId);
+-    }
+-    return counts;
+-  }
+-
+-  @Override
+-  public ContentSummaryComputationContext computeContentSummary(
+-      final ContentSummaryComputationContext summary) {
+-    final long original = summary.getCounts().get(Content.DISKSPACE);
+-    long oldYieldCount = summary.getYieldCount();
+-    super.computeContentSummary(summary);
+-    // Check only when the content has not changed in the middle.
+-    if (oldYieldCount == summary.getYieldCount()) {
+-      checkDiskspace(summary.getCounts().get(Content.DISKSPACE) - original);
+-    }
+-    return summary;
+-  }
+-  
+-  private void checkDiskspace(final long computed) {
+-    if (-1 != getQuotaCounts().get(Quota.DISKSPACE) && diskspace != computed) {
+-      NameNode.LOG.error("BUG: Inconsistent diskspace for directory "
+-          + getFullPathName() + ". Cached = " + diskspace
+-          + " != Computed = " + computed);
+-    }
+-  }
+-
+-  /** Get the number of names in the subtree rooted at this directory
+-   * @return the size of the subtree rooted at this directory
+-   */
+-  long numItemsInTree() {
+-    return namespace;
+-  }
+-  
+-  @Override
+-  public final void addSpaceConsumed(final long nsDelta, final long dsDelta,
+-      boolean verify) throws QuotaExceededException {
+-    if (isQuotaSet()) { 
+-      // The following steps are important: 
+-      // check quotas in this inode and all ancestors before changing counts
+-      // so that no change is made if there is any quota violation.
+-
+-      // (1) verify quota in this inode
+-      if (verify) {
+-        verifyQuota(nsDelta, dsDelta);
+-      }
+-      // (2) verify quota and then add count in ancestors 
+-      super.addSpaceConsumed(nsDelta, dsDelta, verify);
+-      // (3) add count in this inode
+-      addSpaceConsumed2Cache(nsDelta, dsDelta);
+-    } else {
+-      super.addSpaceConsumed(nsDelta, dsDelta, verify);
+-    }
+-  }
+-  
+-  /** Update the size of the tree
+-   * 
+-   * @param nsDelta the change of the tree size
+-   * @param dsDelta change to disk space occupied
+-   */
+-  protected void addSpaceConsumed2Cache(long nsDelta, long dsDelta) {
+-    namespace += nsDelta;
+-    diskspace += dsDelta;
+-  }
+-  
+-  /** 
+-   * Sets namespace and diskspace take by the directory rooted 
+-   * at this INode. This should be used carefully. It does not check 
+-   * for quota violations.
+-   * 
+-   * @param namespace size of the directory to be set
+-   * @param diskspace disk space take by all the nodes under this directory
+-   */
+-  void setSpaceConsumed(long namespace, long diskspace) {
+-    this.namespace = namespace;
+-    this.diskspace = diskspace;
+-  }
+-  
+-  /** Verify if the namespace quota is violated after applying delta. */
+-  void verifyNamespaceQuota(long delta) throws NSQuotaExceededException {
+-    if (Quota.isViolated(nsQuota, namespace, delta)) {
+-      throw new NSQuotaExceededException(nsQuota, namespace + delta);
+-    }
+-  }
+-
+-  /** Verify if the namespace count disk space satisfies the quota restriction 
+-   * @throws QuotaExceededException if the given quota is less than the count
+-   */
+-  void verifyQuota(long nsDelta, long dsDelta) throws QuotaExceededException {
+-    verifyNamespaceQuota(nsDelta);
+-
+-    if (Quota.isViolated(dsQuota, diskspace, dsDelta)) {
+-      throw new DSQuotaExceededException(dsQuota, diskspace + dsDelta);
+-    }
+-  }
+-
+-  String namespaceString() {
+-    return "namespace: " + (nsQuota < 0? "-": namespace + "/" + nsQuota);
+-  }
+-  String diskspaceString() {
+-    return "diskspace: " + (dsQuota < 0? "-": diskspace + "/" + dsQuota);
+-  }
+-  String quotaString() {
+-    return ", Quota[" + namespaceString() + ", " + diskspaceString() + "]";
+-  }
+-  
+-  @VisibleForTesting
+-  public long getNamespace() {
+-    return this.namespace;
+-  }
+-  
+-  @VisibleForTesting
+-  public long getDiskspace() {
+-    return this.diskspace;
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+index 40510cc..51a77bb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+@@ -51,13 +51,15 @@
+    * A feature contains specific information for a type of INodeFile. E.g.,
+    * we can have separate features for Under-Construction and Snapshot.
+    */
+-  public static abstract class Feature {
++  public static abstract class Feature implements INode.Feature<Feature> {
+     private Feature nextFeature;
+ 
++    @Override
+     public Feature getNextFeature() {
+       return nextFeature;
+     }
+ 
++    @Override
+     public void setNextFeature(Feature next) {
+       this.nextFeature = next;
+     }
+@@ -161,26 +163,12 @@ public boolean isUnderConstruction() {
+     return getFileUnderConstructionFeature() != null;
+   }
+ 
+-  void addFeature(Feature f) {
+-    f.nextFeature = headFeature;
+-    headFeature = f;
++  private void addFeature(Feature f) {
++    headFeature = INode.Feature.Util.addFeature(f, headFeature);
+   }
+ 
+-  void removeFeature(Feature f) {
+-    if (f == headFeature) {
+-      headFeature = headFeature.nextFeature;
+-      return;
+-    } else if (headFeature != null) {
+-      Feature prev = headFeature;
+-      Feature curr = headFeature.nextFeature;
+-      for (; curr != null && curr != f; prev = curr, curr = curr.nextFeature)
+-        ;
+-      if (curr != null) {
+-        prev.nextFeature = curr.nextFeature;
+-        return;
+-      }
+-    }
+-    throw new IllegalStateException("Feature " + f + " not found.");
++  private void removeFeature(Feature f) {
++    headFeature = INode.Feature.Util.removeFeature(f, headFeature);
+   }
+ 
+   /** @return true unconditionally. */
+@@ -198,7 +186,7 @@ public final INodeFile asFile() {
+   /* Start of Under-Construction Feature */
+ 
+   /** Convert this file to an {@link INodeFileUnderConstruction}. */
+-  public INodeFile toUnderConstruction(String clientName, String clientMachine,
++  INodeFile toUnderConstruction(String clientName, String clientMachine,
+       DatanodeDescriptor clientNode) {
+     Preconditions.checkState(!isUnderConstruction(),
+         "file is already an INodeFileUnderConstruction");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
+index 4680d08..5fcd65d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
+@@ -37,7 +37,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectoryAttributes;
+-import org.apache.hadoop.hdfs.server.namenode.INodeDirectoryWithQuota;
+ import org.apache.hadoop.hdfs.server.namenode.INodeMap;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference;
+ import org.apache.hadoop.hdfs.server.namenode.Quota;
+@@ -55,7 +54,7 @@
+  * storing snapshot data. When there are modifications to the directory, the old
+  * data is stored in the latest snapshot, if there is any.
+  */
+-public class INodeDirectoryWithSnapshot extends INodeDirectoryWithQuota {
++public class INodeDirectoryWithSnapshot extends INodeDirectory {
+   /**
+    * The difference between the current state and a previous snapshot
+    * of the children list of an INodeDirectory.
+@@ -486,7 +485,7 @@ public INodeDirectoryWithSnapshot(INodeDirectory that) {
+ 
+   INodeDirectoryWithSnapshot(INodeDirectory that, boolean adopt,
+       DirectoryDiffList diffs) {
+-    super(that, adopt, that.getQuotaCounts());
++    super(that, adopt, true);
+     this.diffs = diffs != null? diffs: new DirectoryDiffList();
+   }
+ 
+@@ -771,8 +770,8 @@ public void getSnapshotDirectory(List<INodeDirectory> snapshotDir) {
+         removedINodes, priorDeleted, countDiffChange));
+     
+     if (isQuotaSet()) {
+-      this.addSpaceConsumed2Cache(-counts.get(Quota.NAMESPACE),
+-          -counts.get(Quota.DISKSPACE));
++      getDirectoryWithQuotaFeature().addSpaceConsumed2Cache(
++          -counts.get(Quota.NAMESPACE), -counts.get(Quota.DISKSPACE));
+     }
+     return counts;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
+index dad4987..5408830 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot.java
+@@ -136,7 +136,7 @@ static Snapshot read(DataInput in, FSImageFormat.Loader loader)
+   /** The root directory of the snapshot. */
+   static public class Root extends INodeDirectory {
+     Root(INodeDirectory other) {
+-      super(other, false);
++      super(other, false, false);
+     }
+ 
+     @Override
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestQuota.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestQuota.java
+index d0fa37a..6e93a91 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestQuota.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestQuota.java
+@@ -366,10 +366,7 @@ public void testNamespaceCommands() throws Exception {
+     // be identical.
+     conf.setInt(DFSConfigKeys.DFS_CONTENT_SUMMARY_LIMIT_KEY, 2);
+     final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+-    final FileSystem fs = cluster.getFileSystem();
+-    assertTrue("Not a HDFS: "+fs.getUri(),
+-                fs instanceof DistributedFileSystem);
+-    final DistributedFileSystem dfs = (DistributedFileSystem)fs;
++    final DistributedFileSystem dfs = cluster.getFileSystem();
+     
+     try {
+       // 1: create directory /nqdir0/qdir1/qdir20/nqdir30
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java
+index eb61914..5cb047c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java
+@@ -158,7 +158,7 @@ private void loadFSImageFromTempFile(File imageFile) throws IOException {
+     try {
+       loader.load(imageFile);
+       FSImage.updateCountForQuota(
+-          (INodeDirectoryWithQuota)fsn.getFSDirectory().getINode("/"));
++          INodeDirectory.valueOf(fsn.getFSDirectory().getINode("/"), "/"));
+     } finally {
+       fsn.getFSDirectory().writeUnlock();
+       fsn.writeUnlock();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsLimits.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsLimits.java
+index 0353cd1..0cb6c7d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsLimits.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFsLimits.java
+@@ -49,7 +49,7 @@
+   static PermissionStatus perms
+     = new PermissionStatus("admin", "admin", FsPermission.getDefault());
+ 
+-  static INodeDirectoryWithQuota rootInode;
++  static INodeDirectory rootInode;
+ 
+   static private FSNamesystem getMockNamesystem() {
+     FSNamesystem fsn = mock(FSNamesystem.class);
+@@ -75,8 +75,8 @@ public void setUp() throws IOException {
+              fileAsURI(new File(MiniDFSCluster.getBaseDirectory(),
+                                 "namenode")).toString());
+ 
+-    rootInode = new INodeDirectoryWithQuota(getMockNamesystem()
+-        .allocateNewInodeId(), INodeDirectory.ROOT_NAME, perms);
++    rootInode = new INodeDirectory(getMockNamesystem().allocateNewInodeId(),
++        INodeDirectory.ROOT_NAME, perms, 0L);
+     inodes = new INode[]{ rootInode, null };
+     fs = null;
+     fsIsReady = true;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+index 5cc51ba..1d98bfe 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+@@ -215,9 +215,9 @@ public void testGetFullPathNameAfterSetQuota() throws Exception {
+       // Call FSDirectory#unprotectedSetQuota which calls
+       // INodeDirectory#replaceChild
+       dfs.setQuota(dir, Long.MAX_VALUE - 1, replication * fileLen * 10);
+-      INode dirNode = fsdir.getINode(dir.toString());
++      INodeDirectory dirNode = getDir(fsdir, dir);
+       assertEquals(dir.toString(), dirNode.getFullPathName());
+-      assertTrue(dirNode instanceof INodeDirectoryWithQuota);
++      assertTrue(dirNode.isWithQuota());
+       
+       final Path newDir = new Path("/newdir");
+       final Path newFile = new Path(newDir, "file");
+@@ -874,7 +874,13 @@ public void testInodePath() throws IOException {
+       assertTrue(e instanceof FileNotFoundException);
+     }
+   }
+-  
++
++  private static INodeDirectory getDir(final FSDirectory fsdir, final Path dir)
++      throws IOException {
++    final String dirStr = dir.toString();
++    return INodeDirectory.valueOf(fsdir.getINode(dirStr), dirStr);
++  }
++
+   @Test
+   public void testDotdotInodePath() throws Exception {
+     final Configuration conf = new Configuration();
+@@ -906,6 +912,7 @@ public void testDotdotInodePath() throws Exception {
+       }
+     }
+   }
++
+   @Test
+   public void testLocationLimitInListingOps() throws Exception {
+     final Configuration conf = new Configuration();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
+index 14e9aba..c0bd91c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
+@@ -1190,13 +1190,15 @@ public void testRenameDirAndDeleteSnapshot_2() throws Exception {
+     assertFalse(hdfs.exists(bar_s2));
+     restartClusterAndCheckImage(true);
+     // make sure the whole referred subtree has been destroyed
+-    assertEquals(4, fsdir.getRoot().getNamespace());
+-    assertEquals(0, fsdir.getRoot().getDiskspace());
++    Quota.Counts q = fsdir.getRoot().getDirectoryWithQuotaFeature().getSpaceConsumed();  
++    assertEquals(4, q.get(Quota.NAMESPACE));
++    assertEquals(0, q.get(Quota.DISKSPACE));
+     
+     hdfs.deleteSnapshot(sdir1, "s1");
+     restartClusterAndCheckImage(true);
+-    assertEquals(3, fsdir.getRoot().getNamespace());
+-    assertEquals(0, fsdir.getRoot().getDiskspace());
++    q = fsdir.getRoot().getDirectoryWithQuotaFeature().getSpaceConsumed();  
++    assertEquals(3, q.get(Quota.NAMESPACE));
++    assertEquals(0, q.get(Quota.DISKSPACE));
+   }
+   
+   /**
+@@ -1938,10 +1940,12 @@ public void testRenameDirAndDeleteSnapshot_3() throws Exception {
+     // check
+     final INodeDirectorySnapshottable dir1Node = 
+         (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir1.toString());
+-    assertEquals(4, dir1Node.getNamespace());
++    Quota.Counts q1 = dir1Node.getDirectoryWithQuotaFeature().getSpaceConsumed();  
++    assertEquals(4, q1.get(Quota.NAMESPACE));
+     final INodeDirectorySnapshottable dir2Node = 
+         (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir2.toString());
+-    assertEquals(2, dir2Node.getNamespace());
++    Quota.Counts q2 = dir2Node.getDirectoryWithQuotaFeature().getSpaceConsumed();  
++    assertEquals(2, q2.get(Quota.NAMESPACE));
+     
+     final Path foo_s1 = SnapshotTestHelper.getSnapshotPath(sdir1, "s1",
+         foo.getName());
+@@ -2005,10 +2009,12 @@ public void testRenameDirAndDeleteSnapshot_4() throws Exception {
+     final INodeDirectorySnapshottable dir1Node = 
+         (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir1.toString());
+     // sdir1 + s1 + foo_s1 (foo) + foo (foo + s1 + bar~bar3)
+-    assertEquals(9, dir1Node.getNamespace());
++    Quota.Counts q1 = dir1Node.getDirectoryWithQuotaFeature().getSpaceConsumed();  
++    assertEquals(9, q1.get(Quota.NAMESPACE));
+     final INodeDirectorySnapshottable dir2Node = 
+         (INodeDirectorySnapshottable) fsdir.getINode4Write(sdir2.toString());
+-    assertEquals(2, dir2Node.getNamespace());
++    Quota.Counts q2 = dir2Node.getDirectoryWithQuotaFeature().getSpaceConsumed();  
++    assertEquals(2, q2.get(Quota.NAMESPACE));
+     
+     final Path foo_s1 = SnapshotTestHelper.getSnapshotPath(sdir1, "s1",
+         foo.getName());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
+index 0acad2b..01417e5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotDeletion.java
+@@ -46,7 +46,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+-import org.apache.hadoop.hdfs.server.namenode.INodeDirectoryWithQuota;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.NameNode;
+ import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+@@ -157,15 +156,21 @@ public void testDeleteDirectoryWithSnapshot2() throws Exception {
+     hdfs.delete(dir, true);
+   }
+   
++  private static INodeDirectory getDir(final FSDirectory fsdir, final Path dir)
++      throws IOException {
++    final String dirStr = dir.toString();
++    return INodeDirectory.valueOf(fsdir.getINode(dirStr), dirStr);
++  }
++
+   private void checkQuotaUsageComputation(final Path dirPath,
+       final long expectedNs, final long expectedDs) throws IOException {
+-    INode node = fsdir.getINode(dirPath.toString());
+-    assertTrue(node.isDirectory() && node.isQuotaSet());
+-    INodeDirectoryWithQuota dirNode = (INodeDirectoryWithQuota) node;
++    INodeDirectory dirNode = getDir(fsdir, dirPath);
++    assertTrue(dirNode.isQuotaSet());
++    Quota.Counts q = dirNode.getDirectoryWithQuotaFeature().getSpaceConsumed();
+     assertEquals(dirNode.dumpTreeRecursively().toString(), expectedNs,
+-        dirNode.getNamespace());
++        q.get(Quota.NAMESPACE));
+     assertEquals(dirNode.dumpTreeRecursively().toString(), expectedDs,
+-        dirNode.getDiskspace());
++        q.get(Quota.DISKSPACE));
+     Quota.Counts counts = Quota.Counts.newInstance();
+     dirNode.computeQuotaUsage(counts, false);
+     assertEquals(dirNode.dumpTreeRecursively().toString(), expectedNs,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/util/TestDiff.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/util/TestDiff.java
+index 22fc899..2705ab5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/util/TestDiff.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/util/TestDiff.java
+@@ -305,7 +305,7 @@ static void modify(INode inode, final List<INode> current,
+     final int i = Diff.search(current, inode.getKey());
+     Assert.assertTrue(i >= 0);
+     final INodeDirectory oldinode = (INodeDirectory)current.get(i);
+-    final INodeDirectory newinode = new INodeDirectory(oldinode, false);
++    final INodeDirectory newinode = new INodeDirectory(oldinode, false, true);
+     newinode.setModificationTime(oldinode.getModificationTime() + 1);
+ 
+     current.set(i, newinode);
+-- 
+1.7.0.4
+

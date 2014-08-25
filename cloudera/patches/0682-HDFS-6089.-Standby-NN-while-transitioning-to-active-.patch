@@ -1,0 +1,48 @@
+From c1582142ed34842078f1e0282b813da6892ba12d Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Thu, 20 Mar 2014 17:44:29 +0000
+Subject: [PATCH 682/795] HDFS-6089. Standby NN while transitioning to active throws a connection refused error when the prior active NN process is suspended. Contributed by Jing Zhao.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1579694 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit d88e3f1c3a274b2412edceb1e131e00fc5b72e3e)
+---
+ .../java/org/apache/hadoop/hdfs/DFSConfigKeys.java |    2 ++
+ .../hdfs/server/namenode/ha/EditLogTailer.java     |    9 ++++++---
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+index 082ff05..10e2083 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSConfigKeys.java
+@@ -529,6 +529,8 @@
+   public static final int DFS_HA_LOGROLL_PERIOD_DEFAULT = 2 * 60; // 2m
+   public static final String DFS_HA_TAILEDITS_PERIOD_KEY = "dfs.ha.tail-edits.period";
+   public static final int DFS_HA_TAILEDITS_PERIOD_DEFAULT = 60; // 1m
++  public static final String DFS_HA_LOGROLL_RPC_TIMEOUT_KEY = "dfs.ha.log-roll.rpc.timeout";
++  public static final int DFS_HA_LOGROLL_RPC_TIMEOUT_DEFAULT = 20000; // 20s
+   public static final String DFS_HA_FENCE_METHODS_KEY = "dfs.ha.fencing.methods";
+   public static final String DFS_HA_AUTO_FAILOVER_ENABLED_KEY = "dfs.ha.automatic-failover.enabled";
+   public static final boolean DFS_HA_AUTO_FAILOVER_ENABLED_DEFAULT = false;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/EditLogTailer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/EditLogTailer.java
+index 332cc61..4e8c46d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/EditLogTailer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/EditLogTailer.java
+@@ -135,9 +135,12 @@ private InetSocketAddress getActiveNodeAddress() {
+   
+   private NamenodeProtocol getActiveNodeProxy() throws IOException {
+     if (cachedActiveProxy == null) {
+-      NamenodeProtocolPB proxy = 
+-        RPC.waitForProxy(NamenodeProtocolPB.class,
+-            RPC.getProtocolVersion(NamenodeProtocolPB.class), activeAddr, conf);
++      int rpcTimeout = conf.getInt(
++          DFSConfigKeys.DFS_HA_LOGROLL_RPC_TIMEOUT_KEY,
++          DFSConfigKeys.DFS_HA_LOGROLL_RPC_TIMEOUT_DEFAULT);
++      NamenodeProtocolPB proxy = RPC.waitForProxy(NamenodeProtocolPB.class,
++          RPC.getProtocolVersion(NamenodeProtocolPB.class), activeAddr, conf,
++          rpcTimeout, Long.MAX_VALUE);
+       cachedActiveProxy = new NamenodeProtocolTranslatorPB(proxy);
+     }
+     assert cachedActiveProxy != null;
+-- 
+1.7.0.4
+

@@ -1,0 +1,170 @@
+From cca3934de728cb2e933d7076a394fecb67a9d608 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Tue, 4 Feb 2014 00:27:25 +0000
+Subject: [PATCH 329/795] HDFS-5767. NFS implementation assumes userName userId mapping to be unique, which is not true sometimes. Contributed by Yongjun Zhang
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1564141 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b7aeb61188ae39205c6111a148d3df130e473b71)
+(cherry picked from commit cbc1960b126ed09c9abbf5a0cd3e24f1403a76b3)
+---
+ .../org/apache/hadoop/nfs/nfs3/IdUserGroup.java    |   52 +++++++++++--------
+ .../apache/hadoop/nfs/nfs3/TestIdUserGroup.java    |   41 ++++++++++------
+ 2 files changed, 56 insertions(+), 37 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+index a1d48aa..bf2b542 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/IdUserGroup.java
+@@ -50,14 +50,6 @@
+   private BiMap<Integer, String> gidNameMap = HashBiMap.create();
+ 
+   private long lastUpdateTime = 0; // Last time maps were updated
+-
+-  static public class DuplicateNameOrIdException extends IOException {
+-    private static final long serialVersionUID = 1L;
+-
+-    public DuplicateNameOrIdException(String msg) {
+-      super(msg);
+-    }
+-  }
+   
+   public IdUserGroup() throws IOException {
+     updateMaps();
+@@ -80,7 +72,8 @@ private void checkAndUpdateMaps() {
+     }
+   }
+ 
+-  private static final String DUPLICATE_NAME_ID_DEBUG_INFO = "NFS gateway can't start with duplicate name or id on the host system.\n"
++  private static final String DUPLICATE_NAME_ID_DEBUG_INFO =
++      "NFS gateway could have problem starting with duplicate name or id on the host system.\n"
+       + "This is because HDFS (non-kerberos cluster) uses name as the only way to identify a user or group.\n"
+       + "The host system with duplicated user/group name or id might work fine most of the time by itself.\n"
+       + "However when NFS gateway talks to HDFS, HDFS accepts only user and group name.\n"
+@@ -88,6 +81,16 @@ private void checkAndUpdateMaps() {
+       + "<getent passwd | cut -d: -f1,3> and <getent group | cut -d: -f1,3> on Linux systms,\n"
+       + "<dscl . -list /Users UniqueID> and <dscl . -list /Groups PrimaryGroupID> on MacOS.";
+   
++  private static void reportDuplicateEntry(final String header,
++      final Integer key, final String value,
++      final Integer ekey, final String evalue) {    
++      LOG.warn("\n" + header + String.format(
++          "new entry (%d, %s), existing entry: (%d, %s).\n%s\n%s",
++          key, value, ekey, evalue,
++          "The new entry is to be ignored for the following reason.",
++          DUPLICATE_NAME_ID_DEBUG_INFO));
++  }
++      
+   /**
+    * Get the whole list of users and groups and save them in the maps.
+    * @throws IOException 
+@@ -108,22 +111,27 @@ public static void updateMapInternal(BiMap<Integer, String> map, String mapName,
+         }
+         LOG.debug("add to " + mapName + "map:" + nameId[0] + " id:" + nameId[1]);
+         // HDFS can't differentiate duplicate names with simple authentication
+-        Integer key = Integer.valueOf(nameId[1]);
+-        String value = nameId[0];
++        final Integer key = Integer.valueOf(nameId[1]);
++        final String value = nameId[0];        
+         if (map.containsKey(key)) {
+-          LOG.error(String.format(
+-              "Got duplicate id:(%d, %s), existing entry: (%d, %s).\n%s", key,
+-              value, key, map.get(key), DUPLICATE_NAME_ID_DEBUG_INFO));
+-          throw new DuplicateNameOrIdException("Got duplicate id.");
++          final String prevValue = map.get(key);
++          if (value.equals(prevValue)) {
++            // silently ignore equivalent entries
++            continue;
++          }
++          reportDuplicateEntry(
++              "Got multiple names associated with the same id: ",
++              key, value, key, prevValue);           
++          continue;
+         }
+-        if (map.containsValue(nameId[0])) {
+-          LOG.error(String.format(
+-              "Got duplicate name:(%d, %s), existing entry: (%d, %s) \n%s",
+-              key, value, map.inverse().get(value), value,
+-              DUPLICATE_NAME_ID_DEBUG_INFO));
+-          throw new DuplicateNameOrIdException("Got duplicate name");
++        if (map.containsValue(value)) {
++          final Integer prevKey = map.inverse().get(value);
++          reportDuplicateEntry(
++              "Got multiple ids associated with the same name: ",
++              key, value, prevKey, value);
++          continue;
+         }
+-        map.put(Integer.valueOf(nameId[1]), nameId[0]);
++        map.put(key, value);
+       }
+       LOG.info("Updated " + mapName + " map size:" + map.size());
+       
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+index db2b270..4331238 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/nfs/nfs3/TestIdUserGroup.java
+@@ -17,11 +17,10 @@
+  */
+ package org.apache.hadoop.nfs.nfs3;
+ 
+-import static org.junit.Assert.fail;
+-
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
+ import java.io.IOException;
+ 
+-import org.apache.hadoop.nfs.nfs3.IdUserGroup.DuplicateNameOrIdException;
+ import org.junit.Test;
+ 
+ import com.google.common.collect.BiMap;
+@@ -33,24 +32,36 @@
+   public void testDuplicates() throws IOException {
+     String GET_ALL_USERS_CMD = "echo \"root:x:0:0:root:/root:/bin/bash\n"
+         + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
+-        + "hdfs:x:11502:10788:Grid Distributed File System:/home/hdfs:/bin/bash\""
++        + "hdfs:x:11502:10788:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "hdfs1:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "hdfs2:x:11502:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
++        + "bin:x:2:2:bin:/bin:/bin/sh\n"
++        + "bin:x:1:1:bin:/bin:/sbin/nologin\n"
++        + "daemon:x:1:1:daemon:/usr/sbin:/bin/sh\n"
++        + "daemon:x:2:2:daemon:/sbin:/sbin/nologin\""
+         + " | cut -d: -f1,3";
+     String GET_ALL_GROUPS_CMD = "echo \"hdfs:*:11501:hrt_hdfs\n"
+-        + "mapred:x:497\n" + "mapred2:x:497\"" + " | cut -d: -f1,3";
++        + "mapred:x:497\n"
++        + "mapred2:x:497\n"
++        + "mapred:x:498\n" 
++        + "mapred3:x:498\"" 
++        + " | cut -d: -f1,3";
+     // Maps for id to name map
+     BiMap<Integer, String> uMap = HashBiMap.create();
+     BiMap<Integer, String> gMap = HashBiMap.create();
+ 
+-    try {
+-      IdUserGroup.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":");
+-      fail("didn't detect the duplicate name");
+-    } catch (DuplicateNameOrIdException e) {
+-    }
++    IdUserGroup.updateMapInternal(uMap, "user", GET_ALL_USERS_CMD, ":");
++    assertTrue(uMap.size() == 5);
++    assertEquals(uMap.get(0), "root");
++    assertEquals(uMap.get(11501), "hdfs");
++    assertEquals(uMap.get(11502), "hdfs2");
++    assertEquals(uMap.get(2), "bin");
++    assertEquals(uMap.get(1), "daemon");
+     
+-    try {
+-      IdUserGroup.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":");
+-      fail("didn't detect the duplicate id");
+-    } catch (DuplicateNameOrIdException e) {
+-    }
++    IdUserGroup.updateMapInternal(gMap, "group", GET_ALL_GROUPS_CMD, ":");
++    assertTrue(gMap.size() == 3);
++    assertEquals(gMap.get(11501), "hdfs");
++    assertEquals(gMap.get(497), "mapred");
++    assertEquals(gMap.get(498), "mapred3");    
+   }
+ }
+-- 
+1.7.0.4
+

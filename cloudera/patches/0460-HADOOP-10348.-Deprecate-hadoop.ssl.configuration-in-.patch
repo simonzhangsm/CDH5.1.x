@@ -1,0 +1,33 @@
+From 09dac461d1f0579e3608705ef5c52a44a2991c29 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Thu, 20 Feb 2014 18:41:06 +0000
+Subject: [PATCH 460/795] HADOOP-10348. Deprecate hadoop.ssl.configuration in branch-2, and remove it in trunk. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570297 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 23adfd1b84474d46c6435d25c77e037d71640c65)
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../hadoop/fs/CommonConfigurationKeysPublic.java   |    4 ++++
+ 1 files changed, 4 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
+index 2bfc94a..3e7fdc5 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
+@@ -268,7 +268,11 @@
+   public static final String  HADOOP_SECURITY_AUTH_TO_LOCAL =
+     "hadoop.security.auth_to_local";
+ 
++  @Deprecated
++  /** Only used by HttpServer. */
+   public static final String HADOOP_SSL_ENABLED_KEY = "hadoop.ssl.enabled";
++  @Deprecated
++  /** Only used by HttpServer. */
+   public static final boolean HADOOP_SSL_ENABLED_DEFAULT = false;
+ 
+ 
+-- 
+1.7.0.4
+

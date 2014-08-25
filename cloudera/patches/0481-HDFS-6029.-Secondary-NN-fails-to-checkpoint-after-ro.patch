@@ -1,0 +1,242 @@
+From c1cacc4abe85c6f1780518ba246f462e0e1b54e6 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 28 Feb 2014 01:21:53 +0000
+Subject: [PATCH 481/795] HDFS-6029. Secondary NN fails to checkpoint after -rollingUpgrade prepare. Contributed by Jing Zhao.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1572800 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit bfecb2a3b99d46e8d9b57a23222524ed33e3d78e)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    3 +
+ .../hadoop/hdfs/server/namenode/Checkpointer.java  |    4 +-
+ .../hdfs/server/namenode/GetImageServlet.java      |   10 +++--
+ .../hadoop/hdfs/server/namenode/NNStorage.java     |   20 ++++++++-
+ .../hdfs/server/namenode/SecondaryNameNode.java    |    2 +-
+ .../hdfs/server/namenode/TransferFsImage.java      |    7 +--
+ .../hdfs/server/namenode/ha/BootstrapStandby.java  |    3 +-
+ .../org/apache/hadoop/hdfs/TestRollingUpgrade.java |   45 ++++++++++++++++++++
+ .../hdfs/server/namenode/TestCheckpoint.java       |    3 +-
+ 9 files changed, 81 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index e021cd9..0121ec9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -117,3 +117,6 @@ HDFS-5535 subtasks:
+ 
+     HDFS-6026. Fix TestDFSUpgrade and TestDataNodeRollingUpgrade.
+     (jing9 via szetszwo)
++
++    HDFS-6029. Secondary NN fails to checkpoint after -rollingUpgrade prepare.
++    (jing9)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Checkpointer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Checkpointer.java
+index ba60fce..ca2d070 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Checkpointer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/Checkpointer.java
+@@ -221,8 +221,8 @@ void doCheckpoint() throws IOException {
+         LOG.info("Unable to roll forward using only logs. Downloading " +
+             "image with txid " + sig.mostRecentCheckpointTxId);
+         MD5Hash downloadedHash = TransferFsImage.downloadImageToStorage(
+-            backupNode.nnHttpAddress, NameNodeFile.IMAGE,
+-            sig.mostRecentCheckpointTxId, bnStorage, true);
++            backupNode.nnHttpAddress, sig.mostRecentCheckpointTxId, bnStorage,
++            true);
+         bnImage.saveDigestAndRenameCheckpointImage(NameNodeFile.IMAGE,
+             sig.mostRecentCheckpointTxId, downloadedHash);
+         lastApplied = sig.mostRecentCheckpointTxId;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/GetImageServlet.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/GetImageServlet.java
+index f69f0dc..3c23443 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/GetImageServlet.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/GetImageServlet.java
+@@ -122,14 +122,14 @@ public void doGet(final HttpServletRequest request,
+         public Void run() throws Exception {
+           if (parsedParams.isGetImage()) {
+             long txid = parsedParams.getTxId();
+-            final NameNodeFile nnf = parsedParams.getNameNodeFile();
+             File imageFile = null;
+             String errorMessage = "Could not find image";
+             if (parsedParams.shouldFetchLatest()) {
+               imageFile = nnImage.getStorage().getHighestFsImageName();
+             } else {
+               errorMessage += " with txid " + txid;
+-              imageFile = nnImage.getStorage().getFsImageName(txid, nnf);
++              imageFile = nnImage.getStorage().getFsImage(txid,
++                  EnumSet.of(NameNodeFile.IMAGE, NameNodeFile.IMAGE_ROLLBACK));
+             }
+             if (imageFile == null) {
+               throw new IOException(errorMessage);
+@@ -183,7 +183,7 @@ public Void run() throws Exception {
+               // issue a HTTP get request to download the new fsimage 
+               MD5Hash downloadImageDigest = TransferFsImage
+                   .downloadImageToStorage(parsedParams.getInfoServer(conf),
+-                      nnf, txid, nnImage.getStorage(), true);
++                      txid, nnImage.getStorage(), true);
+               nnImage.saveDigestAndRenameCheckpointImage(nnf, txid,
+                   downloadImageDigest);
+               if (nnf == NameNodeFile.IMAGE_ROLLBACK) {
+@@ -324,8 +324,10 @@ static String getParamStringForMostRecentImage() {
+ 
+   static String getParamStringForImage(NameNodeFile nnf, long txid,
+       StorageInfo remoteStorageInfo) {
++    final String imageType = nnf == null ? "" : "&" + IMAGE_FILE_TYPE + "="
++        + nnf.name();
+     return "getimage=1&" + TXID_PARAM + "=" + txid
+-      + "&" + IMAGE_FILE_TYPE + "=" + nnf.name()
++      + imageType
+       + "&" + STORAGEINFO_PARAM + "=" +
+       remoteStorageInfo.toColonSeparatedString();
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+index 3d2dba1..661aa00 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+@@ -512,7 +512,25 @@ public File getFsImageName(long txid, NameNodeFile nnf) {
+       }
+     }
+     return null;
+-  }  
++  }
++
++  /**
++   * @return The first image file whose txid is the same with the given txid and
++   * image type is one of the given types.
++   */
++  public File getFsImage(long txid, EnumSet<NameNodeFile> nnfs) {
++    for (Iterator<StorageDirectory> it = dirIterator(NameNodeDirType.IMAGE);
++        it.hasNext();) {
++      StorageDirectory sd = it.next();
++      for (NameNodeFile nnf : nnfs) {
++        File fsImage = getStorageFile(sd, nnf, txid);
++        if (FileUtil.canRead(sd.getRoot()) && fsImage.exists()) {
++          return fsImage;
++        }
++      }
++    }
++    return null;
++  }
+ 
+   public File getFsImageName(long txid) {
+     return getFsImageName(txid, NameNodeFile.IMAGE);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+index e9c2940..1b5bf07 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+@@ -445,7 +445,7 @@ public Boolean run() throws Exception {
+             } else {
+               LOG.info("Image has changed. Downloading updated image from NN.");
+               MD5Hash downloadedHash = TransferFsImage.downloadImageToStorage(
+-                  nnHostPort, NameNodeFile.IMAGE, sig.mostRecentCheckpointTxId,
++                  nnHostPort, sig.mostRecentCheckpointTxId,
+                   dstImage.getStorage(), true);
+               dstImage.saveDigestAndRenameCheckpointImage(NameNodeFile.IMAGE,
+                   sig.mostRecentCheckpointTxId, downloadedHash);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/TransferFsImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/TransferFsImage.java
+index 5a2e964..ed0922f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/TransferFsImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/TransferFsImage.java
+@@ -87,10 +87,9 @@ public static void downloadMostRecentImageToDirectory(URL infoServer,
+         null, false);
+   }
+ 
+-  public static MD5Hash downloadImageToStorage(URL fsName, NameNodeFile nnf,
+-      long imageTxId, Storage dstStorage, boolean needDigest)
+-      throws IOException {
+-    String fileid = GetImageServlet.getParamStringForImage(nnf,
++  public static MD5Hash downloadImageToStorage(URL fsName, long imageTxId,
++      Storage dstStorage, boolean needDigest) throws IOException {
++    String fileid = GetImageServlet.getParamStringForImage(null,
+         imageTxId, dstStorage);
+     String fileName = NNStorage.getCheckpointImageFileName(imageTxId);
+     
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/BootstrapStandby.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/BootstrapStandby.java
+index d5f0ea7..1942d24 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/BootstrapStandby.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/BootstrapStandby.java
+@@ -208,8 +208,7 @@ private int doRun() throws IOException {
+ 
+       // Download that checkpoint into our storage directories.
+       MD5Hash hash = TransferFsImage.downloadImageToStorage(
+-        otherHttpAddr, NameNodeFile.IMAGE, imageTxId,
+-        storage, true);
++        otherHttpAddr, imageTxId, storage, true);
+       image.saveDigestAndRenameCheckpointImage(NameNodeFile.IMAGE, imageTxId,
+           hash);
+     } catch (IOException ioe) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+index 1ee101f..f500379 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+@@ -35,7 +35,9 @@
+ import org.apache.hadoop.hdfs.server.datanode.DataNode;
+ import org.apache.hadoop.hdfs.server.namenode.FSImage;
+ import org.apache.hadoop.hdfs.server.namenode.NNStorage;
++import org.apache.hadoop.hdfs.server.namenode.SecondaryNameNode;
+ import org.apache.hadoop.hdfs.tools.DFSAdmin;
++import org.apache.hadoop.io.IOUtils;
+ import org.junit.Assert;
+ import org.junit.Test;
+ 
+@@ -492,4 +494,47 @@ static void queryForPreparation(DistributedFileSystem dfs) throws IOException,
+       Assert.fail("Query return false");
+     }
+   }
++
++  /**
++   * In non-HA setup, after rolling upgrade prepare, the Secondary NN should
++   * still be able to do checkpoint
++   */
++  @Test
++  public void testCheckpointWithSNN() throws Exception {
++    MiniDFSCluster cluster = null;
++    DistributedFileSystem dfs = null;
++    SecondaryNameNode snn = null;
++
++    try {
++      Configuration conf = new HdfsConfiguration();
++      cluster = new MiniDFSCluster.Builder(conf).build();
++      cluster.waitActive();
++
++      conf.set(DFSConfigKeys.DFS_NAMENODE_SECONDARY_HTTP_ADDRESS_KEY,
++          "0.0.0.0:0");
++      snn = new SecondaryNameNode(conf);
++
++      dfs = cluster.getFileSystem();
++      dfs.mkdirs(new Path("/test/foo"));
++
++      snn.doCheckpoint();
++
++      //start rolling upgrade
++      dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
++      dfs.rollingUpgrade(RollingUpgradeAction.PREPARE);
++      dfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
++
++      dfs.mkdirs(new Path("/test/bar"));
++      // do checkpoint in SNN again
++      snn.doCheckpoint();
++    } finally {
++      IOUtils.cleanup(null, dfs);
++      if (snn != null) {
++        snn.shutdown();
++      }
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCheckpoint.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCheckpoint.java
+index 47f1a49..4147f8f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCheckpoint.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCheckpoint.java
+@@ -1983,8 +1983,7 @@ public void testNamespaceVerifiedOnFileTransfer() throws IOException {
+         .when(dstImage).toColonSeparatedString();
+ 
+       try {
+-        TransferFsImage.downloadImageToStorage(fsName, NameNodeFile.IMAGE, 0,
+-            dstImage, false);
++        TransferFsImage.downloadImageToStorage(fsName, 0, dstImage, false);
+         fail("Storage info was not verified");
+       } catch (IOException ioe) {
+         String msg = StringUtils.stringifyException(ioe);
+-- 
+1.7.0.4
+

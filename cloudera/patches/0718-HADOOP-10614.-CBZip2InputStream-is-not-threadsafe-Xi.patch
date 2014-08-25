@@ -1,0 +1,70 @@
+From 4421f12276976eafa6d7c3f3bacb393a12669fc8 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Sat, 17 May 2014 18:09:13 +0000
+Subject: [PATCH 718/795] HADOOP-10614. CBZip2InputStream is not threadsafe (Xiangrui Meng via Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1595523 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../io/compress/bzip2/CBZip2InputStream.java       |   16 +++++++++-------
+ 1 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/compress/bzip2/CBZip2InputStream.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/compress/bzip2/CBZip2InputStream.java
+index 00e892d..57fc07b 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/compress/bzip2/CBZip2InputStream.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/compress/bzip2/CBZip2InputStream.java
+@@ -129,7 +129,7 @@
+   private int computedBlockCRC, computedCombinedCRC;
+ 
+   private boolean skipResult = false;// used by skipToNextMarker
+-  private static boolean skipDecompression = false;
++  private boolean skipDecompression = false;
+ 
+   // Variables used by setup* methods exclusively
+ 
+@@ -281,12 +281,18 @@ private void makeMaps() {
+   */
+   public CBZip2InputStream(final InputStream in, READ_MODE readMode)
+       throws IOException {
++    this(in, readMode, false);
++  }
++
++  private CBZip2InputStream(final InputStream in, READ_MODE readMode, boolean skipDecompression)
++      throws IOException {
+ 
+     super();
+     int blockSize = 0X39;// i.e 9
+     this.blockSize100k = blockSize - '0';
+     this.in = new BufferedInputStream(in, 1024 * 9);// >1 MB buffer
+     this.readMode = readMode;
++    this.skipDecompression = skipDecompression;
+     if (readMode == READ_MODE.CONTINUOUS) {
+       currentState = STATE.START_BLOCK_STATE;
+       lazyInitialization = (in.available() == 0)?true:false;
+@@ -316,11 +322,7 @@ public CBZip2InputStream(final InputStream in, READ_MODE readMode)
+    *
+    */
+   public static long numberOfBytesTillNextMarker(final InputStream in) throws IOException{
+-    CBZip2InputStream.skipDecompression = true;
+-    CBZip2InputStream anObject = null;
+-
+-    anObject = new CBZip2InputStream(in, READ_MODE.BYBLOCK);
+-
++    CBZip2InputStream anObject = new CBZip2InputStream(in, READ_MODE.BYBLOCK, true);
+     return anObject.getProcessedByteCount();
+   }
+ 
+@@ -397,7 +399,7 @@ public int read(final byte[] dest, final int offs, final int len)
+ 
+     if(skipDecompression){
+       changeStateToProcessABlock();
+-      CBZip2InputStream.skipDecompression = false;
++      skipDecompression = false;
+     }
+ 
+     final int hi = offs + len;
+-- 
+1.7.0.4
+

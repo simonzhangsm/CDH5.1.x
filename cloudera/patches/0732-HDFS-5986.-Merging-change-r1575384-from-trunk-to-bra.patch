@@ -1,0 +1,82 @@
+From afdab3abdf7da990579971b7eadf62266cf44825 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 3 Jun 2014 00:37:51 -0700
+Subject: [PATCH 732/795] HDFS-5986. Merging change r1575384 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1575385 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |    1 +
+ .../server/namenode/metrics/FSNamesystemMBean.java |    6 ++++++
+ .../src/main/webapps/hdfs/dfshealth.html           |    1 +
+ .../server/namenode/TestFSNamesystemMBean.java     |    6 +++++-
+ 4 files changed, 13 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index d376137..fa8eeb5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -5557,6 +5557,7 @@ public long getScheduledReplicationBlocks() {
+     return blockManager.getScheduledReplicationBlocksCount();
+   }
+ 
++  @Override
+   @Metric
+   public long getPendingDeletionBlocks() {
+     return blockManager.getPendingDeletionBlocksCount();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/metrics/FSNamesystemMBean.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/metrics/FSNamesystemMBean.java
+index 340d9a3..f02eb84 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/metrics/FSNamesystemMBean.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/metrics/FSNamesystemMBean.java
+@@ -145,4 +145,10 @@
+    * Return the maximum number of inodes in the file system
+    */
+   public long getMaxObjects();
++
++  /**
++   * Number of blocks pending deletion
++   * @return number of blocks pending deletion
++   */
++  long getPendingDeletionBlocks();
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
+index 7a6fbe1..bebfd79 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/webapps/hdfs/dfshealth.html
+@@ -164,6 +164,7 @@
+   <tr><th><a href="#tab-datanode">Dead Nodes</a></th><td>{NumDeadDataNodes} (Decommissioned: {NumDecomDeadDataNodes})</td></tr>
+   <tr><th><a href="#tab-datanode">Decommissioning Nodes</a></th><td>{NumDecommissioningDataNodes}</td></tr>
+   <tr><th title="Excludes missing blocks.">Number of Under-Replicated Blocks</th><td>{UnderReplicatedBlocks}</td></tr>
++  <tr><th>Number of Blocks Pending Deletion</th><td>{PendingDeletionBlocks}</td></tr>
+ {/fs}
+ </table>
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSNamesystemMBean.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSNamesystemMBean.java
+index dcfd83d..db8f92e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSNamesystemMBean.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSNamesystemMBean.java
+@@ -17,7 +17,7 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode;
+ 
+-import static org.junit.Assert.assertTrue;
++import static org.junit.Assert.*;
+ 
+ import java.lang.management.ManagementFactory;
+ import java.util.Map;
+@@ -63,6 +63,10 @@ public void test() throws Exception {
+       assertTrue(stat.containsKey("Snapshots")
+           && (Long) stat.get("Snapshots") == fsn.getNumSnapshots());
+ 
++      Object pendingDeletionBlocks = mbs.getAttribute(mxbeanName,
++        "PendingDeletionBlocks");
++      assertNotNull(pendingDeletionBlocks);
++      assertTrue(pendingDeletionBlocks instanceof Long);
+     } finally {
+       if (cluster != null) {
+         cluster.shutdown();
+-- 
+1.7.0.4
+

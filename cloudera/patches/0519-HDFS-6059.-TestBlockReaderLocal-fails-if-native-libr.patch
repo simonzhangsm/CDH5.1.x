@@ -1,0 +1,35 @@
+From c8928da9384767cd38497383abb5f3c13a169939 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Thu, 6 Mar 2014 18:53:29 +0000
+Subject: [PATCH 519/795] HDFS-6059. TestBlockReaderLocal fails if native library not available (ajisakaa via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2.4@1575002 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a004450afeab2396cb69f28e17f34cfbfd770614)
+---
+ .../apache/hadoop/hdfs/TestBlockReaderLocal.java   |    3 +++
+ 1 files changed, 3 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderLocal.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderLocal.java
+index 91e2467..10d25c6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderLocal.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderLocal.java
+@@ -47,6 +47,8 @@
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+ 
++import static org.hamcrest.CoreMatchers.equalTo;
++
+ public class TestBlockReaderLocal {
+   private static TemporarySocketDirectory sockDir;
+   
+@@ -117,6 +119,7 @@ public void doTest(BlockReaderLocal reader, byte original[])
+   
+   public void runBlockReaderLocalTest(BlockReaderLocalTest test,
+       boolean checksum, long readahead) throws IOException {
++    Assume.assumeThat(DomainSocket.getLoadingFailureReason(), equalTo(null));
+     MiniDFSCluster cluster = null;
+     HdfsConfiguration conf = new HdfsConfiguration();
+     conf.setBoolean(DFSConfigKeys.
+-- 
+1.7.0.4
+

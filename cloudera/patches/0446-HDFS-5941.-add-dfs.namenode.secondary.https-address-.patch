@@ -1,0 +1,51 @@
+From d0e9122f6d468b60341c14fe279b0ec15027ce20 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Thu, 13 Feb 2014 19:55:47 +0000
+Subject: [PATCH 446/795] HDFS-5941. add dfs.namenode.secondary.https-address and dfs.namenode.secondary.https-address in hdfs-default.xml. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568021 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e93281670acb7d4c29eb2219361720d30938c596)
+---
+ .../src/main/resources/hdfs-default.xml            |   19 ++++++++++++++++++-
+ 1 files changed, 18 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index 45f2b3f..9c3b94f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -97,6 +97,14 @@
+ </property>
+ 
+ <property>
++  <name>dfs.namenode.secondary.https-address</name>
++  <value>0.0.0.0:50091</value>
++  <description>
++    The secondary namenode HTTPS server address and port.
++  </description>
++</property>
++
++<property>
+   <name>dfs.datanode.address</name>
+   <value>0.0.0.0:50010</value>
+   <description>
+@@ -1310,7 +1318,16 @@
+   <name>dfs.journalnode.http-address</name>
+   <value>0.0.0.0:8480</value>
+   <description>
+-    The address and port the JournalNode web UI listens on.
++    The address and port the JournalNode HTTP server listens on.
++    If the port is 0 then the server will start on a free port.
++  </description>
++</property>
++
++<property>
++  <name>dfs.journalnode.https-address</name>
++  <value>0.0.0.0:8481</value>
++  <description>
++    The address and port the JournalNode HTTPS server listens on.
+     If the port is 0 then the server will start on a free port.
+   </description>
+ </property>
+-- 
+1.7.0.4
+

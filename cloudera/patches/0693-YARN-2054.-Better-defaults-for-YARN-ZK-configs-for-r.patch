@@ -1,0 +1,147 @@
+From ecc5fed7b197ace9e85f10749df37bad8fdbe17f Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Fri, 30 May 2014 15:25:27 +0000
+Subject: [PATCH 693/795] YARN-2054. Better defaults for YARN ZK configs for retries and retry-inteval when HA is enabled. (kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1598632 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f03b9e1c7cae3d826ebbbe0fc80907d7a045ca4d)
+---
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |    4 +-
+ .../src/main/resources/yarn-default.xml            |    7 ++++-
+ .../resourcemanager/recovery/ZKRMStateStore.java   |   15 ++++++++---
+ .../TestZKRMStateStoreZKClientConnections.java     |   25 ++++++++++++++++++-
+ 4 files changed, 41 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index 477564d..4ca5eee 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -318,11 +318,11 @@
+   public static final String RM_ZK_ADDRESS = RM_ZK_PREFIX + "address";
+ 
+   public static final String RM_ZK_NUM_RETRIES = RM_ZK_PREFIX + "num-retries";
+-  public static final int DEFAULT_ZK_RM_NUM_RETRIES = 500;
++  public static final int DEFAULT_ZK_RM_NUM_RETRIES = 1000;
+ 
+   public static final String RM_ZK_RETRY_INTERVAL_MS =
+       RM_ZK_PREFIX + "retry-interval-ms";
+-  public static final long DEFAULT_RM_ZK_RETRY_INTERVAL_MS = 2000;
++  public static final long DEFAULT_RM_ZK_RETRY_INTERVAL_MS = 1000;
+ 
+   public static final String RM_ZK_TIMEOUT_MS = RM_ZK_PREFIX + "timeout-ms";
+   public static final int DEFAULT_RM_ZK_TIMEOUT_MS = 10000;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+index 211593c..4d75d93 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/resources/yarn-default.xml
+@@ -309,14 +309,17 @@
+   <property>
+     <description>Number of times RM tries to connect to ZooKeeper.</description>
+     <name>yarn.resourcemanager.zk-num-retries</name>
+-    <value>500</value>
++    <value>1000</value>
+   </property>
+ 
+   <property>
+     <description>Retry interval in milliseconds when connecting to ZooKeeper.
++      When HA is enabled, the value here is NOT used. It is generated
++      automatically from yarn.resourcemanager.zk-timeout-ms and
++      yarn.resourcemanager.zk-num-retries.
+     </description>
+     <name>yarn.resourcemanager.zk-retry-interval-ms</name>
+-    <value>2000</value>
++    <value>1000</value>
+   </property>
+ 
+   <property>
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+index 4f2a7d0..c339887 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/ZKRMStateStore.java
+@@ -90,7 +90,9 @@
+ 
+   private String zkHostPort = null;
+   private int zkSessionTimeout;
+-  private long zkRetryInterval;
++
++  @VisibleForTesting
++  long zkRetryInterval;
+   private List<ACL> zkAcl;
+   private List<ZKUtil.ZKAuthInfo> zkAuths;
+ 
+@@ -199,9 +201,14 @@ public synchronized void initInternal(Configuration conf) throws Exception {
+     zkSessionTimeout =
+         conf.getInt(YarnConfiguration.RM_ZK_TIMEOUT_MS,
+             YarnConfiguration.DEFAULT_RM_ZK_TIMEOUT_MS);
+-    zkRetryInterval =
+-        conf.getLong(YarnConfiguration.RM_ZK_RETRY_INTERVAL_MS,
+-          YarnConfiguration.DEFAULT_RM_ZK_RETRY_INTERVAL_MS);
++
++    if (HAUtil.isHAEnabled(conf)) {
++      zkRetryInterval = zkSessionTimeout / numRetries;
++    } else {
++      zkRetryInterval =
++          conf.getLong(YarnConfiguration.RM_ZK_RETRY_INTERVAL_MS,
++              YarnConfiguration.DEFAULT_RM_ZK_RETRY_INTERVAL_MS);
++    }
+ 
+     zkAcl = RMZKUtils.getZKAcls(conf);
+     zkAuths = RMZKUtils.getZKAuths(conf);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStoreZKClientConnections.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStoreZKClientConnections.java
+index 1c3e424..eb0d4eb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStoreZKClientConnections.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStoreZKClientConnections.java
+@@ -41,6 +41,7 @@
+ import java.util.concurrent.CyclicBarrier;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ 
++import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+ 
+@@ -202,7 +203,7 @@ public void testZKClientDisconnectAndReconnect()
+       LOG.error(error, e);
+       fail(error);
+     }
+-    Assert.assertEquals("newBytes", new String(ret));
++    assertEquals("newBytes", new String(ret));
+   }
+ 
+   @Test(timeout = 20000)
+@@ -231,7 +232,7 @@ public void testZKSessionTimeout() throws Exception {
+ 
+     try {
+       byte[] ret = store.getDataWithRetries(path, false);
+-      Assert.assertEquals("bytes", new String(ret));
++      assertEquals("bytes", new String(ret));
+     } catch (Exception e) {
+       String error = "New session creation failed";
+       LOG.error(error, e);
+@@ -280,4 +281,24 @@ public void testZKAuths() throws Exception {
+ 
+     zkClientTester.getRMStateStore(conf);
+   }
++
++  @Test
++  public void testZKRetryInterval() throws Exception {
++    TestZKClient zkClientTester = new TestZKClient();
++    YarnConfiguration conf = new YarnConfiguration();
++
++    ZKRMStateStore store =
++        (ZKRMStateStore) zkClientTester.getRMStateStore(conf);
++    assertEquals(YarnConfiguration.DEFAULT_RM_ZK_RETRY_INTERVAL_MS,
++        store.zkRetryInterval);
++    store.stop();
++
++    conf.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
++    store =
++        (ZKRMStateStore) zkClientTester.getRMStateStore(conf);
++    assertEquals(YarnConfiguration.DEFAULT_RM_ZK_TIMEOUT_MS /
++            YarnConfiguration.DEFAULT_ZK_RM_NUM_RETRIES,
++        store.zkRetryInterval);
++    store.stop();
++  }
+ }
+-- 
+1.7.0.4
+

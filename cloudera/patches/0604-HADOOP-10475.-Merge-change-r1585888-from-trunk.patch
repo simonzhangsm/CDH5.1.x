@@ -1,0 +1,62 @@
+From f6de97ea4e1c68376cdc5dce17e963f3108b8aeb Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Wed, 9 Apr 2014 04:57:57 +0000
+Subject: [PATCH 604/795] HADOOP-10475. Merge change r1585888 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1585889 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 019e182d71e78d807a74cae45ac8f3093f6644fd)
+---
+ .../hadoop/security/UserGroupInformation.java      |    7 ++++---
+ 1 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+index 33bf6be..629d7ad 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+@@ -18,6 +18,7 @@
+ package org.apache.hadoop.security;
+ 
+ import static org.apache.hadoop.fs.CommonConfigurationKeys.HADOOP_USER_GROUP_METRICS_PERCENTILES_INTERVALS;
++import static org.apache.hadoop.util.PlatformName.IBM_JAVA;
+ 
+ import java.io.File;
+ import java.io.IOException;
+@@ -28,6 +29,7 @@
+ import java.security.PrivilegedAction;
+ import java.security.PrivilegedActionException;
+ import java.security.PrivilegedExceptionAction;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Collections;
+@@ -43,9 +45,9 @@
+ import javax.security.auth.kerberos.KerberosPrincipal;
+ import javax.security.auth.kerberos.KerberosTicket;
+ import javax.security.auth.login.AppConfigurationEntry;
++import javax.security.auth.login.AppConfigurationEntry.LoginModuleControlFlag;
+ import javax.security.auth.login.LoginContext;
+ import javax.security.auth.login.LoginException;
+-import javax.security.auth.login.AppConfigurationEntry.LoginModuleControlFlag;
+ import javax.security.auth.spi.LoginModule;
+ 
+ import org.apache.commons.logging.Log;
+@@ -66,7 +68,6 @@
+ import org.apache.hadoop.security.token.TokenIdentifier;
+ import org.apache.hadoop.util.Shell;
+ import org.apache.hadoop.util.Time;
+-import static org.apache.hadoop.util.PlatformName.IBM_JAVA;
+ 
+ import com.google.common.annotations.VisibleForTesting;
+ 
+@@ -1358,7 +1359,7 @@ public synchronized boolean addToken(Text alias,
+   public synchronized
+   Collection<Token<? extends TokenIdentifier>> getTokens() {
+     return Collections.unmodifiableCollection(
+-        getCredentialsInternal().getAllTokens());
++        new ArrayList<Token<?>>(getCredentialsInternal().getAllTokens()));
+   }
+ 
+   /**
+-- 
+1.7.0.4
+

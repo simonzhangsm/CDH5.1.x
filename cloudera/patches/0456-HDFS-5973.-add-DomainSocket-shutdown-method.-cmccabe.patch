@@ -1,0 +1,105 @@
+From 064969d85128cc1147ca01b784a9f71cc9acdd6a Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Wed, 19 Feb 2014 22:57:32 +0000
+Subject: [PATCH 456/795] HDFS-5973. add DomainSocket#shutdown method. (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1569950 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 54d6c59830a4aeb55cc3dd9c1468148bc5115be4)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../org/apache/hadoop/net/unix/DomainSocket.java   |   16 ++++++++
+ .../apache/hadoop/net/unix/TestDomainSocket.java   |   37 +++++++++++++++++++-
+ 2 files changed, 52 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocket.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocket.java
+index e0d6b63..6166ba8 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocket.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocket.java
+@@ -377,6 +377,22 @@ public void close() throws IOException {
+       Thread.currentThread().interrupt();
+     }
+   }
++  
++  /**
++   * Call shutdown(SHUT_RDWR) on the UNIX domain socket.
++   *
++   * @throws IOException
++   */
++  public void shutdown() throws IOException {
++    refCount.reference();
++    boolean exc = true;
++    try {
++      shutdown0(fd);
++      exc = false;
++    } finally {
++      unreference(exc);
++    }
++  }
+ 
+   private native static void sendFileDescriptors0(int fd,
+       FileDescriptor descriptors[],
+diff --git a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/net/unix/TestDomainSocket.java b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/net/unix/TestDomainSocket.java
+index d6d9591..9fe8fae 100644
+--- a/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/net/unix/TestDomainSocket.java
++++ b/hadoop-common-project/hadoop-common/src/test/java/org/apache/hadoop/net/unix/TestDomainSocket.java
+@@ -34,6 +34,8 @@
+ import java.util.concurrent.Executors;
+ import java.util.concurrent.Future;
+ import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicInteger;
+ 
+ import org.junit.AfterClass;
+ import org.junit.Assert;
+@@ -41,7 +43,6 @@
+ import org.junit.Before;
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+-
+ import org.apache.commons.lang.exception.ExceptionUtils;
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.net.unix.DomainSocket.DomainChannel;
+@@ -727,4 +728,38 @@ public void testFdPassingPathSecurity() throws Exception {
+       tmp.close();
+     }
+   }
++
++  @Test(timeout=180000)
++  public void testShutdown() throws Exception {
++    final AtomicInteger bytesRead = new AtomicInteger(0);
++    final AtomicBoolean failed = new AtomicBoolean(false);
++    final DomainSocket[] socks = DomainSocket.socketpair();
++    Runnable reader = new Runnable() {
++      @Override
++      public void run() {
++        while (true) {
++          try {
++            int ret = socks[1].getInputStream().read();
++            if (ret == -1) return;
++            bytesRead.addAndGet(1);
++          } catch (IOException e) {
++            DomainSocket.LOG.error("reader error", e);
++            failed.set(true);
++            return;
++          }
++        }
++      }
++    };
++    Thread readerThread = new Thread(reader);
++    readerThread.start();
++    socks[0].getOutputStream().write(1);
++    socks[0].getOutputStream().write(2);
++    socks[0].getOutputStream().write(3);
++    Assert.assertTrue(readerThread.isAlive());
++    socks[0].shutdown();
++    readerThread.join();
++    Assert.assertFalse(failed.get());
++    Assert.assertEquals(3, bytesRead.get());
++    IOUtils.cleanup(null, socks);
++  }
+ }
+-- 
+1.7.0.4
+

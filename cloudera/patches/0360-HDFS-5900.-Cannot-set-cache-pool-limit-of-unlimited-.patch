@@ -1,0 +1,106 @@
+From 77a965c2e3db3fcad240b7bf7fdf8c8bdaa9921f Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Fri, 7 Feb 2014 23:00:13 +0000
+Subject: [PATCH 360/795] HDFS-5900. Cannot set cache pool limit of unlimited via CacheAdmin. Contributed by Andrew Wang.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1565843 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit b7d01bdd4c62eefd59da86a914d5dd4e86cf365f)
+---
+ .../org/apache/hadoop/hdfs/tools/CacheAdmin.java   |   19 ++++++++++--
+ .../src/test/resources/testCacheAdminConf.xml      |   30 ++++++++++++++++++++
+ 2 files changed, 45 insertions(+), 4 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
+index 290e600..b674d09 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/CacheAdmin.java
+@@ -140,6 +140,18 @@ private static Long parseTtlString(String maxTtlString) throws IOException {
+     return maxTtl;
+   }
+ 
++  private static Long parseLimitString(String limitString) {
++    Long limit = null;
++    if (limitString != null) {
++      if (limitString.equalsIgnoreCase("unlimited")) {
++        limit = CachePoolInfo.LIMIT_UNLIMITED;
++      } else {
++        limit = Long.parseLong(limitString);
++      }
++    }
++    return limit;
++  }
++
+   private static Expiration parseExpirationString(String ttlString)
+       throws IOException {
+     Expiration ex = null;
+@@ -650,8 +662,8 @@ public int run(Configuration conf, List<String> args) throws IOException {
+         info.setMode(new FsPermission(mode));
+       }
+       String limitString = StringUtils.popOptionWithArgument("-limit", args);
+-      if (limitString != null) {
+-        long limit = Long.parseLong(limitString);
++      Long limit = parseLimitString(limitString);
++      if (limit != null) {
+         info.setLimit(limit);
+       }
+       String maxTtlString = StringUtils.popOptionWithArgument("-maxTtl", args);
+@@ -726,8 +738,7 @@ public int run(Configuration conf, List<String> args) throws IOException {
+       Integer mode = (modeString == null) ?
+           null : Integer.parseInt(modeString, 8);
+       String limitString = StringUtils.popOptionWithArgument("-limit", args);
+-      Long limit = (limitString == null) ?
+-          null : Long.parseLong(limitString);
++      Long limit = parseLimitString(limitString);
+       String maxTtlString = StringUtils.popOptionWithArgument("-maxTtl", args);
+       Long maxTtl = null;
+       try {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testCacheAdminConf.xml b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testCacheAdminConf.xml
+index 64de6bf..13f1b9a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testCacheAdminConf.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testCacheAdminConf.xml
+@@ -469,6 +469,8 @@
+       </test-commands>
+       <cleanup-commands>
+         <cache-admin-command>-removePool pool1</cache-admin-command>
++        <cache-admin-command>-removePool pool2</cache-admin-command>
++        <cache-admin-command>-removePool pool3</cache-admin-command>
+       </cleanup-commands>
+       <comparators>
+         <comparator>
+@@ -489,5 +491,33 @@
+         </comparator>
+       </comparators>
+     </test>
++
++    <test> <!--Tested -->
++      <description>Testing setting pool unlimited limits</description>
++      <test-commands>
++        <cache-admin-command>-addPool pool1 -limit unlimited -owner andrew -group andrew</cache-admin-command>
++        <cache-admin-command>-addPool pool2 -limit 10 -owner andrew -group andrew</cache-admin-command>
++        <cache-admin-command>-modifyPool pool2 -limit unlimited</cache-admin-command>
++        <cache-admin-command>-listPools</cache-admin-command>
++      </test-commands>
++      <cleanup-commands>
++        <cache-admin-command>-removePool pool1</cache-admin-command>
++        <cache-admin-command>-removePool pool2</cache-admin-command>
++      </cleanup-commands>
++      <comparators>
++        <comparator>
++          <type>SubstringComparator</type>
++          <expected-output>Found 2 results</expected-output>
++        </comparator>
++        <comparator>
++          <type>SubstringComparator</type>
++          <expected-output>pool1  andrew  andrew  rwxr-xr-x   unlimited   never</expected-output>
++        </comparator>
++        <comparator>
++          <type>SubstringComparator</type>
++          <expected-output>pool2  andrew  andrew  rwxr-xr-x   unlimited   never</expected-output>
++        </comparator>
++      </comparators>
++    </test>
+   </tests>
+ </configuration>
+-- 
+1.7.0.4
+

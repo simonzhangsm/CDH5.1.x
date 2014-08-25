@@ -1,0 +1,215 @@
+From a6f02ff8287dea6510016f34c0cf015f9bd3b678 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Thu, 13 Feb 2014 22:02:38 +0000
+Subject: [PATCH 499/795] YARN-1417. Modified RM to generate container-tokens not at creation time, but at allocation time so as to prevent RM
+ from shelling out containers with expired tokens. Contributed by Omkar Vinit Joshi and Jian He.
+ svn merge --ignore-ancestry -c 1568060 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568061 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 9b646cdc3b9726f7ebc1b061652c2d54131f5079)
+---
+ .../scheduler/SchedulerApplicationAttempt.java     |    5 ++
+ .../scheduler/capacity/LeafQueue.java              |   18 --------
+ .../scheduler/fair/AppSchedulable.java             |    8 +---
+ .../scheduler/fifo/FifoScheduler.java              |   11 +-----
+ .../hadoop/yarn/server/resourcemanager/MockRM.java |    9 ++++-
+ .../capacity/TestContainerAllocation.java          |   43 ++++++++++++++++++++
+ 6 files changed, 58 insertions(+), 36 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+index be2b2aa..fec5e05 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/SchedulerApplicationAttempt.java
+@@ -346,6 +346,11 @@ public Resource getCurrentConsumption() {
+     for (RMContainer rmContainer : newlyAllocatedContainers) {
+       rmContainer.handle(new RMContainerEvent(rmContainer.getContainerId(),
+           RMContainerEventType.ACQUIRED));
++      Container container = rmContainer.getContainer();
++      rmContainer.getContainer().setContainerToken(
++        rmContext.getContainerTokenSecretManager().createContainerToken(
++          rmContainer.getContainerId(), container.getNodeId(), getUser(),
++          container.getResource()));
+       returnContainerList.add(rmContainer.getContainer());
+     }
+     newlyAllocatedContainers.clear();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/LeafQueue.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/LeafQueue.java
+index 9bc80bc..968d373 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/LeafQueue.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/LeafQueue.java
+@@ -1292,16 +1292,6 @@ Container createContainer(FiCaSchedulerApp application, FiCaSchedulerNode node,
+     return container;
+   }
+ 
+-  /**
+-   * Create <code>ContainerToken</code>, only in secure-mode
+-   */
+-  Token createContainerToken(
+-      FiCaSchedulerApp application, Container container) {
+-    return containerTokenSecretManager.createContainerToken(
+-        container.getId(), container.getNodeId(),
+-        application.getUser(), container.getResource());
+-  }
+-
+   private Resource assignContainer(Resource clusterResource, FiCaSchedulerNode node, 
+       FiCaSchedulerApp application, Priority priority, 
+       ResourceRequest request, NodeType type, RMContainer rmContainer) {
+@@ -1345,14 +1335,6 @@ private Resource assignContainer(Resource clusterResource, FiCaSchedulerNode nod
+         unreserve(application, priority, node, rmContainer);
+       }
+ 
+-      Token containerToken =
+-          createContainerToken(application, container);
+-      if (containerToken == null) {
+-        // Something went wrong...
+-        return Resources.none();
+-      }
+-      container.setContainerToken(containerToken);
+-      
+       // Inform the application
+       RMContainer allocatedContainer = 
+           application.allocate(type, node, priority, request, container);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+index e99e98e..9f2d22e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/AppSchedulable.java
+@@ -149,17 +149,11 @@ public Container createContainer(
+     NodeId nodeId = node.getRMNode().getNodeID();
+     ContainerId containerId = BuilderUtils.newContainerId(application
+         .getApplicationAttemptId(), application.getNewContainerId());
+-    org.apache.hadoop.yarn.api.records.Token containerToken =
+-        containerTokenSecretManager.createContainerToken(containerId, nodeId,
+-          application.getUser(), capability);
+-    if (containerToken == null) {
+-      return null; // Try again later.
+-    }
+ 
+     // Create the container
+     Container container =
+         BuilderUtils.newContainer(containerId, nodeId, node.getRMNode()
+-          .getHttpAddress(), capability, priority, containerToken);
++          .getHttpAddress(), capability, priority, null);
+ 
+     return container;
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+index e33348a..a2e0134 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+@@ -654,20 +654,11 @@ private int assignContainer(FiCaSchedulerNode node, FiCaSchedulerApp application
+         NodeId nodeId = node.getRMNode().getNodeID();
+         ContainerId containerId = BuilderUtils.newContainerId(application
+             .getApplicationAttemptId(), application.getNewContainerId());
+-        Token containerToken = null;
+-
+-        containerToken =
+-            this.rmContext.getContainerTokenSecretManager()
+-              .createContainerToken(containerId, nodeId, application.getUser(),
+-                capability);
+-        if (containerToken == null) {
+-          return i; // Try again later.
+-        }
+ 
+         // Create the container
+         Container container =
+             BuilderUtils.newContainer(containerId, nodeId, node.getRMNode()
+-              .getHttpAddress(), capability, priority, containerToken);
++              .getHttpAddress(), capability, priority, null);
+         
+         // Allocate!
+         
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
+index 31035b4..63efe8f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
+@@ -142,8 +142,15 @@ public void waitForContainerAllocated(MockNM nm, ContainerId containerId)
+   public void waitForState(MockNM nm, ContainerId containerId,
+       RMContainerState containerState) throws Exception {
+     RMContainer container = getResourceScheduler().getRMContainer(containerId);
+-    Assert.assertNotNull("Container shouldn't be null", container);
+     int timeoutSecs = 0;
++    while(container == null && timeoutSecs++ < 20) {
++      nm.nodeHeartbeat(true);
++      container = getResourceScheduler().getRMContainer(containerId);
++      System.out.println("Waiting for container " + containerId + " to be allocated.");
++      Thread.sleep(100);
++    }
++    Assert.assertNotNull("Container shouldn't be null", container);
++    timeoutSecs = 0;
+     while (!containerState.equals(container.getState()) && timeoutSecs++ < 40) {
+       System.out.println("Container : " + containerId + " State is : "
+           + container.getState() + " Waiting for state : " + containerState);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestContainerAllocation.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestContainerAllocation.java
+index b877fbb..0e3bdeb 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestContainerAllocation.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestContainerAllocation.java
+@@ -18,11 +18,17 @@
+ 
+ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
+ 
++import java.util.ArrayList;
++import java.util.List;
++
+ import junit.framework.Assert;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
++import org.apache.hadoop.yarn.api.records.Container;
++import org.apache.hadoop.yarn.api.records.ContainerId;
++import org.apache.hadoop.yarn.api.records.ResourceRequest;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
+@@ -30,6 +36,9 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.TestFifoScheduler;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
++import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
++import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
++import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
+ import org.junit.Test;
+ 
+ 
+@@ -106,4 +115,38 @@ public void testExcessReservationThanNodeManagerCapacity() throws Exception {
+ 
+     rm.stop();
+   }
++
++  // This is to test container tokens are generated when the containers are
++  // acquired by the AM, not when the containers are allocated
++  @Test
++  public void testContainerTokenGeneratedOnPullRequest() throws Exception {
++    YarnConfiguration conf = new YarnConfiguration();
++    conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class,
++      ResourceScheduler.class);
++    MockRM rm1 = new MockRM(conf);
++    rm1.start();
++    MockNM nm1 = rm1.registerNode("127.0.0.1:1234", 8000);
++    RMApp app1 = rm1.submitApp(200);
++    MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
++    // request a container.
++    am1.allocate("127.0.0.1", 1024, 1, new ArrayList<ContainerId>());
++    ContainerId containerId2 =
++        ContainerId.newInstance(am1.getApplicationAttemptId(), 2);
++    rm1.waitForState(nm1, containerId2, RMContainerState.ALLOCATED);
++
++    RMContainer container =
++        rm1.getResourceScheduler().getRMContainer(containerId2);
++    // no container token is generated.
++    Assert.assertEquals(containerId2, container.getContainerId());
++    Assert.assertNull(container.getContainer().getContainerToken());
++
++    // acquire the container.
++    List<Container> containers =
++        am1.allocate(new ArrayList<ResourceRequest>(),
++          new ArrayList<ContainerId>()).getAllocatedContainers();
++    Assert.assertEquals(containerId2, containers.get(0).getId());
++    // container token is generated.
++    Assert.assertNotNull(containers.get(0).getContainerToken());
++    rm1.stop();
++  }
+ }
+\ No newline at end of file
+-- 
+1.7.0.4
+

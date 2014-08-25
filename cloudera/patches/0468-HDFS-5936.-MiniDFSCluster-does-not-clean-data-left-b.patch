@@ -1,0 +1,41 @@
+From 3c48ca1ca534801ca1ac5952f608b4caf9aadadd Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Wed, 26 Feb 2014 16:40:56 +0000
+Subject: [PATCH 468/795] HDFS-5936. MiniDFSCluster does not clean data left behind by SecondaryNameNode. Contributed by Binglin Chang.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1572156 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 198a81b1ace71d37fa8943d63460c5efc901b9d2)
+---
+ .../org/apache/hadoop/hdfs/MiniDFSCluster.java     |    9 +++++++++
+ 1 files changed, 9 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
+index fb66e64..f6f1295 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
+@@ -79,6 +79,7 @@
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.common.Storage;
++import org.apache.hadoop.hdfs.server.common.Util;
+ import org.apache.hadoop.hdfs.server.datanode.DataNode;
+ import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+ import org.apache.hadoop.hdfs.server.datanode.DataStorage;
+@@ -814,6 +815,14 @@ private void createNameNodesAndSetConf(MiniDFSNNTopology nnTopology,
+               throw new IOException("Could not fully delete " + nameDir);
+             }
+           }
++          Collection<URI> checkpointDirs = Util.stringCollectionAsURIs(conf
++              .getTrimmedStringCollection(DFS_NAMENODE_CHECKPOINT_DIR_KEY));
++          for (URI checkpointDirUri : checkpointDirs) {
++            File checkpointDir = new File(checkpointDirUri);
++            if (checkpointDir.exists() && !FileUtil.fullyDelete(checkpointDir)) {
++              throw new IOException("Could not fully delete " + checkpointDir);
++            }
++          }
+         }
+         
+         boolean formatThisOne = format;
+-- 
+1.7.0.4
+

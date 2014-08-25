@@ -1,0 +1,106 @@
+From ed6ca731ec90172b5cc8fc39164157b61204e679 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Tue, 25 Feb 2014 18:36:46 +0000
+Subject: [PATCH 471/795] HDFS-5939. WebHdfs returns misleading error code and logs nothing if trying to create a file with no DNs in cluster. Contributed by Yongjun Zhang.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1571781 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../org/apache/hadoop/net/NetworkTopology.java     |    5 +++
+ .../web/resources/NamenodeWebHdfsMethods.java      |    9 +++++-
+ .../org/apache/hadoop/hdfs/web/TestWebHDFS.java    |   28 +++++++++++++++++++-
+ 3 files changed, 39 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/NetworkTopology.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/NetworkTopology.java
+index a09eaf2..daf7dc7 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/NetworkTopology.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/NetworkTopology.java
+@@ -713,6 +713,11 @@ private Node chooseRandom(String scope, String excludedScope){
+         numOfDatanodes -= ((InnerNode)node).getNumOfLeaves();
+       }
+     }
++    if (numOfDatanodes == 0) {
++      throw new InvalidTopologyException(
++          "Failed to find datanode (scope=\"" + String.valueOf(scope) +
++          "\" excludedScope=\"" + String.valueOf(excludedScope) + "\").");
++    }
+     int leaveIndex = r.nextInt(numOfDatanodes);
+     return innerNode.getLeaf(leaveIndex, node);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
+index d8b5eae..30912b5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
+@@ -101,6 +101,7 @@
+ import org.apache.hadoop.hdfs.web.resources.UserParam;
+ import org.apache.hadoop.io.Text;
+ import org.apache.hadoop.ipc.Server;
++import org.apache.hadoop.net.NetworkTopology.InvalidTopologyException;
+ import org.apache.hadoop.net.NodeBase;
+ import org.apache.hadoop.security.Credentials;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -228,8 +229,12 @@ private URI redirectURI(final NameNode namenode,
+       final long blocksize,
+       final Param<?, ?>... parameters) throws URISyntaxException, IOException {
+     final Configuration conf = (Configuration)context.getAttribute(JspHelper.CURRENT_CONF);
+-    final DatanodeInfo dn = chooseDatanode(namenode, path, op, openOffset,
+-        blocksize, conf);
++    final DatanodeInfo dn;
++    try {
++      dn = chooseDatanode(namenode, path, op, openOffset, blocksize, conf);
++    } catch (InvalidTopologyException ite) {
++      throw new IOException("Failed to find datanode, suggest to check cluster health.", ite);
++    }
+ 
+     final String delegationQuery;
+     if (!UserGroupInformation.isSecurityEnabled()) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
+index a657cd8..c2242e0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestWebHDFS.java
+@@ -36,9 +36,10 @@
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+-import org.apache.hadoop.hdfs.TestDFSClientRetries;
+ import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
++import org.apache.hadoop.hdfs.TestDFSClientRetries;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.test.GenericTestUtils;
+ import org.apache.log4j.Level;
+ import org.junit.Assert;
+ import org.junit.Test;
+@@ -290,6 +291,31 @@ public Void run() throws IOException, URISyntaxException {
+   }
+ 
+   /**
++   * Test for catching "no datanode" IOException, when to create a file
++   * but datanode is not running for some reason.
++   */
++  @Test(timeout=300000)
++  public void testCreateWithNoDN() throws Exception {
++    MiniDFSCluster cluster = null;
++    final Configuration conf = WebHdfsTestUtil.createConf();
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
++      conf.setInt(DFSConfigKeys.DFS_REPLICATION_KEY, 1);
++      cluster.waitActive();
++      FileSystem fs = WebHdfsTestUtil.getWebHdfsFileSystem(conf,
++          WebHdfsFileSystem.SCHEME);
++      fs.create(new Path("/testnodatanode"));
++      Assert.fail("No exception was thrown");
++    } catch (IOException ex) {
++      GenericTestUtils.assertExceptionContains("Failed to find datanode", ex);
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
++  
++  /**
+    * WebHdfs should be enabled by default after HDFS-5532
+    * 
+    * @throws Exception
+-- 
+1.7.0.4
+

@@ -1,0 +1,321 @@
+From 44f7ce9cc6cef48799d036b50a1e5294dcea745c Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Mon, 10 Mar 2014 23:15:51 +0000
+Subject: [PATCH 699/795] HADOOP-10399. Merging change r1576124 from trunk to branch-2.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1576126 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+---
+ .../org/apache/hadoop/fs/AbstractFileSystem.java   |   86 +++++++++++++-
+ .../java/org/apache/hadoop/fs/FileContext.java     |  126 +++++++++++++++++++-
+ .../main/java/org/apache/hadoop/fs/FilterFs.java   |   34 ++++++
+ 3 files changed, 244 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/AbstractFileSystem.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/AbstractFileSystem.java
+index c381f7c..6942758 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/AbstractFileSystem.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/AbstractFileSystem.java
+@@ -42,6 +42,8 @@
+ import org.apache.hadoop.fs.Options.ChecksumOpt;
+ import org.apache.hadoop.fs.Options.CreateOpts;
+ import org.apache.hadoop.fs.Options.Rename;
++import org.apache.hadoop.fs.permission.AclEntry;
++import org.apache.hadoop.fs.permission.AclStatus;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.fs.InvalidPathException;
+ import org.apache.hadoop.security.AccessControlException;
+@@ -955,7 +957,89 @@ public String getCanonicalServiceName() {
+   public List<Token<?>> getDelegationTokens(String renewer) throws IOException {
+     return new ArrayList<Token<?>>(0);
+   }
+-  
++
++  /**
++   * Modifies ACL entries of files and directories.  This method can add new ACL
++   * entries or modify the permissions on existing ACL entries.  All existing
++   * ACL entries that are not specified in this call are retained without
++   * changes.  (Modifications are merged into the current ACL.)
++   *
++   * @param path Path to modify
++   * @param aclSpec List<AclEntry> describing modifications
++   * @throws IOException if an ACL could not be modified
++   */
++  public void modifyAclEntries(Path path, List<AclEntry> aclSpec)
++      throws IOException {
++    throw new UnsupportedOperationException(getClass().getSimpleName()
++        + " doesn't support modifyAclEntries");
++  }
++
++  /**
++   * Removes ACL entries from files and directories.  Other ACL entries are
++   * retained.
++   *
++   * @param path Path to modify
++   * @param aclSpec List<AclEntry> describing entries to remove
++   * @throws IOException if an ACL could not be modified
++   */
++  public void removeAclEntries(Path path, List<AclEntry> aclSpec)
++      throws IOException {
++    throw new UnsupportedOperationException(getClass().getSimpleName()
++        + " doesn't support removeAclEntries");
++  }
++
++  /**
++   * Removes all default ACL entries from files and directories.
++   *
++   * @param path Path to modify
++   * @throws IOException if an ACL could not be modified
++   */
++  public void removeDefaultAcl(Path path)
++      throws IOException {
++    throw new UnsupportedOperationException(getClass().getSimpleName()
++        + " doesn't support removeDefaultAcl");
++  }
++
++  /**
++   * Removes all but the base ACL entries of files and directories.  The entries
++   * for user, group, and others are retained for compatibility with permission
++   * bits.
++   *
++   * @param path Path to modify
++   * @throws IOException if an ACL could not be removed
++   */
++  public void removeAcl(Path path)
++      throws IOException {
++    throw new UnsupportedOperationException(getClass().getSimpleName()
++        + " doesn't support removeAcl");
++  }
++
++  /**
++   * Fully replaces ACL of files and directories, discarding all existing
++   * entries.
++   *
++   * @param path Path to modify
++   * @param aclSpec List<AclEntry> describing modifications, must include entries
++   *   for user, group, and others for compatibility with permission bits.
++   * @throws IOException if an ACL could not be modified
++   */
++  public void setAcl(Path path, List<AclEntry> aclSpec) throws IOException {
++    throw new UnsupportedOperationException(getClass().getSimpleName()
++        + " doesn't support setAcl");
++  }
++
++  /**
++   * Gets the ACLs of files and directories.
++   *
++   * @param path Path to get
++   * @return RemoteIterator<AclStatus> which returns each AclStatus
++   * @throws IOException if an ACL could not be read
++   */
++  public AclStatus getAclStatus(Path path) throws IOException {
++    throw new UnsupportedOperationException(getClass().getSimpleName()
++        + " doesn't support getAclStatus");
++  }
++
+   @Override //Object
+   public int hashCode() {
+     return myUri.hashCode();
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
+index c0e7a00..949f2da 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FileContext.java
+@@ -24,7 +24,6 @@
+ import java.net.URI;
+ import java.security.PrivilegedExceptionAction;
+ import java.util.ArrayList;
+-import java.util.Arrays;
+ import java.util.EnumSet;
+ import java.util.HashSet;
+ import java.util.IdentityHashMap;
+@@ -43,6 +42,8 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FileSystem.Statistics;
+ import org.apache.hadoop.fs.Options.CreateOpts;
++import org.apache.hadoop.fs.permission.AclEntry;
++import org.apache.hadoop.fs.permission.AclStatus;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
+ import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_DEFAULT;
+@@ -2219,4 +2220,127 @@ public static void printStatistics() {
+     }
+     return tokenList;
+   }
++
++  /**
++   * Modifies ACL entries of files and directories.  This method can add new ACL
++   * entries or modify the permissions on existing ACL entries.  All existing
++   * ACL entries that are not specified in this call are retained without
++   * changes.  (Modifications are merged into the current ACL.)
++   *
++   * @param path Path to modify
++   * @param aclSpec List<AclEntry> describing modifications
++   * @throws IOException if an ACL could not be modified
++   */
++  public void modifyAclEntries(final Path path, final List<AclEntry> aclSpec)
++      throws IOException {
++    Path absF = fixRelativePart(path);
++    new FSLinkResolver<Void>() {
++      @Override
++      public Void next(final AbstractFileSystem fs, final Path p)
++          throws IOException {
++        fs.modifyAclEntries(p, aclSpec);
++        return null;
++      }
++    }.resolve(this, absF);
++  }
++
++  /**
++   * Removes ACL entries from files and directories.  Other ACL entries are
++   * retained.
++   *
++   * @param path Path to modify
++   * @param aclSpec List<AclEntry> describing entries to remove
++   * @throws IOException if an ACL could not be modified
++   */
++  public void removeAclEntries(final Path path, final List<AclEntry> aclSpec)
++      throws IOException {
++    Path absF = fixRelativePart(path);
++    new FSLinkResolver<Void>() {
++      @Override
++      public Void next(final AbstractFileSystem fs, final Path p)
++          throws IOException {
++        fs.removeAclEntries(p, aclSpec);
++        return null;
++      }
++    }.resolve(this, absF);
++  }
++
++  /**
++   * Removes all default ACL entries from files and directories.
++   *
++   * @param path Path to modify
++   * @throws IOException if an ACL could not be modified
++   */
++  public void removeDefaultAcl(Path path)
++      throws IOException {
++    Path absF = fixRelativePart(path);
++    new FSLinkResolver<Void>() {
++      @Override
++      public Void next(final AbstractFileSystem fs, final Path p)
++          throws IOException {
++        fs.removeDefaultAcl(p);
++        return null;
++      }
++    }.resolve(this, absF);
++  }
++
++  /**
++   * Removes all but the base ACL entries of files and directories.  The entries
++   * for user, group, and others are retained for compatibility with permission
++   * bits.
++   *
++   * @param path Path to modify
++   * @throws IOException if an ACL could not be removed
++   */
++  public void removeAcl(Path path) throws IOException {
++    Path absF = fixRelativePart(path);
++    new FSLinkResolver<Void>() {
++      @Override
++      public Void next(final AbstractFileSystem fs, final Path p)
++          throws IOException {
++        fs.removeAcl(p);
++        return null;
++      }
++    }.resolve(this, absF);
++  }
++
++  /**
++   * Fully replaces ACL of files and directories, discarding all existing
++   * entries.
++   *
++   * @param path Path to modify
++   * @param aclSpec List<AclEntry> describing modifications, must include entries
++   *   for user, group, and others for compatibility with permission bits.
++   * @throws IOException if an ACL could not be modified
++   */
++  public void setAcl(Path path, final List<AclEntry> aclSpec)
++      throws IOException {
++    Path absF = fixRelativePart(path);
++    new FSLinkResolver<Void>() {
++      @Override
++      public Void next(final AbstractFileSystem fs, final Path p)
++          throws IOException {
++        fs.setAcl(p, aclSpec);
++        return null;
++      }
++    }.resolve(this, absF);
++  }
++
++  /**
++   * Gets the ACLs of files and directories.
++   *
++   * @param path Path to get
++   * @return RemoteIterator<AclStatus> which returns each AclStatus
++   * @throws IOException if an ACL could not be read
++   */
++  public AclStatus getAclStatus(Path path) throws IOException {
++    Path absF = fixRelativePart(path);
++    return new FSLinkResolver<AclStatus>() {
++      @Override
++      public AclStatus next(final AbstractFileSystem fs, final Path p)
++          throws IOException {
++        return fs.getAclStatus(p);
++      }
++    }.resolve(this, absF);
++  }
+ }
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FilterFs.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FilterFs.java
+index cdc0d1f..c91088e 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FilterFs.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/FilterFs.java
+@@ -26,6 +26,8 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.fs.FileSystem.Statistics;
++import org.apache.hadoop.fs.permission.AclEntry;
++import org.apache.hadoop.fs.permission.AclStatus;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.fs.Options.ChecksumOpt;
+ import org.apache.hadoop.security.AccessControlException;
+@@ -283,4 +285,36 @@ public String getCanonicalServiceName() {
+   public boolean isValidName(String src) {
+     return myFs.isValidName(src);
+   }
++
++  @Override
++  public void modifyAclEntries(Path path, List<AclEntry> aclSpec)
++      throws IOException {
++    myFs.modifyAclEntries(path, aclSpec);
++  }
++
++  @Override
++  public void removeAclEntries(Path path, List<AclEntry> aclSpec)
++      throws IOException {
++    myFs.removeAclEntries(path, aclSpec);
++  }
++
++  @Override
++  public void removeDefaultAcl(Path path) throws IOException {
++    myFs.removeDefaultAcl(path);
++  }
++
++  @Override
++  public void removeAcl(Path path) throws IOException {
++    myFs.removeAcl(path);
++  }
++
++  @Override
++  public void setAcl(Path path, List<AclEntry> aclSpec) throws IOException {
++    myFs.setAcl(path, aclSpec);
++  }
++
++  @Override
++  public AclStatus getAclStatus(Path path) throws IOException {
++    return myFs.getAclStatus(path);
++  }
+ }
+-- 
+1.7.0.4
+

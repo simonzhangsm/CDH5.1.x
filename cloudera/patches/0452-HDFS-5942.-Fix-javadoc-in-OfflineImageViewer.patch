@@ -1,0 +1,92 @@
+From 1a25b99c009634f32ec46b4d67064eed392fecff Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Mon, 17 Feb 2014 22:42:07 +0000
+Subject: [PATCH 452/795] HDFS-5942. Fix javadoc in OfflineImageViewer
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1569133 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fe59db93cb9983bdb3c30113d2bdd835cca11f4b)
+---
+ .../hdfs/tools/offlineImageViewer/LsrPBImage.java  |   30 ++++++--------------
+ .../tools/offlineImageViewer/PBImageXmlWriter.java |   24 +--------------
+ 2 files changed, 11 insertions(+), 43 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
+index 273ab6f..372287d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
+@@ -53,28 +53,16 @@
+ import com.google.common.io.LimitInputStream;
+ 
+ /**
+- * This is the tool for analyzing file sizes in the namespace image. In order to
+- * run the tool one should define a range of integers <tt>[0, maxSize]</tt> by
+- * specifying <tt>maxSize</tt> and a <tt>step</tt>. The range of integers is
+- * divided into segments of size <tt>step</tt>:
+- * <tt>[0, s<sub>1</sub>, ..., s<sub>n-1</sub>, maxSize]</tt>, and the visitor
+- * calculates how many files in the system fall into each segment
+- * <tt>[s<sub>i-1</sub>, s<sub>i</sub>)</tt>. Note that files larger than
+- * <tt>maxSize</tt> always fall into the very last segment.
+- *
+- * <h3>Input.</h3>
+- * <ul>
+- * <li><tt>filename</tt> specifies the location of the image file;</li>
+- * <li><tt>maxSize</tt> determines the range <tt>[0, maxSize]</tt> of files
+- * sizes considered by the visitor;</li>
+- * <li><tt>step</tt> the range is divided into segments of size step.</li>
+- * </ul>
+- *
+- * <h3>Output.</h3> The output file is formatted as a tab separated two column
+- * table: Size and NumFiles. Where Size represents the start of the segment, and
+- * numFiles is the number of files form the image which size falls in this
+- * segment.
++ * LsrPBImage displays the blocks of the namespace in a format very similar
++ * to the output of ls/lsr.  Entries are marked as directories or not,
++ * permissions listed, replication, username and groupname, along with size,
++ * modification date and full path.
+  *
++ * Note: A significant difference between the output of the lsr command
++ * and this image visitor is that this class cannot sort the file entries;
++ * they are listed in the order they are stored within the fsimage file. 
++ * Therefore, the output of this class cannot be directly compared to the
++ * output of the lsr command.
+  */
+ final class LsrPBImage {
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+index a02a495..1f43b5b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+@@ -55,28 +55,8 @@
+ import com.google.common.io.LimitInputStream;
+ 
+ /**
+- * This is the tool for analyzing file sizes in the namespace image. In order to
+- * run the tool one should define a range of integers <tt>[0, maxSize]</tt> by
+- * specifying <tt>maxSize</tt> and a <tt>step</tt>. The range of integers is
+- * divided into segments of size <tt>step</tt>:
+- * <tt>[0, s<sub>1</sub>, ..., s<sub>n-1</sub>, maxSize]</tt>, and the visitor
+- * calculates how many files in the system fall into each segment
+- * <tt>[s<sub>i-1</sub>, s<sub>i</sub>)</tt>. Note that files larger than
+- * <tt>maxSize</tt> always fall into the very last segment.
+- *
+- * <h3>Input.</h3>
+- * <ul>
+- * <li><tt>filename</tt> specifies the location of the image file;</li>
+- * <li><tt>maxSize</tt> determines the range <tt>[0, maxSize]</tt> of files
+- * sizes considered by the visitor;</li>
+- * <li><tt>step</tt> the range is divided into segments of size step.</li>
+- * </ul>
+- *
+- * <h3>Output.</h3> The output file is formatted as a tab separated two column
+- * table: Size and NumFiles. Where Size represents the start of the segment, and
+- * numFiles is the number of files form the image which size falls in this
+- * segment.
+- *
++ * PBImageXmlWriter walks over an fsimage structure and writes out
++ * an equivalent XML document that contains the fsimage's components.
+  */
+ @InterfaceAudience.Private
+ public final class PBImageXmlWriter {
+-- 
+1.7.0.4
+

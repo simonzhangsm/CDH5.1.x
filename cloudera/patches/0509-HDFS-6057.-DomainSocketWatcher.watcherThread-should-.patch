@@ -1,0 +1,251 @@
+From 4a6a02f1365b8e0007b035e3d4afd5ffff058085 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Thu, 6 Mar 2014 08:01:48 +0000
+Subject: [PATCH 509/795] HDFS-6057. DomainSocketWatcher.watcherThread should be marked as a daemon thread (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2.4@1574790 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 5ae80f5fce5e5a18acf376c6e88da0440feafd7b)
+---
+ .../hadoop/net/unix/DomainSocketWatcher.java       |   32 +++++++++--------
+ .../hadoop/hdfs/client/DfsClientShmManager.java    |   38 +++++++++++++++++++-
+ .../hadoop/hdfs/client/ShortCircuitCache.java      |    2 +
+ .../apache/hadoop/hdfs/TestBlockReaderFactory.java |   33 +++++++++++++++++
+ 4 files changed, 89 insertions(+), 16 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
+index 838f781..8348aeb 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/net/unix/DomainSocketWatcher.java
+@@ -235,6 +235,7 @@ public DomainSocketWatcher(int interruptCheckPeriodMs) throws IOException {
+     Preconditions.checkArgument(interruptCheckPeriodMs > 0);
+     this.interruptCheckPeriodMs = interruptCheckPeriodMs;
+     notificationSockets = DomainSocket.socketpair();
++    watcherThread.setDaemon(true);
+     watcherThread.start();
+   }
+ 
+@@ -263,6 +264,16 @@ public void close() throws IOException {
+     Uninterruptibles.joinUninterruptibly(watcherThread);
+   }
+ 
++  @VisibleForTesting
++  public boolean isClosed() {
++    lock.lock();
++    try {
++      return closed;
++    } finally {
++      lock.unlock();
++    }
++  }
++
+   /**
+    * Add a socket.
+    *
+@@ -274,7 +285,11 @@ public void close() throws IOException {
+   public void add(DomainSocket sock, Handler handler) {
+     lock.lock();
+     try {
+-      checkNotClosed();
++      if (closed) {
++        handler.handle(sock);
++        IOUtils.cleanup(LOG, sock);
++        return;
++      }
+       Entry entry = new Entry(sock, handler);
+       try {
+         sock.refCount.reference();
+@@ -295,7 +310,6 @@ public void add(DomainSocket sock, Handler handler) {
+         if (!toAdd.contains(entry)) {
+           break;
+         }
+-        checkNotClosed();
+       }
+     } finally {
+       lock.unlock();
+@@ -310,7 +324,7 @@ public void add(DomainSocket sock, Handler handler) {
+   public void remove(DomainSocket sock) {
+     lock.lock();
+     try {
+-      checkNotClosed();
++      if (closed) return;
+       toRemove.put(sock.fd, sock);
+       kick();
+       while (true) {
+@@ -322,7 +336,6 @@ public void remove(DomainSocket sock) {
+         if (!toRemove.containsKey(sock.fd)) {
+           break;
+         }
+-        checkNotClosed();
+       }
+     } finally {
+       lock.unlock();
+@@ -342,17 +355,6 @@ private void kick() {
+     }
+   }
+ 
+-  /**
+-   * Check that the DomainSocketWatcher is not closed.
+-   * Must be called while holding the lock.
+-   */
+-  private void checkNotClosed() {
+-    Preconditions.checkState(lock.isHeldByCurrentThread());
+-    if (closed) {
+-      throw new RuntimeException("DomainSocketWatcher is closed.");
+-    }
+-  }
+-
+   private void sendCallback(String caller, TreeMap<Integer, Entry> entries,
+       FdSet fdSet, int fd) {
+     if (LOG.isTraceEnabled()) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/DfsClientShmManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/DfsClientShmManager.java
+index e6de1a7..0b4c8f8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/DfsClientShmManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/DfsClientShmManager.java
+@@ -21,6 +21,7 @@
+ import com.google.common.base.Preconditions;
+ 
+ import java.io.BufferedOutputStream;
++import java.io.Closeable;
+ import java.io.DataOutputStream;
+ import java.io.EOFException;
+ import java.io.FileInputStream;
+@@ -59,7 +60,7 @@
+  * See {@link ShortCircuitRegistry} for more information on the communication protocol.
+  */
+ @InterfaceAudience.Private
+-public class DfsClientShmManager {
++public class DfsClientShmManager implements Closeable {
+   private static final Log LOG = LogFactory.getLog(DfsClientShmManager.class);
+ 
+   /**
+@@ -225,6 +226,12 @@ private DfsClientShm requestNewShm(String clientName, DomainPeer peer)
+     Slot allocSlot(DomainPeer peer, MutableBoolean usedPeer,
+         String clientName, ExtendedBlockId blockId) throws IOException {
+       while (true) {
++        if (closed) {
++          if (LOG.isTraceEnabled()) {
++            LOG.trace(this + ": the DfsClientShmManager has been closed.");
++          }
++          return null;
++        }
+         if (disabled) {
+           if (LOG.isTraceEnabled()) {
+             LOG.trace(this + ": shared memory segment access is disabled.");
+@@ -374,6 +381,8 @@ final void shutdown(DfsClientShm shm) {
+     }
+   }
+ 
++  private boolean closed = false;
++
+   private final ReentrantLock lock = new ReentrantLock();
+ 
+   /**
+@@ -409,6 +418,10 @@ public Slot allocSlot(DatanodeInfo datanode, DomainPeer peer,
+       String clientName) throws IOException {
+     lock.lock();
+     try {
++      if (closed) {
++        LOG.trace(this + ": the DfsClientShmManager isclosed.");
++        return null;
++      }
+       EndpointShmManager shmManager = datanodes.get(datanode);
+       if (shmManager == null) {
+         shmManager = new EndpointShmManager(datanode);
+@@ -466,9 +479,32 @@ public void visit(Visitor visitor) throws IOException {
+     }
+   }
+ 
++  /**
++   * Close the DfsClientShmManager.
++   */
++  @Override
++  public void close() throws IOException {
++    lock.lock();
++    try {
++      if (closed) return;
++      closed = true;
++    } finally {
++      lock.unlock();
++    }
++    // When closed, the domainSocketWatcher will issue callbacks that mark
++    // all the outstanding DfsClientShm segments as stale.
++    IOUtils.cleanup(LOG, domainSocketWatcher);
++  }
++
++
+   @Override
+   public String toString() {
+     return String.format("ShortCircuitShmManager(%08x)",
+         System.identityHashCode(this));
+   }
++
++  @VisibleForTesting
++  public DomainSocketWatcher getDomainSocketWatcher() {
++    return domainSocketWatcher;
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/ShortCircuitCache.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/ShortCircuitCache.java
+index 32c26d7..97b6a4f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/ShortCircuitCache.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/client/ShortCircuitCache.java
+@@ -887,6 +887,7 @@ ClientMmap getOrCreateClientMmap(ShortCircuitReplica replica,
+   /**
+    * Close the cache and free all associated resources.
+    */
++  @Override
+   public void close() {
+     try {
+       lock.lock();
+@@ -911,6 +912,7 @@ public void close() {
+     } finally {
+       lock.unlock();
+     }
++    IOUtils.cleanup(LOG, shmManager);
+   }
+ 
+   @VisibleForTesting // ONLY for testing
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderFactory.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderFactory.java
+index 5b77d95..76e547d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderFactory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestBlockReaderFactory.java
+@@ -376,4 +376,37 @@ public void testShortCircuitReadFromClientWithoutShm() throws Exception {
+     Assert.assertEquals(null, cache.getDfsClientShmManager());
+     cluster.shutdown();
+   }
++  
++  /**
++   * Test shutting down the ShortCircuitCache while there are things in it.
++   */
++  @Test
++  public void testShortCircuitCacheShutdown() throws Exception {
++    TemporarySocketDirectory sockDir = new TemporarySocketDirectory();
++    Configuration conf = createShortCircuitConf(
++        "testShortCircuitCacheShutdown", sockDir);
++    conf.set(DFS_CLIENT_CONTEXT, "testShortCircuitCacheShutdown");
++    Configuration serverConf = new Configuration(conf);
++    DFSInputStream.tcpReadsDisabledForTesting = true;
++    final MiniDFSCluster cluster =
++        new MiniDFSCluster.Builder(serverConf).numDataNodes(1).build();
++    cluster.waitActive();
++    final DistributedFileSystem fs =
++        (DistributedFileSystem)FileSystem.get(cluster.getURI(0), conf);
++    final String TEST_FILE = "/test_file";
++    final int TEST_FILE_LEN = 4000;
++    final int SEED = 0xFADEC;
++    DFSTestUtil.createFile(fs, new Path(TEST_FILE), TEST_FILE_LEN,
++        (short)1, SEED);
++    byte contents[] = DFSTestUtil.readFileBuffer(fs, new Path(TEST_FILE));
++    byte expected[] = DFSTestUtil.
++        calculateFileContentsFromSeed(SEED, TEST_FILE_LEN);
++    Assert.assertTrue(Arrays.equals(contents, expected));
++    final ShortCircuitCache cache =
++        fs.dfs.getClientContext().getShortCircuitCache();
++    cache.close();
++    Assert.assertTrue(cache.getDfsClientShmManager().
++        getDomainSocketWatcher().isClosed());
++    cluster.shutdown();
++  }
+ }
+-- 
+1.7.0.4
+

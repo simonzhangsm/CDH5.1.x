@@ -1,0 +1,28 @@
+From 67c0e85363ba7a52ef63b4d21fc6f9608527cbff Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Thu, 13 Feb 2014 22:41:29 +0000
+Subject: [PATCH 377/795] HDFS-5913. Nfs3Utils#getWccAttr() should check attr parameter against null. Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1568076 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 08733dfd27dfaafb5c738f57b2993e6218900e5a)
+---
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |    3 ++-
+ 1 files changed, 2 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index c2fc709..a7c0749 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -1828,7 +1828,8 @@ public COMMIT3Response commit(XDR xdr, Channel channel, int xid,
+       } catch (IOException e1) {
+         LOG.info("Can't get postOpAttr for fileId: " + handle.getFileId());
+       }
+-      WccData fileWcc = new WccData(Nfs3Utils.getWccAttr(preOpAttr), postOpAttr);
++      WccData fileWcc = new WccData(preOpAttr == null ? null
++          : Nfs3Utils.getWccAttr(preOpAttr), postOpAttr);
+       return new COMMIT3Response(Nfs3Status.NFS3ERR_IO, fileWcc,
+           Nfs3Constant.WRITE_COMMIT_VERF);
+     }
+-- 
+1.7.0.4
+

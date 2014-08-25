@@ -1,0 +1,260 @@
+From 48f8a6fd52e3546c7eecdfaddfdb202926223ecf Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Tue, 18 Mar 2014 18:14:53 +0000
+Subject: [PATCH 744/795] HDFS-6007. Update documentation about short-circuit local reads (iwasakims via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1578995 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1b8121915ffd6944d8ccec34d011ba8ee3a32305)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+---
+ .../src/main/resources/hdfs-default.xml            |  109 ++++++++++++++++++--
+ .../src/site/apt/ShortCircuitLocalReads.apt.vm     |   78 +++++++++------
+ 2 files changed, 145 insertions(+), 42 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+index b0c4297..cedb350 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/resources/hdfs-default.xml
+@@ -1476,17 +1476,6 @@
+ </property>
+ 
+ <property>
+-  <name>dfs.domain.socket.path</name>
+-  <value></value>
+-  <description>
+-    Optional.  This is a path to a UNIX domain socket that will be used for
+-    communication between the DataNode and local HDFS clients.
+-    If the string "_PORT" is present in this path, it will be replaced by the
+-    TCP port of the DataNode.
+-  </description>
+-</property>
+-
+-<property>
+   <name>dfs.datanode.available-space-volume-choosing-policy.balanced-space-threshold</name>
+   <value>10737418240</value> <!-- 10 GB -->
+   <description>
+@@ -1829,4 +1818,102 @@
+   </description>
+ </property>
+ 
++<property>
++  <name>dfs.client.read.shortcircuit</name>
++  <value>false</value>
++  <description>
++    This configuration parameter turns on short-circuit local reads.
++  </description>
++</property>
++
++<property>
++  <name>dfs.domain.socket.path</name>
++  <value></value>
++  <description>
++    Optional.  This is a path to a UNIX domain socket that will be used for
++    communication between the DataNode and local HDFS clients.
++    If the string "_PORT" is present in this path, it will be replaced by the
++    TCP port of the DataNode.
++  </description>
++</property>
++
++<property>
++  <name>dfs.client.read.shortcircuit.skip.checksum</name>
++  <value>false</value>
++  <description>
++    If this configuration parameter is set,
++    short-circuit local reads will skip checksums.
++    This is normally not recommended,
++    but it may be useful for special setups.
++    You might consider using this
++    if you are doing your own checksumming outside of HDFS.
++  </description>
++</property>
++
++<property>
++  <name>dfs.client.read.shortcircuit.streams.cache.size</name>
++  <value>256</value>
++  <description>
++    The DFSClient maintains a cache of recently opened file descriptors.
++    This parameter controls the size of that cache.
++    Setting this higher will use more file descriptors,
++    but potentially provide better performance on workloads
++    involving lots of seeks.
++  </description>
++</property>
++
++<property>
++  <name>dfs.client.read.shortcircuit.streams.cache.expiry.ms</name>
++  <value>300000</value>
++  <description>
++    This controls the minimum amount of time
++    file descriptors need to sit in the client cache context
++    before they can be closed for being inactive for too long.
++  </description>
++</property>
++
++<property>
++  <name>dfs.datanode.shared.file.descriptor.paths</name>
++  <value>/dev/shm,/tmp</value>
++  <description>
++    Comma separated paths to the directory on which
++    shared memory segments are created.
++    The client and the DataNode exchange information via
++    this shared memory segment.
++    It tries paths in order until creation of shared memory segment succeeds.
++  </description>
++</property>
++
++<property>
++  <name>dfs.client.use.legacy.blockreader.local</name>
++  <value>false</value>
++  <description>
++    Legacy short-circuit reader implementation based on HDFS-2246 is used
++    if this configuration parameter is true.
++    This is for the platforms other than Linux
++    where the new implementation based on HDFS-347 is not available.
++  </description>
++</property>
++
++<property>
++  <name>dfs.block.local-path-access.user</name>
++  <value></value>
++  <description>
++    Comma separated list of the users allowd to open block files
++    on legacy short-circuit local read.
++  </description>
++</property>
++
++<property>
++  <name>dfs.client.domain.socket.data.traffic</name>
++  <value>false</value>
++  <description>
++    This control whether we will try to pass normal data traffic
++    over UNIX domain socket rather than over TCP socket
++    on node-local data transfer.
++    This is currently experimental and turned off by default.
++  </description>
++</property>
++
++>>>>>>> f8c98c4... HDFS-6007. Update documentation about short-circuit local reads (iwasakims via cmccabe)
+ </configuration>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/ShortCircuitLocalReads.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/ShortCircuitLocalReads.apt.vm
+index 6670d8a..8037203 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/ShortCircuitLocalReads.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/ShortCircuitLocalReads.apt.vm
+@@ -21,7 +21,9 @@ HDFS Short-Circuit Local Reads
+ 
+ %{toc|section=1|fromDepth=0}
+ 
+-* {Background}
++* {Short-Circuit Local Reads}
++
++** Background
+ 
+   In <<<HDFS>>>, reads normally go through the <<<DataNode>>>.  Thus, when the
+   client asks the <<<DataNode>>> to read a file, the <<<DataNode>>> reads that
+@@ -31,7 +33,7 @@ HDFS Short-Circuit Local Reads
+   the client is co-located with the data.  Short-circuit reads provide a
+   substantial performance boost to many applications.
+ 
+-* {Configuration}
++** Setup
+ 
+   To configure short-circuit local reads, you will need to enable
+   <<<libhadoop.so>>>.  See
+@@ -39,16 +41,19 @@ HDFS Short-Circuit Local Reads
+   Libraries}} for details on enabling this library.
+ 
+   Short-circuit reads make use of a UNIX domain socket.  This is a special path
+-  in the filesystem that allows the client and the DataNodes to communicate.
+-  You will need to set a path to this socket.  The DataNode needs to be able to
++  in the filesystem that allows the client and the <<<DataNode>>>s to communicate.
++  You will need to set a path to this socket.  The <<<DataNode>>> needs to be able to
+   create this path.  On the other hand, it should not be possible for any user
+-  except the hdfs user or root to create this path.  For this reason, paths
++  except the HDFS user or root to create this path.  For this reason, paths
+   under <<</var/run>>> or <<</var/lib>>> are often used.
+ 
++  The client and the <<<DataNode>>> exchange information via a shared memory segment
++  on <<</dev/shm>>>.
++
+   Short-circuit local reads need to be configured on both the <<<DataNode>>>
+   and the client.
+ 
+-* {Example Configuration}
++** Example Configuration
+ 
+   Here is an example configuration.
+ 
+@@ -65,32 +70,43 @@ HDFS Short-Circuit Local Reads
+ </configuration>
+ ----
+ 
+-* {Configuration Keys}
+-
+-  * dfs.client.read.shortcircuit
+-
+-  This configuration parameter turns on short-circuit local reads.
+-
+-  * dfs.client.read.shortcircuit.skip.checksum
+-
+-  If this configuration parameter is set, short-circuit local reads will skip
+-  checksums.  This is normally not recommended, but it may be useful for
+-  special setups.  You might consider using this if you are doing your own
+-  checksumming outside of HDFS.
++* Legacy HDFS Short-Circuit Local Reads
+ 
+-  * dfs.client.read.shortcircuit.streams.cache.size
++  Legacy implementation of short-circuit local reads
++  on which the clients directly open the HDFS block files
++  is still available for platforms other than the Linux.
++  Setting the value of <<<dfs.client.use.legacy.blockreader.local>>>
++  in addition to <<<dfs.client.read.shortcircuit>>>
++  to true enables this feature.
+ 
+-  The DFSClient maintains a cache of recently opened file descriptors.  This
+-  parameter controls the size of that cache.  Setting this higher will use more
+-  file descriptors, but potentially provide better performance on workloads
+-  involving lots of seeks.
++  You also need to set the value of <<<dfs.datanode.data.dir.perm>>>
++  to <<<750>>> instead of the default <<<700>>> and
++  chmod/chown the directory tree under <<<dfs.datanode.data.dir>>>
++  as readable to the client and the <<<DataNode>>>.
++  You must take caution because this means that
++  the client can read all of the block files bypassing HDFS permission.
+ 
+-  * dfs.client.read.shortcircuit.streams.cache.expiry.ms
++  Because Legacy short-circuit local reads is insecure,
++  access to this feature is limited to the users listed in
++  the value of <<<dfs.block.local-path-access.user>>>.
+ 
+-  This controls the minimum amount of time file descriptors need to sit in the
+-  FileInputStreamCache before they can be closed for being inactive for too long.
+-
+-  * dfs.client.domain.socket.data.traffic
+-
+-  This control whether we will try to pass normal data traffic over UNIX domain
+-  sockets.
++----
++<configuration>
++  <property>
++    <name>dfs.client.read.shortcircuit</name>
++    <value>true</value>
++  </property>
++  <property>
++    <name>dfs.client.use.legacy.blockreader.local</name>
++    <value>true</value>
++  </property>
++  <property>
++    <name>dfs.datanode.data.dir.perm</name>
++    <value>750</value>
++  </property>
++  <property>
++    <name>dfs.block.local-path-access.user</name>
++    <value>foo,bar</value>
++  </property>
++</configuration>
++----
+-- 
+1.7.0.4
+

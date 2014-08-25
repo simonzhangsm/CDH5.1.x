@@ -1,0 +1,149 @@
+From 4afcc2950656be6f35a218e0f730bf764454c9cf Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Tue, 4 Mar 2014 06:08:25 +0000
+Subject: [PATCH 536/795] HDFS-6039. Uploading a File under a Dir with default acls throws "Duplicated ACLFeature". Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1573879 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 4736e2f94d9be0a0b44d277fde7d7525f6c0a5a4)
+---
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |    5 ++-
+ .../hadoop/hdfs/server/namenode/FSAclBaseTest.java |   39 +++++++++++++++
+ .../hadoop-hdfs/src/test/resources/testAclCLI.xml  |   50 ++++++++++++++++++++
+ 3 files changed, 93 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index ea23e6a..d143075 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -2246,6 +2246,7 @@ private boolean addChild(INodesInPath iip, int pos,
+     final Quota.Counts counts = child.computeQuotaUsage();
+     updateCount(iip, pos,
+         counts.get(Quota.NAMESPACE), counts.get(Quota.DISKSPACE), checkQuota);
++    boolean isRename = (child.getParent() != null);
+     final INodeDirectory parent = inodes[pos-1].asDirectory();
+     boolean added = false;
+     try {
+@@ -2260,7 +2261,9 @@ private boolean addChild(INodesInPath iip, int pos,
+           -counts.get(Quota.NAMESPACE), -counts.get(Quota.DISKSPACE));
+     } else {
+       iip.setINode(pos - 1, child.getParent());
+-      AclStorage.copyINodeDefaultAcl(child);
++      if (!isRename) {
++        AclStorage.copyINodeDefaultAcl(child);
++      }
+       addToInodeMap(child);
+     }
+     return added;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
+index d3dc844..c9a6484 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/FSAclBaseTest.java
+@@ -1064,6 +1064,45 @@ public void testDefaultAclNewDirWithMode() throws Exception {
+   }
+ 
+   @Test
++  public void testDefaultAclRenamedFile() throws Exception {
++    Path dirPath = new Path(path, "dir");
++    FileSystem.mkdirs(fs, dirPath, FsPermission.createImmutable((short)0750));
++    List<AclEntry> aclSpec = Lists.newArrayList(
++      aclEntry(DEFAULT, USER, "foo", ALL));
++    fs.setAcl(dirPath, aclSpec);
++    Path filePath = new Path(path, "file1");
++    fs.create(filePath).close();
++    fs.setPermission(filePath, FsPermission.createImmutable((short)0640));
++    Path renamedFilePath = new Path(dirPath, "file1");
++    fs.rename(filePath, renamedFilePath);
++    AclEntry[] expected = new AclEntry[] { };
++    AclStatus s = fs.getAclStatus(renamedFilePath);
++    AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
++    assertArrayEquals(expected, returned);
++    assertPermission(renamedFilePath, (short)0640);
++    assertAclFeature(renamedFilePath, false);
++  }
++
++  @Test
++  public void testDefaultAclRenamedDir() throws Exception {
++    Path dirPath = new Path(path, "dir");
++    FileSystem.mkdirs(fs, dirPath, FsPermission.createImmutable((short)0750));
++    List<AclEntry> aclSpec = Lists.newArrayList(
++      aclEntry(DEFAULT, USER, "foo", ALL));
++    fs.setAcl(dirPath, aclSpec);
++    Path subdirPath = new Path(path, "subdir");
++    FileSystem.mkdirs(fs, subdirPath, FsPermission.createImmutable((short)0750));
++    Path renamedSubdirPath = new Path(dirPath, "subdir");
++    fs.rename(subdirPath, renamedSubdirPath);
++    AclEntry[] expected = new AclEntry[] { };
++    AclStatus s = fs.getAclStatus(renamedSubdirPath);
++    AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
++    assertArrayEquals(expected, returned);
++    assertPermission(renamedSubdirPath, (short)0750);
++    assertAclFeature(renamedSubdirPath, false);
++  }
++
++  @Test
+   public void testSkipAclEnforcementPermsDisabled() throws Exception {
+     Path bruceDir = new Path(path, "bruce");
+     Path bruceFile = new Path(bruceDir, "file");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testAclCLI.xml b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testAclCLI.xml
+index c01c56d..2edc46e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testAclCLI.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testAclCLI.xml
+@@ -972,5 +972,55 @@
+         </comparator>
+       </comparators>
+     </test>
++    <test>
++      <description>copyFromLocal: copying file into a directory with a default ACL</description>
++      <test-commands>
++        <command>-fs NAMENODE -mkdir /dir1</command>
++        <command>-fs NAMENODE -setfacl -m default:user:charlie:rwx /dir1</command>
++        <command>-fs NAMENODE -copyFromLocal CLITEST_DATA/data15bytes /dir1/data15bytes</command>
++        <command>-fs NAMENODE -getfacl /dir1/data15bytes</command>
++      </test-commands>
++      <cleanup-commands>
++        <command>-fs NAMENODE -rm -R /dir1</command>
++      </cleanup-commands>
++      <comparators>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^# file: /dir1/data15bytes$</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^# owner: USERNAME$</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^# group: supergroup$</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^user::rw-$</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^user:charlie:rwx\t#effective:r--$</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^group::r-x\t#effective:r--$</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^mask::r--$</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^other::r--$</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpAcrossOutputComparator</type>
++          <expected-output>.*(?!default).*</expected-output>
++        </comparator>
++      </comparators>
++    </test>
+   </tests>
+ </configuration>
+-- 
+1.7.0.4
+

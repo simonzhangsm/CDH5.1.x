@@ -1,0 +1,80 @@
+From b44ee56607967c3bac33c596d67df98683c40672 Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Thu, 20 Mar 2014 02:40:54 +0000
+Subject: [PATCH 662/795] YARN-1640. Fixed manual failover of ResourceManagers to work correctly in secure clusters. Contributed by Xuan Gong.
+ svn merge --ignore-ancestry -c 1579510 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1579511 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f783e6c0a20dca4de92984f96801f2f73a070d04)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+---
+ .../server/resourcemanager/ResourceManager.java    |   23 +++++++++++++++++++-
+ 1 files changed, 22 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 9fd337f..49c0c3d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -21,6 +21,7 @@
+ import java.io.IOException;
+ import java.io.InputStream;
+ import java.net.InetSocketAddress;
++import java.security.PrivilegedExceptionAction;
+ import java.util.List;
+ import java.util.concurrent.BlockingQueue;
+ import java.util.concurrent.LinkedBlockingQueue;
+@@ -162,6 +163,8 @@
+   /** End of Active services */
+ 
+   private Configuration conf;
++
++  private UserGroupInformation rmLoginUGI;
+   
+   public ResourceManager() {
+     super("ResourceManager");
+@@ -232,6 +235,8 @@ protected void serviceInit(Configuration conf) throws Exception {
+ 
+     webAppAddress = WebAppUtils.getRMWebAppURLWithoutScheme(this.conf);
+ 
++    this.rmLoginUGI = UserGroupInformation.getCurrentUser();
++
+     super.serviceInit(this.conf);
+   }
+   
+@@ -849,7 +854,18 @@ synchronized void transitionToActive() throws Exception {
+     }
+ 
+     LOG.info("Transitioning to active state");
+-    startActiveServices();
++
++    // use rmLoginUGI to startActiveServices.
++    // in non-secure model, rmLoginUGI will be current UGI
++    // in secure model, rmLoginUGI will be LoginUser UGI
++    this.rmLoginUGI.doAs(new PrivilegedExceptionAction<Void>() {
++      @Override
++      public Void run() throws Exception {
++        startActiveServices();
++        return null;
++      }
++    });
++
+     rmContext.setHAServiceState(HAServiceProtocol.HAServiceState.ACTIVE);
+     LOG.info("Transitioned to active state");
+   }
+@@ -901,6 +917,11 @@ protected void doSecureLogin() throws IOException {
+ 	  InetSocketAddress socAddr = getBindAddress(conf);
+     SecurityUtil.login(this.conf, YarnConfiguration.RM_KEYTAB,
+         YarnConfiguration.RM_PRINCIPAL, socAddr.getHostName());
++
++    // if security is enable, set rmLoginUGI as UGI of loginUser
++    if (UserGroupInformation.isSecurityEnabled()) {
++      this.rmLoginUGI = UserGroupInformation.getLoginUser();
++    }
+   }
+ 
+   @Override
+-- 
+1.7.0.4
+

@@ -1,0 +1,146 @@
+From f86d931359d0a8f8639a52a0b41efa6019a13ffc Mon Sep 17 00:00:00 2001
+From: Vinod Kumar Vavilapalli <vinodkv@apache.org>
+Date: Tue, 18 Feb 2014 21:50:37 +0000
+Subject: [PATCH 660/795] YARN-1590. Fixed ResourceManager, web-app proxy and MR JobHistoryServer to expand _HOST properly in their kerberos principles. Contributed by Mohammad Kamrul Islam.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1569537 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a7a091712a7eb4e59b0e6796f8c7699a419dd852)
+
+Conflicts:
+	hadoop-yarn-project/CHANGES.txt
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+---
+ .../hadoop/mapreduce/v2/hs/JobHistoryServer.java   |   16 +++++++++++++++-
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |    3 +++
+ .../server/resourcemanager/ResourceManager.java    |   17 ++++++++++++++++-
+ .../yarn/server/webproxy/WebAppProxyServer.java    |   16 +++++++++++++++-
+ 4 files changed, 49 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/JobHistoryServer.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/JobHistoryServer.java
+index 10b4509..75b7c5b 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/JobHistoryServer.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/JobHistoryServer.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.mapreduce.v2.hs;
+ 
+ import java.io.IOException;
++import java.net.InetSocketAddress;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -172,8 +173,21 @@ protected HistoryServerStateStoreService createStateStore(
+   }
+ 
+   protected void doSecureLogin(Configuration conf) throws IOException {
++    InetSocketAddress socAddr = getBindAddress(conf);
+     SecurityUtil.login(conf, JHAdminConfig.MR_HISTORY_KEYTAB,
+-        JHAdminConfig.MR_HISTORY_PRINCIPAL);
++        JHAdminConfig.MR_HISTORY_PRINCIPAL, socAddr.getHostName());
++  }
++
++  /**
++   * Retrieve JHS bind address from configuration
++   *
++   * @param conf
++   * @return InetSocketAddress
++   */
++  public static InetSocketAddress getBindAddress(Configuration conf) {
++    return conf.getSocketAddr(JHAdminConfig.MR_HISTORY_ADDRESS,
++      JHAdminConfig.DEFAULT_MR_HISTORY_ADDRESS,
++      JHAdminConfig.DEFAULT_MR_HISTORY_PORT);
+   }
+ 
+   @Override
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index cfbf4fc..477564d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -862,6 +862,9 @@
+   /** The address for the web proxy.*/
+   public static final String PROXY_ADDRESS =
+     PROXY_PREFIX + "address";
++  public static final int DEFAULT_PROXY_PORT = 9099;
++  public static final String DEFAULT_PROXY_ADDRESS =
++    "0.0.0.0:" + DEFAULT_RM_PORT;
+   
+   /**
+    * YARN Service Level Authorization
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+index 03ea22a..9fd337f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ResourceManager.java
+@@ -20,6 +20,7 @@
+ 
+ import java.io.IOException;
+ import java.io.InputStream;
++import java.net.InetSocketAddress;
+ import java.util.List;
+ import java.util.concurrent.BlockingQueue;
+ import java.util.concurrent.LinkedBlockingQueue;
+@@ -897,8 +898,9 @@ protected void serviceStart() throws Exception {
+   }
+   
+   protected void doSecureLogin() throws IOException {
++	  InetSocketAddress socAddr = getBindAddress(conf);
+     SecurityUtil.login(this.conf, YarnConfiguration.RM_KEYTAB,
+-        YarnConfiguration.RM_PRINCIPAL);
++        YarnConfiguration.RM_PRINCIPAL, socAddr.getHostName());
+   }
+ 
+   @Override
+@@ -1045,4 +1047,17 @@ private void resetDispatcher() {
+     addIfService(rmDispatcher);
+     rmContext.setDispatcher(rmDispatcher);
+   }
++
++
++  /**
++   * Retrieve RM bind address from configuration
++   *
++   * @param conf
++   * @return InetSocketAddress
++   */
++public static InetSocketAddress getBindAddress(Configuration conf) {
++    return conf.getSocketAddr(YarnConfiguration.RM_ADDRESS,
++      YarnConfiguration.DEFAULT_RM_ADDRESS,
++      YarnConfiguration.DEFAULT_RM_PORT);
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxyServer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxyServer.java
+index c8474a5..d082bdc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxyServer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxyServer.java
+@@ -19,6 +19,7 @@
+ package org.apache.hadoop.yarn.server.webproxy;
+ 
+ import java.io.IOException;
++import java.net.InetSocketAddress;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -69,8 +70,21 @@ protected void serviceInit(Configuration conf) throws Exception {
+    * @throws IOException on any error.
+    */
+   protected void doSecureLogin(Configuration conf) throws IOException {
++    InetSocketAddress socAddr = getBindAddress(conf);  
+     SecurityUtil.login(conf, YarnConfiguration.PROXY_KEYTAB,
+-        YarnConfiguration.PROXY_PRINCIPAL);
++        YarnConfiguration.PROXY_PRINCIPAL, socAddr.getHostName());
++  }
++
++  /**
++   * Retrieve PROXY bind address from configuration
++   *
++   * @param conf
++   * @return InetSocketAddress
++   */
++  public static InetSocketAddress getBindAddress(Configuration conf) {
++    return conf.getSocketAddr(YarnConfiguration.PROXY_ADDRESS,
++      YarnConfiguration.DEFAULT_PROXY_ADDRESS,
++      YarnConfiguration.DEFAULT_PROXY_PORT);
+   }
+ 
+   public static void main(String[] args) {
+-- 
+1.7.0.4
+

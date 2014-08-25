@@ -1,0 +1,27 @@
+From fc622233a6a30ba5b734db9382af1d31474b4b3e Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Fri, 31 Jan 2014 23:09:19 +0000
+Subject: [PATCH 367/795] HDFS-5859.  DataNode#checkBlockToken should check block tokens even if security is not enabled (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1563330 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e5c7fa397ad0d96cc965bf9db8ce90bb090f5ad3)
+---
+ .../hadoop/hdfs/server/datanode/DataNode.java      |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index 3e81e06..adf6923 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -1196,7 +1196,7 @@ public HdfsBlocksMetadata getHdfsBlocksMetadata(List<ExtendedBlock> blocks,
+   
+   private void checkBlockToken(ExtendedBlock block, Token<BlockTokenIdentifier> token,
+       AccessMode accessMode) throws IOException {
+-    if (isBlockTokenEnabled && UserGroupInformation.isSecurityEnabled()) {
++    if (isBlockTokenEnabled) {
+       BlockTokenIdentifier id = new BlockTokenIdentifier();
+       ByteArrayInputStream buf = new ByteArrayInputStream(token.getIdentifier());
+       DataInputStream in = new DataInputStream(buf);
+-- 
+1.7.0.4
+

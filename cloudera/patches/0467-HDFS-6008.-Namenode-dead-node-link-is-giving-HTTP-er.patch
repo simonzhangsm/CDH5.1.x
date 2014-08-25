@@ -1,0 +1,63 @@
+From 855f26130745840e95bf6374e71b7ba60a01de36 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Wed, 26 Feb 2014 00:33:20 +0000
+Subject: [PATCH 467/795] HDFS-6008. Namenode dead node link is giving HTTP error 500. Contributed by Benoy Antony.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1571883 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 49996c87a49e42258b85c30b97b01e46fa216422)
+---
+ .../hadoop/hdfs/server/common/JspHelper.java       |    4 +++-
+ .../hadoop/hdfs/server/common/TestJspHelper.java   |   16 ++++++++++++++++
+ 2 files changed, 19 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
+index 3998809..f554207 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
+@@ -139,7 +139,9 @@ public static String canonicalize(String addr) {
+    */
+   public static final class Url {
+     public static String authority(String scheme, DatanodeID d) {
+-      String fqdn = canonicalize(d.getIpAddr());
++      String fqdn = (d.getIpAddr() != null && !d.getIpAddr().isEmpty())?
++          canonicalize(d.getIpAddr()): 
++          d.getHostName();
+       if (scheme.equals("http")) {
+         return fqdn + ":" + d.getInfoPort();
+       } else if (scheme.equals("https")) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
+index 21d5cd3..5bb388e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/common/TestJspHelper.java
+@@ -20,6 +20,7 @@
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertTrue;
++import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.fail;
+ import static org.mockito.Mockito.*;
+ 
+@@ -611,5 +612,20 @@ public void testUpgradeStatusReport() {
+     assertTrue(upgradeStatusReport.getStatusText(true).equals(
+         MessageFormat.format(EXPECTED_NOTF_PATTERN, version)));
+   }  
++  
++  @Test 
++  public void testAuthority(){
++    DatanodeID dnWithIp = new DatanodeID("127.0.0.1", "hostName", null,
++        50020, 50075, 50076, 50010);
++    assertNotNull(JspHelper.Url.authority("http", dnWithIp));
++
++    DatanodeID dnWithNullIp = new DatanodeID(null, "hostName", null,
++        50020, 50075, 50076, 50010);
++    assertNotNull(JspHelper.Url.authority("http", dnWithNullIp));
++
++    DatanodeID dnWithEmptyIp = new DatanodeID("", "hostName", null,
++        50020, 50075, 50076, 50010);
++    assertNotNull(JspHelper.Url.authority("http", dnWithEmptyIp));
++  }
+ }
+ 
+-- 
+1.7.0.4
+

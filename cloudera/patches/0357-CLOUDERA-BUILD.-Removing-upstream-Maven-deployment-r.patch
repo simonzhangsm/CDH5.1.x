@@ -1,0 +1,33 @@
+From ad6e9c9946e9374c23ccc3bdc6a63aa7dfed6f16 Mon Sep 17 00:00:00 2001
+From: Andrew Bayer <andrew@cloudera.com>
+Date: Fri, 14 Feb 2014 16:07:35 -0800
+Subject: [PATCH 357/795] CLOUDERA-BUILD. Removing upstream Maven deployment repos
+
+---
+ pom.xml |   10 ----------
+ 1 files changed, 0 insertions(+), 10 deletions(-)
+
+diff --git a/pom.xml b/pom.xml
+index c4cd10a..cf95d39 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -40,16 +40,6 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
+   </dependencyManagement>
+ 
+   <distributionManagement>
+-    <repository>
+-      <id>${distMgmtStagingId}</id>
+-      <name>${distMgmtStagingName}</name>
+-      <url>${distMgmtStagingUrl}</url>
+-    </repository>
+-    <snapshotRepository>
+-      <id>${distMgmtSnapshotsId}</id>
+-      <name>${distMgmtSnapshotsName}</name>
+-      <url>${distMgmtSnapshotsUrl}</url>
+-    </snapshotRepository>
+     <site>
+       <id>apache.website</id>
+       <url>scpexe://people.apache.org/www/hadoop.apache.org/docs/r${project.version}</url>
+-- 
+1.7.0.4
+

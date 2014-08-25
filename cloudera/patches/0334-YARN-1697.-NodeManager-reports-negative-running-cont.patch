@@ -1,0 +1,86 @@
+From c957c5fa5fbf53a64c06fa00b81cd17032aa0189 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Tue, 11 Feb 2014 20:14:30 +0000
+Subject: [PATCH 334/795] YARN-1697. NodeManager reports negative running containers (Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1567356 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 83858d5078e1a26a2bdcbbde358dbeccc587b640)
+(cherry picked from commit 0ea73884bd00aaafc4fea0b3a58841ffbcedf2c4)
+---
+ .../containermanager/container/ContainerImpl.java  |   10 ++++++++--
+ .../nodemanager/metrics/NodeManagerMetrics.java    |    4 ++++
+ .../containermanager/container/TestContainer.java  |    3 +++
+ 3 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/container/ContainerImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/container/ContainerImpl.java
+index 486f3ce..862e3fa 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/container/ContainerImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/container/ContainerImpl.java
+@@ -83,6 +83,7 @@
+   private final String user;
+   private int exitCode = ContainerExitStatus.INVALID;
+   private final StringBuilder diagnostics;
++  private boolean wasLaunched;
+ 
+   /** The NM-wide configuration - not specific to this container */
+   private final Configuration daemonConf;
+@@ -418,7 +419,9 @@ private void finished() {
+             applicationId, containerId);
+         break;
+       case EXITED_WITH_FAILURE:
+-        metrics.endRunningContainer();
++        if (wasLaunched) {
++          metrics.endRunningContainer();
++        }
+         // fall through
+       case LOCALIZATION_FAILED:
+         metrics.failedContainer();
+@@ -428,7 +431,9 @@ private void finished() {
+             applicationId, containerId);
+         break;
+       case CONTAINER_CLEANEDUP_AFTER_KILL:
+-        metrics.endRunningContainer();
++        if (wasLaunched) {
++          metrics.endRunningContainer();
++        }
+         // fall through
+       case NEW:
+         metrics.killedContainer();
+@@ -636,6 +641,7 @@ public void transition(ContainerImpl container, ContainerEvent event) {
+           new ContainerStartMonitoringEvent(container.containerId,
+               vmemBytes, pmemBytes));
+       container.metrics.runningContainer();
++      container.wasLaunched  = true;
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/metrics/NodeManagerMetrics.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/metrics/NodeManagerMetrics.java
+index 4d62247..1feb8c7 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/metrics/NodeManagerMetrics.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/metrics/NodeManagerMetrics.java
+@@ -99,4 +99,8 @@ public void releaseContainer(Resource res) {
+   public void addResource(Resource res) {
+     availableGB.incr(res.getMemory() / 1024);
+   }
++  
++  public int getRunningContainers() {
++    return containersRunning.value();
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/container/TestContainer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/container/TestContainer.java
+index addb28d..3199fdf 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/container/TestContainer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/container/TestContainer.java
+@@ -348,6 +348,9 @@ public void testKillOnLocalizedWhenContainerNotLaunched() throws Exception {
+           wc.c.getContainerState());
+       assertNull(wc.c.getLocalizedResources());
+       verifyCleanupCall(wc);
++      wc.c.handle(new ContainerEvent(wc.c.getContainerId(),
++          ContainerEventType.CONTAINER_RESOURCES_CLEANEDUP));
++      assertEquals(0, metrics.getRunningContainers());
+     } finally {
+       if (wc != null) {
+         wc.finished();
+-- 
+1.7.0.4
+

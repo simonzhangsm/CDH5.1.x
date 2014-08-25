@@ -1,0 +1,82 @@
+From f026b3d9594b3ef795a034f3cf1ce234c066e9f7 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Mon, 3 Mar 2014 16:40:25 +0000
+Subject: [PATCH 534/795] HADOOP-10314. The ls command help still shows outdated 0.16 format. Contributed by Rushabh S Shah.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1573604 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 2a338df0a3a583ccde0d04fdc45e7cb2409a0a73)
+---
+ .../main/java/org/apache/hadoop/fs/shell/Ls.java   |   24 ++++++++++----------
+ .../hadoop-common/src/test/resources/testConf.xml  |   16 +++----------
+ 2 files changed, 16 insertions(+), 24 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Ls.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Ls.java
+index a41be7e..eecd3b0 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Ls.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/shell/Ls.java
+@@ -51,18 +51,18 @@ public static void registerCommands(CommandFactory factory) {
+   public static final String NAME = "ls";
+   public static final String USAGE = "[-d] [-h] [-R] [<path> ...]";
+   public static final String DESCRIPTION =
+-    "List the contents that match the specified file pattern. If\n" + 
+-    "path is not specified, the contents of /user/<currentUser>\n" +
+-    "will be listed. Directory entries are of the form \n" +
+-    "\tdirName (full path) <dir> \n" +
+-    "and file entries are of the form \n" + 
+-    "\tfileName(full path) <r n> size \n" +
+-    "where n is the number of replicas specified for the file \n" + 
+-    "and size is the size of the file, in bytes.\n" +
+-    "  -d  Directories are listed as plain files.\n" +
+-    "  -h  Formats the sizes of files in a human-readable fashion\n" +
+-    "      rather than a number of bytes.\n" +
+-    "  -R  Recursively list the contents of directories.";
++		    "List the contents that match the specified file pattern. If\n" + 
++		    "path is not specified, the contents of /user/<currentUser>\n" +
++		    "will be listed. Directory entries are of the form \n" +
++		    "\tpermissions - userid groupid size_of_directory(in bytes) modification_date(yyyy-MM-dd HH:mm) directoryName \n" +
++		    "and file entries are of the form \n" + 
++		    "\tpermissions number_of_replicas userid groupid size_of_file(in bytes) modification_date(yyyy-MM-dd HH:mm) fileName \n" +
++		    "  -d  Directories are listed as plain files.\n" +
++		    "  -h  Formats the sizes of files in a human-readable fashion\n" +
++		    "      rather than a number of bytes.\n" +
++		    "  -R  Recursively list the contents of directories.";
++		  
++  
+ 
+   protected static final SimpleDateFormat dateFormat = 
+     new SimpleDateFormat("yyyy-MM-dd HH:mm");
+diff --git a/hadoop-common-project/hadoop-common/src/test/resources/testConf.xml b/hadoop-common-project/hadoop-common/src/test/resources/testConf.xml
+index 544494d..2f310bd 100644
+--- a/hadoop-common-project/hadoop-common/src/test/resources/testConf.xml
++++ b/hadoop-common-project/hadoop-common/src/test/resources/testConf.xml
+@@ -70,23 +70,15 @@
+         </comparator>
+         <comparator>
+           <type>RegexpComparator</type>
+-          <expected-output>^( |\t)*dirName \(full path\) &lt;dir&gt;( )*</expected-output>
++          <expected-output>^( |\t)*permissions - userid groupid size_of_directory\(in bytes\) modification_date\(yyyy-MM-dd HH:mm\) directoryName( )*</expected-output>
+         </comparator>
+-        <comparator>
++         <comparator>
+           <type>RegexpComparator</type>
+           <expected-output>^( |\t)*and file entries are of the form( )*</expected-output>
+         </comparator>
+-        <comparator>
+-          <type>RegexpComparator</type>
+-          <expected-output>^( |\t)*fileName\(full path\) &lt;r n&gt; size( )*</expected-output>
+-        </comparator>
+-        <comparator>
+-          <type>RegexpComparator</type>
+-          <expected-output>^( |\t)*where n is the number of replicas specified for the file( )*</expected-output>
+-        </comparator>
+-        <comparator>
++          <comparator>
+           <type>RegexpComparator</type>
+-          <expected-output>^( |\t)*and size is the size of the file, in bytes.( )*</expected-output>
++          <expected-output>^( |\t)*permissions number_of_replicas userid groupid size_of_file\(in bytes\) modification_date\(yyyy-MM-dd HH:mm\) fileName( )*</expected-output>
+         </comparator>
+         <comparator>
+           <type>RegexpComparator</type>
+-- 
+1.7.0.4
+

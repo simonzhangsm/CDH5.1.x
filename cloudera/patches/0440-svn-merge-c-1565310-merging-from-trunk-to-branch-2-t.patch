@@ -1,0 +1,59 @@
+From 52a8175e2a04fd115cb9e3604ef06f77a2eeded7 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Thu, 6 Feb 2014 15:48:21 +0000
+Subject: [PATCH 440/795] svn merge -c 1565310 merging from trunk to branch-2 to fix: HDFS-5881. Fix skip() of the short-circuit local reader(legacy).
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1565313 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit fa0d7a8f534115bae47063f413b7229fd7c72123)
+---
+ .../apache/hadoop/hdfs/BlockReaderLocalLegacy.java |    6 +++---
+ .../org/apache/hadoop/hdfs/DFSInputStream.java     |    8 ++++++++
+ 2 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderLocalLegacy.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderLocalLegacy.java
+index bdea5dc..f9c498d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderLocalLegacy.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderLocalLegacy.java
+@@ -630,7 +630,7 @@ public synchronized long skip(long n) throws IOException {
+         skipBuf = new byte[bytesPerChecksum];
+       }
+       int ret = read(skipBuf, 0, (int)(n - remaining));
+-      return ret;
++      return (remaining + ret);
+     }
+   
+     // optimize for big gap: discard the current buffer, skip to
+@@ -661,9 +661,9 @@ public synchronized long skip(long n) throws IOException {
+     int ret = read(skipBuf, 0, myOffsetFromChunkBoundary);
+ 
+     if (ret == -1) {  // EOS
+-      return toskip;
++      return (toskip + remaining);
+     } else {
+-      return (toskip + ret);
++      return (toskip + remaining + ret);
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+index 386f0d3..1042003 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+@@ -1167,6 +1167,14 @@ public synchronized void seek(long targetPos) throws IOException {
+           pos += blockReader.skip(diff);
+           if (pos == targetPos) {
+             done = true;
++          } else {
++            // The range was already checked. If the block reader returns
++            // something unexpected instead of throwing an exception, it is
++            // most likely a bug. 
++            String errMsg = "BlockReader failed to seek to " + 
++                targetPos + ". Instead, it seeked to " + pos + ".";
++            DFSClient.LOG.warn(errMsg);
++            throw new IOException(errMsg);
+           }
+         } catch (IOException e) {//make following read to retry
+           if(DFSClient.LOG.isDebugEnabled()) {
+-- 
+1.7.0.4
+

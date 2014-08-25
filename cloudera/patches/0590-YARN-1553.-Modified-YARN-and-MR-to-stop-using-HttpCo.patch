@@ -1,0 +1,1277 @@
+From a0715c8a17d011ad68775605c813cdca3550f756 Mon Sep 17 00:00:00 2001
+From: Robert Kanter <rkanter@cloudera.com>
+Date: Fri, 2 May 2014 09:51:40 -0700
+Subject: [PATCH 590/795] YARN-1553. Modified YARN and MR to stop using HttpConfig.isSecure() and
+ instead rely on the http policy framework. And also fix some bugs related
+ to https handling in YARN web-apps. Contributed by Haohui Mai.
+ svn merge --ignore-ancestry -c 1568501 ../../trunk/
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568503 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 4b17705dcd4d1fa647144c44abc314ce48bbf71a)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-client/src/main/java/org/apache/hadoop/yarn/client/api/impl/TimelineClientImpl.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-common/src/main/java/org/apache/hadoop/yarn/server/webapp/AppBlock.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmcontainer/TestRMContainerImpl.java
+---
+ .../hadoop/fs/CommonConfigurationKeysPublic.java   |    3 +
+ .../java/org/apache/hadoop/http/HttpConfig.java    |   25 ---------
+ .../hadoop/mapreduce/v2/app/MRAppMaster.java       |    3 +-
+ .../mapreduce/v2/jobhistory/JHAdminConfig.java     |    3 +-
+ .../hadoop/mapreduce/v2/util/MRWebAppUtil.java     |    8 ++-
+ .../hadoop/mapreduce/jobhistory/HistoryViewer.java |    8 ++-
+ .../org/apache/hadoop/mapreduce/util/HostUtil.java |    5 +-
+ .../hadoop/mapreduce/v2/hs/JobHistoryServer.java   |    2 -
+ .../hadoop/mapreduce/v2/MiniMRYarnCluster.java     |    6 +-
+ .../java/org/apache/hadoop/yarn/conf/HAUtil.java   |    8 ++--
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |   38 +++++++++-----
+ .../org/apache/hadoop/yarn/webapp/WebApps.java     |   15 ++++-
+ .../hadoop/yarn/webapp/util/WebAppUtils.java       |   55 ++++++++++++++------
+ .../org/apache/hadoop/yarn/conf/TestHAUtil.java    |   10 ++--
+ .../yarn/server/nodemanager/NodeManager.java       |    9 ---
+ .../yarn/server/nodemanager/webapp/NavBlock.java   |    1 -
+ .../rmapp/attempt/RMAppAttemptImpl.java            |    5 +-
+ .../server/resourcemanager/webapp/AppBlock.java    |   12 +++--
+ .../server/resourcemanager/webapp/AppsBlock.java   |    8 ++-
+ .../webapp/FairSchedulerAppsBlock.java             |    8 ++-
+ .../server/resourcemanager/webapp/NodesPage.java   |    3 +-
+ .../resourcemanager/webapp/RMWebServices.java      |   13 +++--
+ .../resourcemanager/webapp/dao/AppAttemptInfo.java |    3 +-
+ .../server/resourcemanager/webapp/dao/AppInfo.java |   15 ++---
+ .../server/resourcemanager/TestRMAdminService.java |    3 +-
+ .../yarn/server/resourcemanager/TestRMHA.java      |    8 ++-
+ .../recovery/TestZKRMStateStore.java               |    4 +-
+ .../rmapp/attempt/TestRMAppAttemptTransitions.java |    5 +-
+ .../webapp/TestRMWebServicesApps.java              |    3 +-
+ .../apache/hadoop/yarn/server/MiniYARNCluster.java |    2 +-
+ .../yarn/server/TestMiniYARNClusterForHA.java      |   18 +++----
+ .../hadoop/yarn/server/webproxy/ProxyUriUtils.java |   23 +--------
+ .../hadoop/yarn/server/webproxy/WebAppProxy.java   |   20 +++++--
+ .../yarn/server/webproxy/WebAppProxyServlet.java   |    6 ++-
+ .../webproxy/amfilter/AmFilterInitializer.java     |    3 +-
+ .../server/webproxy/TestWebAppProxyServlet.java    |    5 +-
+ 36 files changed, 191 insertions(+), 175 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
+index 3e7fdc5..4c62efa 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/CommonConfigurationKeysPublic.java
+@@ -277,7 +277,10 @@
+ 
+ 
+   // HTTP policies to be used in configuration
++  // Use HttpPolicy.name() instead
++  @Deprecated
+   public static final String HTTP_POLICY_HTTP_ONLY = "HTTP_ONLY";
++  @Deprecated
+   public static final String HTTP_POLICY_HTTPS_ONLY = "HTTPS_ONLY";
+ }
+ 
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpConfig.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpConfig.java
+index d323f76..15008ad 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpConfig.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/http/HttpConfig.java
+@@ -28,7 +28,6 @@
+ @InterfaceAudience.Private
+ @InterfaceStability.Unstable
+ public class HttpConfig {
+-  private static Policy policy;
+   public enum Policy {
+     HTTP_ONLY,
+     HTTPS_ONLY,
+@@ -52,28 +51,4 @@ public boolean isHttpsEnabled() {
+       return this == HTTPS_ONLY || this == HTTP_AND_HTTPS;
+     }
+   }
+-
+-  static {
+-    Configuration conf = new Configuration();
+-    boolean sslEnabled = conf.getBoolean(
+-            CommonConfigurationKeysPublic.HADOOP_SSL_ENABLED_KEY,
+-            CommonConfigurationKeysPublic.HADOOP_SSL_ENABLED_DEFAULT);
+-    policy = sslEnabled ? Policy.HTTPS_ONLY : Policy.HTTP_ONLY;
+-  }
+-
+-  public static void setPolicy(Policy policy) {
+-    HttpConfig.policy = policy;
+-  }
+-
+-  public static boolean isSecure() {
+-    return policy == Policy.HTTPS_ONLY;
+-  }
+-
+-  public static String getSchemePrefix() {
+-    return (isSecure()) ? "https://" : "http://";
+-  }
+-
+-  public static String getScheme(Policy policy) {
+-    return policy == Policy.HTTPS_ONLY ? "https://" : "http://";
+-  }
+ }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
+index b6263b5..f471efc 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-app/src/main/java/org/apache/hadoop/mapreduce/v2/app/MRAppMaster.java
+@@ -1373,7 +1373,8 @@ public static void main(String[] args) {
+       // RM/NM to issue SSL certificates but definitely not MR-AM as it is
+       // running in user-land.
+       MRWebAppUtil.initialize(conf);
+-      HttpConfig.setPolicy(HttpConfig.Policy.HTTP_ONLY);
++      conf.set(YarnConfiguration.YARN_HTTP_POLICY_KEY,
++          HttpConfig.Policy.HTTP_ONLY.name());
+       String jobUserName = System
+           .getenv(ApplicationConstants.Environment.USER.name());
+       conf.set(MRJobConfig.USER_NAME, jobUserName);
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/v2/jobhistory/JHAdminConfig.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/v2/jobhistory/JHAdminConfig.java
+index 2cc2336..2e1a22e 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/v2/jobhistory/JHAdminConfig.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/v2/jobhistory/JHAdminConfig.java
+@@ -21,6 +21,7 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
++import org.apache.hadoop.http.HttpConfig;
+ 
+ /**
+  * Stores Job History configuration keys that can be set by administrators of
+@@ -135,7 +136,7 @@
+   public static final String MR_HS_HTTP_POLICY = MR_HISTORY_PREFIX
+       + "http.policy";
+   public static String DEFAULT_MR_HS_HTTP_POLICY =
+-          CommonConfigurationKeysPublic.HTTP_POLICY_HTTP_ONLY;
++          HttpConfig.Policy.HTTP_ONLY.name();
+   
+   /**The address the history server webapp is on.*/
+   public static final String MR_HISTORY_WEBAPP_ADDRESS =
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/v2/util/MRWebAppUtil.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/v2/util/MRWebAppUtil.java
+index 49a0407..2d453f1 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/v2/util/MRWebAppUtil.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-common/src/main/java/org/apache/hadoop/mapreduce/v2/util/MRWebAppUtil.java
+@@ -71,11 +71,13 @@ public static Policy getYARNHttpPolicy() {
+   }
+ 
+   public static String getYARNWebappScheme() {
+-    return HttpConfig.getScheme(httpPolicyInYarn);
++    return httpPolicyInYarn == HttpConfig.Policy.HTTPS_ONLY ? "https://"
++        : "http://";
+   }
+-  
++
+   public static String getJHSWebappScheme() {
+-    return HttpConfig.getScheme(httpPolicyInJHS);
++    return httpPolicyInJHS == HttpConfig.Policy.HTTPS_ONLY ? "https://"
++        : "http://";
+   }
+   
+   public static void setJHSWebappURLWithoutScheme(Configuration conf,
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/HistoryViewer.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/HistoryViewer.java
+index 92490a5..eaeadea 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/HistoryViewer.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/jobhistory/HistoryViewer.java
+@@ -45,6 +45,7 @@
+ import org.apache.hadoop.mapreduce.jobhistory.JobHistoryParser.TaskInfo;
+ import org.apache.hadoop.mapreduce.util.HostUtil;
+ import org.apache.hadoop.util.StringUtils;
++import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ 
+ /**
+  * HistoryViewer is used to parse and view the JobHistory files 
+@@ -231,7 +232,8 @@ private void printAllTaskAttempts(TaskType taskType) {
+           taskList.append("\t"); 
+           taskList.append(attempt.getHostname()).append("\t");
+           taskList.append(attempt.getError());
+-          String taskLogsUrl = getTaskLogsUrl(attempt);
++          String taskLogsUrl = getTaskLogsUrl(
++              WebAppUtils.getHttpSchemePrefix(fs.getConf()), attempt);
+           taskList.append(taskLogsUrl != null ? taskLogsUrl : "n/a");
+           System.out.println(taskList.toString());
+         }
+@@ -446,7 +448,7 @@ private void printFailedAttempts(FilteredJob filteredJob) {
+    * @return the taskLogsUrl. null if http-port or tracker-name or
+    *         task-attempt-id are unavailable.
+    */
+-  public static String getTaskLogsUrl(
++  public static String getTaskLogsUrl(String scheme,
+       JobHistoryParser.TaskAttemptInfo attempt) {
+     if (attempt.getHttpPort() == -1
+         || attempt.getTrackerName().equals("")
+@@ -457,7 +459,7 @@ public static String getTaskLogsUrl(
+     String taskTrackerName =
+       HostUtil.convertTrackerNameToHostName(
+         attempt.getTrackerName());
+-    return HostUtil.getTaskLogUrl(taskTrackerName,
++    return HostUtil.getTaskLogUrl(scheme, taskTrackerName,
+         Integer.toString(attempt.getHttpPort()),
+         attempt.getAttemptId().toString());
+   }
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/util/HostUtil.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/util/HostUtil.java
+index 0a42bb7..e131fc8 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/util/HostUtil.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/util/HostUtil.java
+@@ -20,7 +20,6 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.classification.InterfaceStability.Unstable;
+-import org.apache.hadoop.http.HttpConfig;
+ 
+ @Private
+ @Unstable
+@@ -33,9 +32,9 @@
+    * @param taskAttemptID
+    * @return the taskLogUrl
+    */
+-  public static String getTaskLogUrl(String taskTrackerHostName,
++  public static String getTaskLogUrl(String scheme, String taskTrackerHostName,
+     String httpPort, String taskAttemptID) {
+-    return (HttpConfig.getSchemePrefix() + taskTrackerHostName + ":" +
++    return (scheme + taskTrackerHostName + ":" +
+         httpPort + "/tasklog?attemptid=" + taskAttemptID);
+   }
+ 
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/JobHistoryServer.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/JobHistoryServer.java
+index 665e3bc..10b4509 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/JobHistoryServer.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/JobHistoryServer.java
+@@ -24,7 +24,6 @@
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.mapred.JobConf;
+ import org.apache.hadoop.mapreduce.MRConfig;
+ import org.apache.hadoop.mapreduce.v2.hs.HistoryServerStateStoreService.HistoryServerState;
+@@ -122,7 +121,6 @@ protected void serviceInit(Configuration conf) throws Exception {
+ 
+     // This is required for WebApps to use https if enabled.
+     MRWebAppUtil.initialize(getConfig());
+-    HttpConfig.setPolicy(MRWebAppUtil.getJHSHttpPolicy());
+     try {
+       doSecureLogin(conf);
+     } catch(IOException ie) {
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/MiniMRYarnCluster.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/MiniMRYarnCluster.java
+index 0104704..00109c5 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/MiniMRYarnCluster.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-jobclient/src/test/java/org/apache/hadoop/mapreduce/v2/MiniMRYarnCluster.java
+@@ -230,9 +230,9 @@ public void run() {
+                WebAppUtils.getRMWebAppURLWithoutScheme(getConfig()));
+       LOG.info("MiniMRYARN HistoryServer address: " +
+                getConfig().get(JHAdminConfig.MR_HISTORY_ADDRESS));
+-      LOG.info("MiniMRYARN HistoryServer web address: " +
+-          getResolvedMRHistoryWebAppURLWithoutScheme(getConfig(),
+-              HttpConfig.isSecure()));
++      LOG.info("MiniMRYARN HistoryServer web address: "
++          + getResolvedMRHistoryWebAppURLWithoutScheme(getConfig(),
++              MRWebAppUtil.getJHSHttpPolicy() == HttpConfig.Policy.HTTPS_ONLY));
+     }
+ 
+     @Override
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/HAUtil.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/HAUtil.java
+index b5a0b1a..e3114ce 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/HAUtil.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/HAUtil.java
+@@ -100,7 +100,7 @@ private static void verifyAndSetRMHAIdsList(Configuration conf) {
+     StringBuilder setValue = new StringBuilder();
+     for (String id: ids) {
+       // verify the RM service addresses configurations for every RMIds
+-      for (String prefix : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++      for (String prefix : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+         checkAndSetRMRPCAddress(prefix, id, conf);
+       }
+       setValue.append(id);
+@@ -158,7 +158,7 @@ private static void verifyAndSetConfValue(String prefix, Configuration conf) {
+   }
+ 
+   public static void verifyAndSetAllServiceAddresses(Configuration conf) {
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+      verifyAndSetConfValue(confKey, conf);
+     }
+   }
+@@ -236,7 +236,7 @@ static String getRMHAIdsWarningMessage(String ids) {
+   @InterfaceAudience.Private
+   @VisibleForTesting
+   static String getConfKeyForRMInstance(String prefix, Configuration conf) {
+-    if (!YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS.contains(prefix)) {
++    if (!YarnConfiguration.getServiceAddressConfKeys(conf).contains(prefix)) {
+       return prefix;
+     } else {
+       String RMId = getRMHAId(conf);
+@@ -289,7 +289,7 @@ private static void checkAndSetRMRPCAddress(String prefix, String RMId,
+               hostNameConfKey + " or " + addSuffix(prefix, RMId)));
+         } else {
+           conf.set(addSuffix(prefix, RMId), confVal + ":"
+-              + YarnConfiguration.getRMDefaultPortNumber(prefix));
++              + YarnConfiguration.getRMDefaultPortNumber(prefix, conf));
+         }
+       }
+     } catch (IllegalArgumentException iae) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index e46d76f..cfbf4fc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -26,11 +26,9 @@
+ import org.apache.hadoop.HadoopIllegalArgumentException;
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.classification.InterfaceAudience.Public;
+-import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.classification.InterfaceStability.Evolving;
+ import org.apache.hadoop.classification.InterfaceStability.Unstable;
+ import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+ import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.util.StringUtils;
+@@ -197,6 +195,8 @@
+   /** The https address of the RM web application.*/
+   public static final String RM_WEBAPP_HTTPS_ADDRESS =
+       RM_PREFIX + "webapp.https.address";
++  public static final boolean YARN_SSL_CLIENT_HTTPS_NEED_AUTH_DEFAULT = false;
++  public static final String YARN_SSL_SERVER_RESOURCE_DEFAULT = "ssl-server.xml";
+   
+   public static final int DEFAULT_RM_WEBAPP_HTTPS_PORT = 8090;
+   public static final String DEFAULT_RM_WEBAPP_HTTPS_ADDRESS = "0.0.0.0:"
+@@ -362,15 +362,21 @@
+   public static final String DEFAULT_RM_CONFIGURATION_PROVIDER_CLASS =
+       "org.apache.hadoop.yarn.LocalConfigurationProvider";
+ 
+-  @Private
+-  public static final List<String> RM_SERVICES_ADDRESS_CONF_KEYS =
++  private static final List<String> RM_SERVICES_ADDRESS_CONF_KEYS_HTTP =
++      Collections.unmodifiableList(Arrays.asList(
++          RM_ADDRESS,
++          RM_SCHEDULER_ADDRESS,
++          RM_ADMIN_ADDRESS,
++          RM_RESOURCE_TRACKER_ADDRESS,
++          RM_WEBAPP_ADDRESS));
++
++  private static final List<String> RM_SERVICES_ADDRESS_CONF_KEYS_HTTPS =
+       Collections.unmodifiableList(Arrays.asList(
+           RM_ADDRESS,
+           RM_SCHEDULER_ADDRESS,
+           RM_ADMIN_ADDRESS,
+           RM_RESOURCE_TRACKER_ADDRESS,
+-          HttpConfig.isSecure() ? RM_WEBAPP_HTTPS_ADDRESS
+-              : RM_WEBAPP_ADDRESS));
++          RM_WEBAPP_HTTPS_ADDRESS));
+ 
+   public static final String AUTO_FAILOVER_PREFIX =
+       RM_HA_PREFIX + "automatic-failover.";
+@@ -1072,10 +1078,9 @@
+       YARN_PREFIX + "client.max-nodemanagers-proxies";
+   public static final int DEFAULT_NM_CLIENT_MAX_NM_PROXIES = 500;
+ 
+-  public static final String YARN_HTTP_POLICY_KEY =
+-          YARN_PREFIX + "http.policy";
+-  public static final String YARN_HTTP_POLICY_DEFAULT =
+-          CommonConfigurationKeysPublic.HTTP_POLICY_HTTP_ONLY;
++  public static final String YARN_HTTP_POLICY_KEY = YARN_PREFIX + "http.policy";
++  public static final String YARN_HTTP_POLICY_DEFAULT = HttpConfig.Policy.HTTP_ONLY
++      .name();
+ 
+   public YarnConfiguration() {
+     super();
+@@ -1088,6 +1093,12 @@ public YarnConfiguration(Configuration conf) {
+     }
+   }
+ 
++  @Private
++  public static List<String> getServiceAddressConfKeys(Configuration conf) {
++    return useHttps(conf) ? RM_SERVICES_ADDRESS_CONF_KEYS_HTTPS
++        : RM_SERVICES_ADDRESS_CONF_KEYS_HTTP;
++  }
++
+   /**
+    * Get the socket address for <code>name</code> property as a
+    * <code>InetSocketAddress</code>. On a HA cluster,
+@@ -1102,7 +1113,7 @@ public YarnConfiguration(Configuration conf) {
+   public InetSocketAddress getSocketAddr(
+       String name, String defaultAddress, int defaultPort) {
+     String address;
+-    if (HAUtil.isHAEnabled(this) && RM_SERVICES_ADDRESS_CONF_KEYS.contains(name)) {
++    if (HAUtil.isHAEnabled(this) && getServiceAddressConfKeys(this).contains(name)) {
+       address = HAUtil.getConfValueForRMInstance(name, defaultAddress, this);
+     } else {
+       address = get(name, defaultAddress);
+@@ -1121,7 +1132,8 @@ public InetSocketAddress updateConnectAddr(String name,
+   }
+ 
+   @Private
+-  public static int getRMDefaultPortNumber(String addressPrefix) {
++  public static int getRMDefaultPortNumber(String addressPrefix,
++      Configuration conf) {
+     if (addressPrefix.equals(YarnConfiguration.RM_ADDRESS)) {
+       return YarnConfiguration.DEFAULT_RM_PORT;
+     } else if (addressPrefix.equals(YarnConfiguration.RM_SCHEDULER_ADDRESS)) {
+@@ -1139,7 +1151,7 @@ public static int getRMDefaultPortNumber(String addressPrefix) {
+       throw new HadoopIllegalArgumentException(
+           "Invalid RM RPC address Prefix: " + addressPrefix
+               + ". The valid value should be one of "
+-              + YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS);
++              + getServiceAddressConfKeys(conf));
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApps.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApps.java
+index 317baec..590cd96 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApps.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/WebApps.java
+@@ -37,7 +37,9 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.http.HttpServer2;
+ import org.apache.hadoop.security.UserGroupInformation;
++import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.security.AdminACLsManager;
++import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -216,9 +218,11 @@ public void setup() {
+             System.exit(1);
+           }
+         }
+-        HttpServer2.Builder builder = new HttpServer2.Builder().setName(name)
+-            .addEndpoint(URI.create("http://" + bindAddress + ":" + port))
+-            .setConf(conf).setFindPort(findPort)
++        HttpServer2.Builder builder = new HttpServer2.Builder()
++            .setName(name)
++            .addEndpoint(
++                URI.create(WebAppUtils.getHttpSchemePrefix(conf) + bindAddress
++                    + ":" + port)).setConf(conf).setFindPort(findPort)
+             .setACL(new AdminACLsManager(conf).getAdminAcl())
+             .setPathSpec(pathList.toArray(new String[0]));
+ 
+@@ -231,6 +235,11 @@ public void setup() {
+               .setKeytabConfKey(spnegoKeytabKey)
+               .setSecurityEnabled(UserGroupInformation.isSecurityEnabled());
+         }
++
++        if (YarnConfiguration.useHttps(conf)) {
++          WebAppUtils.loadSslConfiguration(builder);
++        }
++
+         HttpServer2 server = builder.build();
+ 
+         for(ServletStruct struct: servlets) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java
+index 065d680..9d7718c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/webapp/util/WebAppUtils.java
+@@ -24,18 +24,14 @@
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.classification.InterfaceStability.Evolving;
+ import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.http.HttpConfig.Policy;
++import org.apache.hadoop.http.HttpServer2;
+ import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ 
+-import com.google.common.base.Joiner;
+-
+ @Private
+ @Evolving
+ public class WebAppUtils {
+-  private static final Joiner JOINER = Joiner.on("");
+-
+   public static void setRMWebAppPort(Configuration conf, int port) {
+     String hostname = getRMWebAppURLWithoutScheme(conf);
+     hostname =
+@@ -47,7 +43,7 @@ public static void setRMWebAppPort(Configuration conf, int port) {
+   public static void setRMWebAppHostnameAndPort(Configuration conf,
+       String hostname, int port) {
+     String resolvedAddress = hostname + ":" + port;
+-    if (HttpConfig.isSecure()) {
++    if (YarnConfiguration.useHttps(conf)) {
+       conf.set(YarnConfiguration.RM_WEBAPP_HTTPS_ADDRESS, resolvedAddress);
+     } else {
+       conf.set(YarnConfiguration.RM_WEBAPP_ADDRESS, resolvedAddress);
+@@ -56,7 +52,7 @@ public static void setRMWebAppHostnameAndPort(Configuration conf,
+   
+   public static void setNMWebAppHostNameAndPort(Configuration conf,
+       String hostName, int port) {
+-    if (HttpConfig.isSecure()) {
++    if (YarnConfiguration.useHttps(conf)) {
+       conf.set(YarnConfiguration.NM_WEBAPP_HTTPS_ADDRESS,
+           hostName + ":" + port);
+     } else {
+@@ -66,16 +62,11 @@ public static void setNMWebAppHostNameAndPort(Configuration conf,
+   }
+   
+   public static String getRMWebAppURLWithScheme(Configuration conf) {
+-    return JOINER.join(HttpConfig.getSchemePrefix(),
+-        HttpConfig.isSecure() ? conf.get(
+-            YarnConfiguration.RM_WEBAPP_HTTPS_ADDRESS,
+-            YarnConfiguration.DEFAULT_RM_WEBAPP_HTTPS_ADDRESS) : conf.get(
+-            YarnConfiguration.RM_WEBAPP_ADDRESS,
+-            YarnConfiguration.DEFAULT_RM_WEBAPP_ADDRESS));
++    return getHttpSchemePrefix(conf) + getRMWebAppURLWithoutScheme(conf);
+   }
+   
+   public static String getRMWebAppURLWithoutScheme(Configuration conf) {
+-    if (HttpConfig.isSecure()) {
++    if (YarnConfiguration.useHttps(conf)) {
+       return conf.get(YarnConfiguration.RM_WEBAPP_HTTPS_ADDRESS,
+           YarnConfiguration.DEFAULT_RM_WEBAPP_HTTPS_ADDRESS);
+     }else {
+@@ -93,13 +84,13 @@ public static String getProxyHostAndPort(Configuration conf) {
+   }
+ 
+   public static String getResolvedRMWebAppURLWithScheme(Configuration conf) {
+-    return HttpConfig.getSchemePrefix()
++    return getHttpSchemePrefix(conf)
+         + getResolvedRMWebAppURLWithoutScheme(conf);
+   }
+   
+   public static String getResolvedRMWebAppURLWithoutScheme(Configuration conf) {
+     return getResolvedRMWebAppURLWithoutScheme(conf,
+-        HttpConfig.isSecure() ? Policy.HTTPS_ONLY : Policy.HTTP_ONLY);
++        YarnConfiguration.useHttps(conf) ? Policy.HTTPS_ONLY : Policy.HTTP_ONLY);
+   }
+   
+   public static String getResolvedRMWebAppURLWithoutScheme(Configuration conf,
+@@ -136,7 +127,7 @@ public static String getResolvedRMWebAppURLWithoutScheme(Configuration conf,
+   }
+   
+   public static String getNMWebAppURLWithoutScheme(Configuration conf) {
+-    if (HttpConfig.isSecure()) {
++    if (YarnConfiguration.useHttps(conf)) {
+       return conf.get(YarnConfiguration.NM_WEBAPP_HTTPS_ADDRESS,
+         YarnConfiguration.DEFAULT_NM_WEBAPP_HTTPS_ADDRESS);
+     } else {
+@@ -160,4 +151,34 @@ public static String getURLWithScheme(String schemePrefix, String url) {
+       return schemePrefix + url;
+     }
+   }
++
++  /**
++   * Choose which scheme (HTTP or HTTPS) to use when generating a URL based on
++   * the configuration.
++   * 
++   * @return the schmeme (HTTP / HTTPS)
++   */
++  public static String getHttpSchemePrefix(Configuration conf) {
++    return YarnConfiguration.useHttps(conf) ? "https://" : "http://";
++  }
++
++  /**
++   * Load the SSL keystore / truststore into the HttpServer builder.
++   */
++  public static HttpServer2.Builder loadSslConfiguration(
++      HttpServer2.Builder builder) {
++    Configuration sslConf = new Configuration(false);
++    boolean needsClientAuth = YarnConfiguration.YARN_SSL_CLIENT_HTTPS_NEED_AUTH_DEFAULT;
++    sslConf.addResource(YarnConfiguration.YARN_SSL_SERVER_RESOURCE_DEFAULT);
++
++    return builder
++        .needsClientAuth(needsClientAuth)
++        .keyPassword(sslConf.get("ssl.server.keystore.keypassword"))
++        .keyStore(sslConf.get("ssl.server.keystore.location"),
++            sslConf.get("ssl.server.keystore.password"),
++            sslConf.get("ssl.server.keystore.type", "jks"))
++        .trustStore(sslConf.get("ssl.server.truststore.location"),
++            sslConf.get("ssl.server.truststore.password"),
++            sslConf.get("ssl.server.truststore.type", "jks"));
++  }
+ }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/conf/TestHAUtil.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/conf/TestHAUtil.java
+index 891b434..6ced5f2 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/conf/TestHAUtil.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/test/java/org/apache/hadoop/yarn/conf/TestHAUtil.java
+@@ -54,7 +54,7 @@ public void setUp() {
+     conf.set(YarnConfiguration.RM_HA_IDS, RM_NODE_IDS_UNTRIMMED);
+     conf.set(YarnConfiguration.RM_HA_ID, RM1_NODE_ID_UNTRIMMED);
+ 
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+       // configuration key itself cannot contains space/tab/return chars.
+       conf.set(HAUtil.addSuffix(confKey, RM1_NODE_ID), RM1_ADDRESS_UNTRIMMED);
+       conf.set(HAUtil.addSuffix(confKey, RM2_NODE_ID), RM2_ADDRESS);
+@@ -95,7 +95,7 @@ public void testVerifyAndSetConfiguration() throws Exception {
+       StringUtils.getStringCollection(RM_NODE_IDS), HAUtil.getRMHAIds(conf));
+     assertEquals("Should be saved as Trimmed string",
+       RM1_NODE_ID, HAUtil.getRMHAId(conf));
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+       assertEquals("RPC address not set for " + confKey,
+         RM1_ADDRESS, conf.get(confKey));
+     }
+@@ -117,7 +117,7 @@ public void testVerifyAndSetConfiguration() throws Exception {
+     // simulate the case YarnConfiguration.RM_HA_ID is not set
+     conf.set(YarnConfiguration.RM_HA_IDS, RM1_NODE_ID + ","
+         + RM2_NODE_ID);
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+       conf.set(HAUtil.addSuffix(confKey, RM1_NODE_ID), RM1_ADDRESS);
+       conf.set(HAUtil.addSuffix(confKey, RM2_NODE_ID), RM2_ADDRESS);
+     }
+@@ -134,7 +134,7 @@ public void testVerifyAndSetConfiguration() throws Exception {
+     conf.set(YarnConfiguration.RM_HA_ID, RM_INVALID_NODE_ID);
+     conf.set(YarnConfiguration.RM_HA_IDS, RM_INVALID_NODE_ID + ","
+         + RM1_NODE_ID);
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+       // simulate xml with invalid node id
+       conf.set(confKey + RM_INVALID_NODE_ID, RM_INVALID_NODE_ID);
+     }
+@@ -169,7 +169,7 @@ public void testVerifyAndSetConfiguration() throws Exception {
+     conf.clear();
+     conf.set(YarnConfiguration.RM_HA_IDS, RM2_NODE_ID + "," + RM3_NODE_ID);
+     conf.set(YarnConfiguration.RM_HA_ID, RM1_NODE_ID_UNTRIMMED);
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+       conf.set(HAUtil.addSuffix(confKey, RM1_NODE_ID), RM1_ADDRESS_UNTRIMMED);
+       conf.set(HAUtil.addSuffix(confKey, RM2_NODE_ID), RM2_ADDRESS);
+       conf.set(HAUtil.addSuffix(confKey, RM3_NODE_ID), RM3_ADDRESS);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeManager.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeManager.java
+index a169c12..d9a5408 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeManager.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/NodeManager.java
+@@ -28,8 +28,6 @@
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience.Private;
+ import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.http.HttpConfig;
+-import org.apache.hadoop.http.HttpConfig.Policy;
+ import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+ import org.apache.hadoop.security.SecurityUtil;
+ import org.apache.hadoop.service.CompositeService;
+@@ -397,15 +395,8 @@ public static void main(String[] args) {
+     StringUtils.startupShutdownMessage(NodeManager.class, args, LOG);
+     NodeManager nodeManager = new NodeManager();
+     Configuration conf = new YarnConfiguration();
+-    setHttpPolicy(conf);
+     nodeManager.initAndStartNodeManager(conf, false);
+   }
+-  
+-  private static void setHttpPolicy(Configuration conf) {
+-    HttpConfig.setPolicy(Policy.fromString(conf.get(
+-      YarnConfiguration.YARN_HTTP_POLICY_KEY,
+-      YarnConfiguration.YARN_HTTP_POLICY_DEFAULT)));
+-  }
+ 
+   @VisibleForTesting
+   @Private
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/webapp/NavBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/webapp/NavBlock.java
+index 424da04..c198ae6 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/webapp/NavBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/webapp/NavBlock.java
+@@ -19,7 +19,6 @@
+ package org.apache.hadoop.yarn.server.nodemanager.webapp;
+ 
+ import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.yarn.webapp.YarnWebParams;
+ import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+index a7e2817..f422886 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/RMAppAttemptImpl.java
+@@ -502,10 +502,11 @@ private String generateProxyUriWithScheme(
+       final String trackingUriWithoutScheme) {
+     this.readLock.lock();
+     try {
++      final String scheme = WebAppUtils.getHttpSchemePrefix(conf);
+       URI trackingUri = StringUtils.isEmpty(trackingUriWithoutScheme) ? null :
+-        ProxyUriUtils.getUriFromAMUrl(trackingUriWithoutScheme);
++        ProxyUriUtils.getUriFromAMUrl(scheme, trackingUriWithoutScheme);
+       String proxy = WebAppUtils.getProxyHostAndPort(conf);
+-      URI proxyUri = ProxyUriUtils.getUriFromAMUrl(proxy);
++      URI proxyUri = ProxyUriUtils.getUriFromAMUrl(scheme, proxy);
+       URI result = ProxyUriUtils.getProxyUri(trackingUri, proxyUri,
+           applicationAttemptId.getApplicationId());
+       return result.toASCIIString();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/AppBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/AppBlock.java
+index 445a5a2..ac8578e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/AppBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/AppBlock.java
+@@ -27,7 +27,7 @@
+ 
+ import java.util.Collection;
+ 
+-import org.apache.hadoop.http.HttpConfig;
++import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.util.StringUtils;
+ import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
+@@ -46,6 +46,7 @@
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.DIV;
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TABLE;
++import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
+ import org.apache.hadoop.yarn.webapp.view.InfoBlock;
+ 
+@@ -55,13 +56,16 @@
+ 
+   private ApplicationACLsManager aclsManager;
+   private QueueACLsManager queueACLsManager;
++  private final Configuration conf;
+ 
+   @Inject
+   AppBlock(ResourceManager rm, ViewContext ctx,
+-      ApplicationACLsManager aclsManager, QueueACLsManager queueACLsManager) {
++      ApplicationACLsManager aclsManager, QueueACLsManager queueACLsManager,
++      Configuration conf) {
+     super(ctx);
+     this.aclsManager = aclsManager;
+     this.queueACLsManager = queueACLsManager;
++    this.conf = conf;
+   }
+ 
+   @Override
+@@ -86,7 +90,7 @@ protected void render(Block html) {
+       puts("Application not found: "+ aid);
+       return;
+     }
+-    AppInfo app = new AppInfo(rmApp, true);
++    AppInfo app = new AppInfo(rmApp, true, WebAppUtils.getHttpSchemePrefix(conf));
+ 
+     // Check for the authorization.
+     String remoteUser = request().getRemoteUser();
+@@ -146,7 +150,7 @@ protected void render(Block html) {
+       table.tr((odd = !odd) ? _ODD : _EVEN).
+         td(String.valueOf(attemptInfo.getAttemptId())).
+         td(Times.format(attemptInfo.getStartTime())).
+-        td().a(".nodelink", url(HttpConfig.getSchemePrefix(),
++        td().a(".nodelink", url("//",
+             attemptInfo.getNodeHttpAddress()),
+             attemptInfo.getNodeHttpAddress())._().
+         td().a(".logslink", url(attemptInfo.getLogsLink()), "logs")._().
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/AppsBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/AppsBlock.java
+index cec95ac..4f644d1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/AppsBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/AppsBlock.java
+@@ -28,6 +28,7 @@
+ import java.util.concurrent.ConcurrentMap;
+ 
+ import org.apache.commons.lang.StringEscapeUtils;
++import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+@@ -36,16 +37,19 @@
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TABLE;
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TBODY;
++import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
+ 
+ import com.google.inject.Inject;
+ 
+ class AppsBlock extends HtmlBlock {
+   final ConcurrentMap<ApplicationId, RMApp> apps;
++  private final Configuration conf;
+ 
+-@Inject AppsBlock(RMContext rmContext, ViewContext ctx) {
++@Inject AppsBlock(RMContext rmContext, ViewContext ctx, Configuration conf) {
+     super(ctx);
+     apps = rmContext.getRMApps();
++    this.conf = conf;
+   }
+ 
+   @Override public void render(Block html) {
+@@ -79,7 +83,7 @@
+       if (reqAppStates != null && !reqAppStates.contains(app.createApplicationState())) {
+         continue;
+       }
+-      AppInfo appInfo = new AppInfo(app, true);
++      AppInfo appInfo = new AppInfo(app, true, WebAppUtils.getHttpSchemePrefix(conf));
+       String percent = String.format("%.1f", appInfo.getProgress());
+       //AppID numerical value parsed by parseHadoopID in yarn.dt.plugins.js
+       appsTableData.append("[\"<a href='")
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
+index 6bbcb2b..c36e311 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
+@@ -28,6 +28,7 @@
+ import java.util.concurrent.ConcurrentMap;
+ 
+ import org.apache.commons.lang.StringEscapeUtils;
++import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.YarnApplicationState;
+@@ -40,6 +41,7 @@
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TABLE;
+ import org.apache.hadoop.yarn.webapp.hamlet.Hamlet.TBODY;
++import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ import org.apache.hadoop.yarn.webapp.view.HtmlBlock;
+ 
+ import com.google.inject.Inject;
+@@ -51,13 +53,15 @@
+ public class FairSchedulerAppsBlock extends HtmlBlock {
+   final ConcurrentMap<ApplicationId, RMApp> apps;
+   final FairSchedulerInfo fsinfo;
++  final Configuration conf;
+   
+   @Inject public FairSchedulerAppsBlock(RMContext rmContext, 
+-      ResourceManager rm, ViewContext ctx) {
++      ResourceManager rm, ViewContext ctx, Configuration conf) {
+     super(ctx);
+     FairScheduler scheduler = (FairScheduler) rm.getResourceScheduler();
+     fsinfo = new FairSchedulerInfo(scheduler);
+     apps = rmContext.getRMApps();
++    this.conf = conf;
+   }
+   
+   @Override public void render(Block html) {
+@@ -92,7 +96,7 @@
+       if (reqAppStates != null && !reqAppStates.contains(app.createApplicationState())) {
+         continue;
+       }
+-      AppInfo appInfo = new AppInfo(app, true);
++      AppInfo appInfo = new AppInfo(app, true, WebAppUtils.getHttpSchemePrefix(conf));
+       String percent = String.format("%.1f", appInfo.getProgress());
+       ApplicationAttemptId attemptId = app.getCurrentAppAttempt().getAppAttemptId();
+       int fairShare = fsinfo.getAppFairShare(attemptId);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/NodesPage.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/NodesPage.java
+index d79e775..d5c75d0 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/NodesPage.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/NodesPage.java
+@@ -26,7 +26,6 @@
+ 
+ import java.util.Collection;
+ 
+-import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.util.StringUtils;
+ import org.apache.hadoop.yarn.api.records.NodeState;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+@@ -119,7 +118,7 @@ protected void render(Block html) {
+           row.td()._("N/A")._();
+         } else {
+           String httpAddress = info.getNodeHTTPAddress();
+-          row.td().a(HttpConfig.getSchemePrefix() + httpAddress,
++          row.td().a("//" + httpAddress,
+               httpAddress)._();
+         }
+         row.td().br().$title(String.valueOf(info.getLastHealthUpdate()))._().
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebServices.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebServices.java
+index e854e2c..60fbfcd 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebServices.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/RMWebServices.java
+@@ -41,6 +41,7 @@
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
++import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.security.UserGroupInformation;
+ import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
+ import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
+@@ -85,6 +86,7 @@
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+ import org.apache.hadoop.yarn.webapp.BadRequestException;
+ import org.apache.hadoop.yarn.webapp.NotFoundException;
++import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ 
+ import com.google.inject.Inject;
+ import com.google.inject.Singleton;
+@@ -101,16 +103,18 @@
+       .getRecordFactory(null);
+   private final ApplicationACLsManager aclsManager;
+   private final QueueACLsManager queueACLsManager;
+-
++  private final Configuration conf;
+   private @Context HttpServletResponse response;
+ 
+   @Inject
+   public RMWebServices(final ResourceManager rm,
+       final ApplicationACLsManager aclsManager,
+-      final QueueACLsManager queueACLsManager) {
++      final QueueACLsManager queueACLsManager,
++      Configuration conf) {
+     this.rm = rm;
+     this.aclsManager = aclsManager;
+     this.queueACLsManager = queueACLsManager;
++    this.conf = conf;
+   }
+ 
+   protected Boolean hasAccess(RMApp app, HttpServletRequest hsr) {
+@@ -415,7 +419,8 @@ public AppsInfo getApps(@Context HttpServletRequest hsr,
+         }
+       }
+ 
+-      AppInfo app = new AppInfo(rmapp, hasAccess(rmapp, hsr));
++      AppInfo app = new AppInfo(rmapp, hasAccess(rmapp, hsr),
++          WebAppUtils.getHttpSchemePrefix(conf));
+       allApps.add(app);
+     }
+     return allApps;
+@@ -555,7 +560,7 @@ public AppInfo getApp(@Context HttpServletRequest hsr,
+     if (app == null) {
+       throw new NotFoundException("app with id: " + appId + " not found");
+     }
+-    return new AppInfo(app, hasAccess(app, hsr));
++    return new AppInfo(app, hasAccess(app, hsr), hsr.getScheme() + "://");
+   }
+ 
+   @GET
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/AppAttemptInfo.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/AppAttemptInfo.java
+index 6c90338..35f21db 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/AppAttemptInfo.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/AppAttemptInfo.java
+@@ -23,7 +23,6 @@
+ import javax.xml.bind.annotation.XmlAccessorType;
+ import javax.xml.bind.annotation.XmlRootElement;
+ 
+-import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.yarn.api.records.Container;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+ import org.apache.hadoop.yarn.util.ConverterUtils;
+@@ -56,7 +55,7 @@ public AppAttemptInfo(RMAppAttempt attempt, String user) {
+         this.containerId = masterContainer.getId().toString();
+         this.nodeHttpAddress = masterContainer.getNodeHttpAddress();
+         this.nodeId = masterContainer.getNodeId().toString();
+-        this.logsLink = join(HttpConfig.getSchemePrefix(),
++        this.logsLink = join("//",
+             masterContainer.getNodeHttpAddress(),
+             "/node", "/containerlogs/",
+             ConverterUtils.toString(masterContainer.getId()), "/", user);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/AppInfo.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/AppInfo.java
+index a4f4873..6cb6114 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/AppInfo.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/dao/AppInfo.java
+@@ -25,7 +25,6 @@
+ import javax.xml.bind.annotation.XmlTransient;
+ 
+ import com.google.common.base.Joiner;
+-import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.yarn.api.records.ApplicationId;
+ import org.apache.hadoop.yarn.api.records.ApplicationResourceUsageReport;
+ import org.apache.hadoop.yarn.api.records.Container;
+@@ -53,6 +52,8 @@
+   protected boolean amContainerLogsExist = false;
+   @XmlTransient
+   protected ApplicationId applicationId;
++  @XmlTransient
++  private String schemePrefix;
+ 
+   // these are ok for any user to see
+   protected String id;
+@@ -82,12 +83,8 @@
+   public AppInfo() {
+   } // JAXB needs this
+ 
+-  public AppInfo(RMApp app, Boolean hasAccess, String host) {
+-    this(app, hasAccess);
+-  }
+-
+-  public AppInfo(RMApp app, Boolean hasAccess) {
+-
++  public AppInfo(RMApp app, Boolean hasAccess, String schemePrefix) {
++    this.schemePrefix = schemePrefix;
+     if (app != null) {
+       String trackingUrl = app.getTrackingUrl();
+       this.state = app.createApplicationState();
+@@ -100,7 +97,7 @@ public AppInfo(RMApp app, Boolean hasAccess) {
+           .getFinishTime() == 0 ? "ApplicationMaster" : "History");
+       if (!trackingUrlIsNotReady) {
+         this.trackingUrl =
+-            WebAppUtils.getURLWithScheme(HttpConfig.getSchemePrefix(),
++            WebAppUtils.getURLWithScheme(schemePrefix,
+                 trackingUrl);
+         this.trackingUrlPretty = this.trackingUrl;
+       } else {
+@@ -134,7 +131,7 @@ public AppInfo(RMApp app, Boolean hasAccess) {
+           Container masterContainer = attempt.getMasterContainer();
+           if (masterContainer != null) {
+             this.amContainerLogsExist = true;
+-            String url = join(HttpConfig.getSchemePrefix(),
++            String url = join(schemePrefix,
+                 masterContainer.getNodeHttpAddress(),
+                 "/node", "/containerlogs/",
+                 ConverterUtils.toString(masterContainer.getId()),
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+index 8a0444e..cb9f90d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMAdminService.java
+@@ -492,7 +492,8 @@ public void testRMHAWithFileSystemBasedConfiguration() throws IOException,
+     configuration.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
+     configuration.set(YarnConfiguration.RM_HA_IDS, "rm1,rm2");
+     int base = 100;
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    for (String confKey : YarnConfiguration
++        .getServiceAddressConfKeys(configuration)) {
+       configuration.set(HAUtil.addSuffix(confKey, "rm1"), "0.0.0.0:"
+           + (base + 20));
+       configuration.set(HAUtil.addSuffix(confKey, "rm2"), "0.0.0.0:"
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+index 3c9f92a..a7c8284 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestRMHA.java
+@@ -63,8 +63,10 @@
+   @Before
+   public void setUp() throws Exception {
+     configuration.setBoolean(YarnConfiguration.RM_HA_ENABLED, true);
+-    configuration.set(YarnConfiguration.RM_HA_IDS, RM1_NODE_ID + "," + RM2_NODE_ID);
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    configuration.set(YarnConfiguration.RM_HA_IDS, RM1_NODE_ID + ","
++        + RM2_NODE_ID);
++    for (String confKey : YarnConfiguration
++        .getServiceAddressConfKeys(configuration)) {
+       configuration.set(HAUtil.addSuffix(confKey, RM1_NODE_ID), RM1_ADDRESS);
+       configuration.set(HAUtil.addSuffix(confKey, RM2_NODE_ID), RM2_ADDRESS);
+       configuration.set(HAUtil.addSuffix(confKey, RM3_NODE_ID), RM3_ADDRESS);
+@@ -329,7 +331,7 @@ public void testHAWithRMHostName() {
+       Configuration conf = new YarnConfiguration(configuration);
+       rm = new MockRM(conf);
+       rm.init(conf);
+-      for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++      for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+         assertEquals("RPC address not set for " + confKey,
+             RM1_ADDRESS, conf.get(HAUtil.addSuffix(confKey, RM1_NODE_ID)));
+         assertEquals("RPC address not set for " + confKey,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+index 41fdca2..6b8a358 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/recovery/TestZKRMStateStore.java
+@@ -142,7 +142,9 @@ private Configuration createHARMConf(
+     conf.set(YarnConfiguration.RM_STORE, ZKRMStateStore.class.getName());
+     conf.set(YarnConfiguration.RM_ZK_ADDRESS, hostPort);
+     conf.set(YarnConfiguration.RM_HA_ID, rmId);
+-    for (String rpcAddress : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    conf.set(YarnConfiguration.RM_WEBAPP_ADDRESS, "localhost:0");
++
++    for (String rpcAddress : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+       for (String id : HAUtil.getRMHAIds(conf)) {
+         conf.set(HAUtil.addSuffix(rpcAddress, id), "localhost:0");
+       }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
+index ca4f1f7..680b987 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/attempt/TestRMAppAttemptTransitions.java
+@@ -281,13 +281,14 @@ public void tearDown() throws Exception {
+ 
+   private String getProxyUrl(RMAppAttempt appAttempt) {
+     String url = null;
++    final String scheme = WebAppUtils.getHttpSchemePrefix(conf);
+     try {
+       URI trackingUri =
+           StringUtils.isEmpty(appAttempt.getOriginalTrackingUrl()) ? null :
+               ProxyUriUtils
+-                  .getUriFromAMUrl(appAttempt.getOriginalTrackingUrl());
++                  .getUriFromAMUrl(scheme, appAttempt.getOriginalTrackingUrl());
+       String proxy = WebAppUtils.getProxyHostAndPort(conf);
+-      URI proxyUri = ProxyUriUtils.getUriFromAMUrl(proxy);
++      URI proxyUri = ProxyUriUtils.getUriFromAMUrl(scheme, proxy);
+       URI result = ProxyUriUtils.getProxyUri(trackingUri, proxyUri,
+           appAttempt.getAppAttemptId().getApplicationId());
+       url = result.toASCIIString();
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesApps.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesApps.java
+index cfdf928..45b3803 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesApps.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/TestRMWebServicesApps.java
+@@ -1606,8 +1606,7 @@ public void verifyAppAttemptInfoGeneric(RMAppAttempt appAttempt, int id,
+         .getMasterContainer().getNodeHttpAddress(), nodeHttpAddress);
+     WebServicesTestUtils.checkStringMatch("nodeId", appAttempt
+         .getMasterContainer().getNodeId().toString(), nodeId);
+-    assertTrue("logsLink doesn't match",
+-        logsLink.startsWith("http://"));
++    assertTrue("logsLink doesn't match", logsLink.startsWith("//"));
+     assertTrue(
+         "logsLink doesn't contain user info", logsLink.endsWith("/"
+         + user));
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
+index eeb6af3..ff2e995 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/MiniYARNCluster.java
+@@ -256,7 +256,7 @@ private void setNonHARMConfiguration(Configuration conf) {
+ 
+   private void setHARMConfiguration(final int index, Configuration conf) {
+     String hostname = MiniYARNCluster.getHostname();
+-    for (String confKey : YarnConfiguration.RM_SERVICES_ADDRESS_CONF_KEYS) {
++    for (String confKey : YarnConfiguration.getServiceAddressConfKeys(conf)) {
+       conf.set(HAUtil.addSuffix(confKey, rmIds[index]), hostname + ":0");
+     }
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestMiniYARNClusterForHA.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestMiniYARNClusterForHA.java
+index 437acdf..e84d62e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestMiniYARNClusterForHA.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-tests/src/test/java/org/apache/hadoop/yarn/server/TestMiniYARNClusterForHA.java
+@@ -18,24 +18,18 @@
+ 
+ package org.apache.hadoop.yarn.server;
+ 
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++import java.io.IOException;
++
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.ha.HAServiceProtocol;
+-import org.apache.hadoop.yarn.api.protocolrecords.GetClusterMetricsRequest;
+ import org.apache.hadoop.yarn.conf.YarnConfiguration;
+ import org.apache.hadoop.yarn.exceptions.YarnException;
+-import org.apache.hadoop.yarn.server.resourcemanager.AdminService;
+-import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+ import org.junit.Before;
+ import org.junit.Test;
+ 
+-import java.io.IOException;
+-
+-import static org.junit.Assert.assertEquals;
+-import static org.junit.Assert.assertFalse;
+-import static org.junit.Assert.assertNotSame;
+-import static org.junit.Assert.assertTrue;
+-import static org.junit.Assert.fail;
+-
+ public class TestMiniYARNClusterForHA {
+   MiniYARNCluster cluster;
+ 
+@@ -43,6 +37,8 @@
+   public void setup() throws IOException, InterruptedException {
+     Configuration conf = new YarnConfiguration();
+     conf.setBoolean(YarnConfiguration.AUTO_FAILOVER_ENABLED, false);
++    conf.set(YarnConfiguration.RM_WEBAPP_ADDRESS, "localhost:0");
++
+     cluster = new MiniYARNCluster(TestMiniYARNClusterForHA.class.getName(),
+         2, 1, 1, 1);
+     cluster.init(conf);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/ProxyUriUtils.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/ProxyUriUtils.java
+index 4481f60..8248221 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/ProxyUriUtils.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/ProxyUriUtils.java
+@@ -137,27 +137,6 @@ public static URI getProxyUri(URI originalUri, URI proxyUri,
+   
+   /**
+    * Create a URI form a no scheme Url, such as is returned by the AM.
+-   * @param url the URL format returned by an AM. This may or may not contain
+-   * scheme.
+-   * @return a URI with an http scheme
+-   * @throws URISyntaxException if the url is not formatted correctly.
+-   */
+-  public static URI getUriFromAMUrl(String url)
+-    throws URISyntaxException {
+-    if (getSchemeFromUrl(url).isEmpty()) {
+-      /*
+-       * check is made to make sure if AM reports with scheme then it will be
+-       * used by default otherwise it will default to the one configured using
+-       * "yarn.http.policy".
+-       */
+-      return new URI(HttpConfig.getSchemePrefix() + url);
+-    } else {
+-      return new URI(url);
+-    }
+-  }
+-  
+-  /**
+-   * Create a URI form a no scheme Url, such as is returned by the AM.
+    * @param noSchemeUrl the URL formate returned by an AM
+    * @return a URI with an http scheme
+    * @throws URISyntaxException if the url is not formatted correctly.
+@@ -170,7 +149,7 @@ public static URI getUriFromAMUrl(String scheme, String noSchemeUrl)
+          * used by default otherwise it will default to the one configured using
+          * "yarn.http.policy".
+          */
+-        return new URI(scheme + "://" + noSchemeUrl);
++        return new URI(scheme + noSchemeUrl);
+       } else {
+         return new URI(noSchemeUrl);
+       }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxy.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxy.java
+index cd18e47..615c889 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxy.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxy.java
+@@ -90,14 +90,22 @@ protected void serviceInit(Configuration conf) throws Exception {
+   @Override
+   protected void serviceStart() throws Exception {
+     try {
+-      proxyServer = new HttpServer2.Builder().setName("proxy")
+-          .addEndpoint(URI.create("http://" + bindAddress + ":" + port))
+-          .setFindPort(port == 0)
+-          .setConf(getConfig()).setACL(acl).build();
+-      proxyServer.addServlet(ProxyUriUtils.PROXY_SERVLET_NAME, 
++      Configuration conf = getConfig();
++      HttpServer2.Builder b = new HttpServer2.Builder()
++          .setName("proxy")
++          .addEndpoint(
++              URI.create(WebAppUtils.getHttpSchemePrefix(conf) + bindAddress
++                  + ":" + port)).setFindPort(port == 0).setConf(getConfig())
++          .setACL(acl);
++      if (YarnConfiguration.useHttps(conf)) {
++        WebAppUtils.loadSslConfiguration(b);
++      }
++      proxyServer = b.build();
++      proxyServer.addServlet(ProxyUriUtils.PROXY_SERVLET_NAME,
+           ProxyUriUtils.PROXY_PATH_SPEC, WebAppProxyServlet.class);
+       proxyServer.setAttribute(FETCHER_ATTRIBUTE, fetcher);
+-      proxyServer.setAttribute(IS_SECURITY_ENABLED_ATTRIBUTE, isSecurityEnabled);
++      proxyServer
++          .setAttribute(IS_SECURITY_ENABLED_ATTRIBUTE, isSecurityEnabled);
+       proxyServer.setAttribute(PROXY_HOST_ATTRIBUTE, proxyHost);
+       proxyServer.start();
+     } catch (IOException e) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxyServlet.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxyServlet.java
+index 7f3a0cd..25a4dab 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxyServlet.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/WebAppProxyServlet.java
+@@ -69,6 +69,7 @@
+ 
+   private final List<TrackingUriPlugin> trackingUriPlugins;
+   private final String rmAppPageUrlBase;
++  private final transient YarnConfiguration conf;
+ 
+   private static class _ implements Hamlet._ {
+     //Empty
+@@ -90,7 +91,7 @@
+   public WebAppProxyServlet()
+   {
+     super();
+-    YarnConfiguration conf = new YarnConfiguration();
++    conf = new YarnConfiguration();
+     this.trackingUriPlugins =
+         conf.getInstances(YarnConfiguration.YARN_TRACKING_URL_GENERATOR,
+             TrackingUriPlugin.class);
+@@ -300,7 +301,8 @@ protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+         return;
+       } else {
+         if (ProxyUriUtils.getSchemeFromUrl(original).isEmpty()) {
+-          trackingUri = ProxyUriUtils.getUriFromAMUrl("http", original);
++          trackingUri = ProxyUriUtils.getUriFromAMUrl(
++              WebAppUtils.getHttpSchemePrefix(conf), original);
+         } else {
+           trackingUri = new URI(original);
+         }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/amfilter/AmFilterInitializer.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/amfilter/AmFilterInitializer.java
+index 7f81f9b..e35ed84 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/amfilter/AmFilterInitializer.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/main/java/org/apache/hadoop/yarn/server/webproxy/amfilter/AmFilterInitializer.java
+@@ -24,7 +24,6 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.http.FilterContainer;
+ import org.apache.hadoop.http.FilterInitializer;
+-import org.apache.hadoop.http.HttpConfig;
+ import org.apache.hadoop.yarn.api.ApplicationConstants;
+ import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+ 
+@@ -39,7 +38,7 @@ public void initFilter(FilterContainer container, Configuration conf) {
+     String[] parts = proxy.split(":");
+     params.put(AmIpFilter.PROXY_HOST, parts[0]);
+     params.put(AmIpFilter.PROXY_URI_BASE,
+-        HttpConfig.getSchemePrefix() + proxy +
++        WebAppUtils.getHttpSchemePrefix(conf) + proxy +
+         System.getenv(ApplicationConstants.APPLICATION_WEB_PROXY_BASE_ENV));
+     container.addFilter(FILTER_NAME, FILTER_CLASS, params);
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/test/java/org/apache/hadoop/yarn/server/webproxy/TestWebAppProxyServlet.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/test/java/org/apache/hadoop/yarn/server/webproxy/TestWebAppProxyServlet.java
+index f39ab3e..c53d098 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/test/java/org/apache/hadoop/yarn/server/webproxy/TestWebAppProxyServlet.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-web-proxy/src/test/java/org/apache/hadoop/yarn/server/webproxy/TestWebAppProxyServlet.java
+@@ -288,8 +288,9 @@ public void start() {
+             YarnConfiguration.DEFAULT_YARN_ADMIN_ACL));
+         proxyServer = new HttpServer2.Builder()
+             .setName("proxy")
+-            .addEndpoint(URI.create("http://" + bindAddress + ":0"))
+-            .setFindPort(true)
++            .addEndpoint(
++                URI.create(WebAppUtils.getHttpSchemePrefix(conf) + bindAddress
++                    + ":0")).setFindPort(true)
+             .setConf(conf)
+             .setACL(acl)
+             .build();
+-- 
+1.7.0.4
+

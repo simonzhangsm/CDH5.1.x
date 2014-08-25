@@ -1,0 +1,64 @@
+From 5232cedcf6d6cfeb7df476610ba7dd703d75c73f Mon Sep 17 00:00:00 2001
+From: Thomas Graves <tgraves@apache.org>
+Date: Thu, 17 Apr 2014 15:25:27 +0000
+Subject: [PATCH 581/795] Merge 1588281 to branch-2. YARN-1931. Private API change in YARN-1824 in 2.4 broke compatibility with previous releases (Sandy Ryza via tgraves)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1588283 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 2f9bda428b4e6a120e79f1fefef07f7f0d985218)
+---
+ .../java/org/apache/hadoop/yarn/util/Apps.java     |   25 +++++++++++++++++++-
+ 1 files changed, 24 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/util/Apps.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/util/Apps.java
+index bf5ba7b..cf3940f 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/util/Apps.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-common/src/main/java/org/apache/hadoop/yarn/util/Apps.java
+@@ -38,7 +38,7 @@
+ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+ 
+ /**
+- * Yarn application related utilities
++ * Yarn internal application-related utilities
+  */
+ @Private
+ public class Apps {
+@@ -97,6 +97,17 @@ public static void setEnvFromInputString(Map<String, String> env,
+       }
+     }
+   }
++  
++  /**
++   * This older version of this method is kept around for compatibility
++   * because downstream frameworks like Spark and Tez have been using it.
++   * Downstream frameworks are expected to move off of it.
++   */
++  @Deprecated
++  public static void setEnvFromInputString(Map<String, String> env,
++      String envString) {
++    setEnvFromInputString(env, envString, File.pathSeparator);
++  }
+ 
+   @Public
+   @Unstable
+@@ -112,6 +123,18 @@ public static void addToEnvironment(
+     environment.put(StringInterner.weakIntern(variable), 
+         StringInterner.weakIntern(val));
+   }
++  
++  /**
++   * This older version of this method is kept around for compatibility
++   * because downstream frameworks like Spark and Tez have been using it.
++   * Downstream frameworks are expected to move off of it.
++   */
++  @Deprecated
++  public static void addToEnvironment(
++      Map<String, String> environment,
++      String variable, String value) {
++    addToEnvironment(environment, variable, value, File.pathSeparator);
++  }
+ 
+   public static String crossPlatformify(String var) {
+     return ApplicationConstants.PARAMETER_EXPANSION_LEFT + var
+-- 
+1.7.0.4
+

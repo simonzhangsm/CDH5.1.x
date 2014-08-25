@@ -1,0 +1,62 @@
+From 0f2e6185138c2cc4d83f3fb05502b75031a9b9f1 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Mon, 28 Apr 2014 20:20:10 +0000
+Subject: [PATCH 597/795] Backport HDFS-6288. DFSInputStream Pread doesn't update ReadStatistics. Contributed by Juan Yu.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1590776 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../org/apache/hadoop/hdfs/DFSInputStream.java     |    2 ++
+ .../java/org/apache/hadoop/hdfs/TestPread.java     |   16 +++++++++++++++-
+ 2 files changed, 17 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+index 8d3c009..cc7bd46 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+@@ -1043,6 +1043,8 @@ private void actualGetFromOneDataNode(final DNAddrPair datanode,
+             setConfiguration(dfsClient.getConfiguration()).
+             build();
+         int nread = reader.readAll(buf, offset, len);
++        updateReadStatistics(readStatistics, nread, reader);
++
+         if (nread != len) {
+           throw new IOException("truncated return from reader.read(): " +
+                                 "excpected " + len + ", got " + nread);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
+index 5168eb5..50b95ea 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java
+@@ -94,11 +94,25 @@ private void checkAndEraseData(byte[] actual, int from, byte[] expected, String 
+   private void doPread(FSDataInputStream stm, long position, byte[] buffer,
+                        int offset, int length) throws IOException {
+     int nread = 0;
++    long totalRead = 0;
++    DFSInputStream dfstm = null;
++
++    if (stm.getWrappedStream() instanceof DFSInputStream) {
++      dfstm = (DFSInputStream) (stm.getWrappedStream());
++      totalRead = dfstm.getReadStatistics().getTotalBytesRead();
++    }
++
+     while (nread < length) {
+-      int nbytes = stm.read(position+nread, buffer, offset+nread, length-nread);
++      int nbytes =
++          stm.read(position + nread, buffer, offset + nread, length - nread);
+       assertTrue("Error in pread", nbytes > 0);
+       nread += nbytes;
+     }
++
++    if (dfstm != null) {
++      assertEquals("Expected read statistic to be incremented", length, dfstm
++          .getReadStatistics().getTotalBytesRead() - totalRead);
++    }
+   }
+   
+   private void pReadFile(FileSystem fileSys, Path name) throws IOException {
+-- 
+1.7.0.4
+

@@ -1,0 +1,41 @@
+From 689dde8b111d8ea64ad84fcffb97b29c50c98152 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Fri, 3 Jan 2014 18:29:44 +0000
+Subject: [PATCH 713/795] HDFS-5705. TestSecondaryNameNodeUpgrade#testChangeNsIDFails may fail due to ConcurrentModificationException. Contributed by Ted Yu
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1555190 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../datanode/fsdataset/impl/FsVolumeImpl.java      |    4 ++--
+ 1 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsVolumeImpl.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsVolumeImpl.java
+index 9e5b0eb..795fab1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsVolumeImpl.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsVolumeImpl.java
+@@ -19,10 +19,10 @@
+ 
+ import java.io.File;
+ import java.io.IOException;
+-import java.util.HashMap;
+ import java.util.Map;
+ import java.util.Map.Entry;
+ import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
+ import java.util.concurrent.Executor;
+ import java.util.concurrent.LinkedBlockingQueue;
+ import java.util.concurrent.ThreadFactory;
+@@ -54,7 +54,7 @@
+   private final String storageID;
+   private final StorageType storageType;
+   private final Map<String, BlockPoolSlice> bpSlices
+-      = new HashMap<String, BlockPoolSlice>();
++      = new ConcurrentHashMap<String, BlockPoolSlice>();
+   private final File currentDir;    // <StorageDirectory>/current
+   private final DF usage;           
+   private final long reserved;
+-- 
+1.7.0.4
+

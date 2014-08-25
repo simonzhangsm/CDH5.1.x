@@ -1,0 +1,58 @@
+From 27fd9df66efc597d3fe0352ed4ccb37248fe7700 Mon Sep 17 00:00:00 2001
+From: Sanford Ryza <sandy@apache.org>
+Date: Sat, 8 Mar 2014 05:12:45 +0000
+Subject: [PATCH 526/795] YARN-1790. Fair Scheduler UI not showing apps table (bc Wong via Sandy Ryza)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1575487 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 4fbd63f324c8b32f89f1864be795395f512406a9)
+---
+ .../webapp/FairSchedulerAppsBlock.java             |    5 ++++-
+ .../resourcemanager/webapp/FairSchedulerPage.java  |    2 +-
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
+index 406d730..6bbcb2b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerAppsBlock.java
+@@ -68,6 +68,7 @@
+             th(".id", "ID").
+             th(".user", "User").
+             th(".name", "Name").
++            th(".type", "Application Type").
+             th(".queue", "Queue").
+             th(".fairshare", "Fair Share").
+             th(".starttime", "StartTime").
+@@ -88,7 +89,7 @@
+     }
+     StringBuilder appsTableData = new StringBuilder("[\n");
+     for (RMApp app : apps.values()) {
+-      if (reqAppStates != null && !reqAppStates.contains(app.getState())) {
++      if (reqAppStates != null && !reqAppStates.contains(app.createApplicationState())) {
+         continue;
+       }
+       AppInfo appInfo = new AppInfo(app, true);
+@@ -104,6 +105,8 @@
+       .append(StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(
+         appInfo.getName()))).append("\",\"")
+       .append(StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(
++        appInfo.getApplicationType()))).append("\",\"")
++      .append(StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeHtml(
+         appInfo.getQueue()))).append("\",\"")
+       .append(fairShare).append("\",\"")
+       .append(appInfo.getStartTime()).append("\",\"")
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerPage.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerPage.java
+index 73ab420..a4f2e4d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerPage.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/webapp/FairSchedulerPage.java
+@@ -246,7 +246,7 @@ protected String getAppsTableColumnDefs() {
+       .append("{'sType':'numeric', 'aTargets': [0]")
+       .append(", 'mRender': parseHadoopID }")
+ 
+-      .append("\n, {'sType':'numeric', 'aTargets': [5, 6]")
++      .append("\n, {'sType':'numeric', 'aTargets': [6, 7]")
+       .append(", 'mRender': renderHadoopDate }")
+ 
+       .append("\n, {'sType':'numeric', bSearchable:false, 'aTargets': [9]")
+-- 
+1.7.0.4
+

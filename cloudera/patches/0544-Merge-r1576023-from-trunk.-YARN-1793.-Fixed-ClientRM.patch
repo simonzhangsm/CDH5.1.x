@@ -1,0 +1,312 @@
+From c93776f620beedd8837c652d91b8fd2f85e2a6cf Mon Sep 17 00:00:00 2001
+From: Jian He <jianhe@apache.org>
+Date: Mon, 10 Mar 2014 18:03:47 +0000
+Subject: [PATCH 544/795] Merge r1576023 from trunk. YARN-1793. Fixed ClientRMService#forceKillApplication not killing unmanaged application. Contributed by Karthik Kambatla
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1576026 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a6838a112e63f1766937693e8ece574141633e2e)
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestKillApplicationWithRMHA.java
+
+(cherry picked from commit c6fb2e030dc4fbf6a5fb50310ebc939ae1d734f7)
+(cherry picked from commit d7226666cf34fad3f15b6160b789cf12f3003f50)
+---
+ .../resourcemanager/ApplicationMasterService.java  |   21 ++-----
+ .../server/resourcemanager/ClientRMService.java    |   15 +++--
+ .../yarn/server/resourcemanager/rmapp/RMApp.java   |    9 +--
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |    7 +--
+ .../hadoop/yarn/server/resourcemanager/MockRM.java |   21 +++++--
+ .../resourcemanager/TestClientRMService.java       |   65 +++++++++++++++++++-
+ .../applicationsmanager/MockAsm.java               |    2 +-
+ .../server/resourcemanager/rmapp/MockRMApp.java    |    2 +-
+ 8 files changed, 102 insertions(+), 40 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
+index 0dae6e5..3c467f0 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ApplicationMasterService.java
+@@ -313,27 +313,18 @@ public FinishApplicationMasterResponse finishApplicationMaster(
+       RMApp rmApp =
+           rmContext.getRMApps().get(applicationAttemptId.getApplicationId());
+ 
+-      if (rmApp.getApplicationSubmissionContext().getUnmanagedAM()) {
+-        // No recovery supported yet for unmanaged AM. Send the unregister event
+-        // and (falsely) acknowledge state-store write immediately.
+-        rmContext.getDispatcher().getEventHandler().handle(
+-          new RMAppAttemptUnregistrationEvent(applicationAttemptId, request
+-              .getTrackingUrl(), request.getFinalApplicationStatus(), request
+-              .getDiagnostics()));
++      if (rmApp.isAppFinalStateStored()) {
+         return FinishApplicationMasterResponse.newInstance(true);
+       }
+ 
+-      // Not an unmanaged-AM.
+-      if (rmApp.isAppSafeToTerminate()) {
+-        return FinishApplicationMasterResponse.newInstance(true);
+-      } else {
+-        // keep sending the unregister event as RM may crash in the meanwhile.
+-        rmContext.getDispatcher().getEventHandler().handle(
++      rmContext.getDispatcher().getEventHandler().handle(
+           new RMAppAttemptUnregistrationEvent(applicationAttemptId, request
+               .getTrackingUrl(), request.getFinalApplicationStatus(), request
+               .getDiagnostics()));
+-        return FinishApplicationMasterResponse.newInstance(false);
+-      }
++
++      // For UnmanagedAMs, return true so they don't retry
++      return FinishApplicationMasterResponse.newInstance(
++          rmApp.getApplicationSubmissionContext().getUnmanagedAM());
+     }
+   }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
+index d676f06..7715add 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/ClientRMService.java
+@@ -396,15 +396,18 @@ public KillApplicationResponse forceKillApplication(
+           + ApplicationAccessType.MODIFY_APP.name() + " on " + applicationId));
+     }
+ 
+-    if (application.isAppSafeToTerminate()) {
++    if (application.isAppFinalStateStored()) {
+       RMAuditLogger.logSuccess(callerUGI.getShortUserName(),
+-        AuditConstants.KILL_APP_REQUEST, "ClientRMService", applicationId);
++          AuditConstants.KILL_APP_REQUEST, "ClientRMService", applicationId);
+       return KillApplicationResponse.newInstance(true);
+-    } else {
+-      this.rmContext.getDispatcher().getEventHandler()
+-        .handle(new RMAppEvent(applicationId, RMAppEventType.KILL));
+-      return KillApplicationResponse.newInstance(false);
+     }
++
++    this.rmContext.getDispatcher().getEventHandler()
++        .handle(new RMAppEvent(applicationId, RMAppEventType.KILL));
++
++    // For UnmanagedAMs, return true so they don't retry
++    return KillApplicationResponse.newInstance(
++        application.getApplicationSubmissionContext().getUnmanagedAM());
+   }
+ 
+   @Override
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMApp.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMApp.java
+index 1a7e74e..391ccf6 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMApp.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMApp.java
+@@ -204,13 +204,10 @@ ApplicationReport createAndGetApplicationReport(String clientUserName,
+   Set<String> getApplicationTags();
+ 
+   /**
+-   * Check whether this application is safe to terminate.
+-   * An application is deemed to be safe to terminate if it is an unmanaged
+-   * AM or its state has been saved in state store.
+-   * @return the flag which indicates whether this application is safe to
+-   *         terminate.
++   * Check whether this application's state has been saved to the state store.
++   * @return the flag indicating whether the applications's state is stored.
+    */
+-  boolean isAppSafeToTerminate();
++  boolean isAppFinalStateStored();
+ 
+   /**
+    * Create the external user-facing state of ApplicationMaster from the
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index dc82034..77d4d1e 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -1130,14 +1130,11 @@ public String getApplicationType() {
+   }
+ 
+   @Override
+-  public boolean isAppSafeToTerminate() {
++  public boolean isAppFinalStateStored() {
+     RMAppState state = getState();
+     return state.equals(RMAppState.FINISHING)
+         || state.equals(RMAppState.FINISHED) || state.equals(RMAppState.FAILED)
+-        || state.equals(RMAppState.KILLED) ||
+-        // If this is an unmanaged AM, we are safe to unregister since unmanaged
+-        // AM will immediately go to FINISHED state on AM unregistration
+-        getApplicationSubmissionContext().getUnmanagedAM();
++        || state.equals(RMAppState.KILLED);
+   }
+ 
+   @Override
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
+index 63efe8f..4352b3c 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/MockRM.java
+@@ -170,17 +170,28 @@ public GetNewApplicationResponse getNewAppId() throws Exception {
+   }
+ 
+   public RMApp submitApp(int masterMemory) throws Exception {
++    return submitApp(masterMemory, false);
++  }
++
++  public RMApp submitApp(int masterMemory, boolean unmanaged)
++      throws Exception {
+     return submitApp(masterMemory, "", UserGroupInformation.getCurrentUser()
+-      .getShortUserName());
++        .getShortUserName(), unmanaged);
+   }
+ 
+   // client
+   public RMApp submitApp(int masterMemory, String name, String user) throws Exception {
+-    return submitApp(masterMemory, name, user, null, false, null,
+-      super.getConfig().getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
+-        YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS), null);
++    return submitApp(masterMemory, name, user, false);
+   }
+-  
++
++  public RMApp submitApp(int masterMemory, String name, String user,
++      boolean unmanaged)
++      throws Exception {
++    return submitApp(masterMemory, name, user, null, unmanaged, null,
++        super.getConfig().getInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS,
++            YarnConfiguration.DEFAULT_RM_AM_MAX_ATTEMPTS), null);
++  }
++
+   public RMApp submitApp(int masterMemory, String name, String user,
+       Map<ApplicationAccessType, String> acls) throws Exception {
+     return submitApp(masterMemory, name, user, acls, false, null,
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java
+index 19d78af..7802e80 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/TestClientRMService.java
+@@ -19,6 +19,9 @@
+ package org.apache.hadoop.yarn.server.resourcemanager;
+ 
+ import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++import static org.mockito.Matchers.any;
+ import static org.mockito.Matchers.anyBoolean;
+ import static org.mockito.Matchers.anyString;
+ import static org.mockito.Matchers.any;
+@@ -62,6 +65,7 @@
+ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.GetQueueInfoResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationRequest;
++import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
+ import org.apache.hadoop.yarn.api.protocolrecords.MoveApplicationAcrossQueuesRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.RenewDelegationTokenRequest;
+ import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
+@@ -218,7 +222,7 @@ public void testGetApplicationReport() throws YarnException {
+   }
+   
+   @Test
+-  public void testForceKillApplication() throws YarnException {
++  public void testForceKillNonExistingApplication() throws YarnException {
+     RMContext rmContext = mock(RMContext.class);
+     when(rmContext.getRMApps()).thenReturn(
+         new ConcurrentHashMap<ApplicationId, RMApp>());
+@@ -237,6 +241,58 @@ public void testForceKillApplication() throws YarnException {
+               "application " + request.getApplicationId());
+     }
+   }
++
++  @Test
++  public void testForceKillApplication() throws Exception {
++    YarnConfiguration conf = new YarnConfiguration();
++    MockRM rm = new MockRM();
++    rm.init(conf);
++    rm.start();
++
++    ClientRMService rmService = rm.getClientRMService();
++    GetApplicationsRequest getRequest = GetApplicationsRequest.newInstance(
++        EnumSet.of(YarnApplicationState.KILLED));
++
++    RMApp app1 = rm.submitApp(1024);
++    RMApp app2 = rm.submitApp(1024, true);
++
++    assertEquals("Incorrect number of apps in the RM", 0,
++        rmService.getApplications(getRequest).getApplicationList().size());
++
++    KillApplicationRequest killRequest1 =
++        KillApplicationRequest.newInstance(app1.getApplicationId());
++    KillApplicationRequest killRequest2 =
++        KillApplicationRequest.newInstance(app2.getApplicationId());
++
++    int killAttemptCount = 0;
++    for (int i = 0; i < 100; i++) {
++      KillApplicationResponse killResponse1 =
++          rmService.forceKillApplication(killRequest1);
++      killAttemptCount++;
++      if (killResponse1.getIsKillCompleted()) {
++        break;
++      }
++      Thread.sleep(10);
++    }
++    assertTrue("Kill attempt count should be greater than 1 for managed AMs",
++        killAttemptCount > 1);
++    assertEquals("Incorrect number of apps in the RM", 1,
++        rmService.getApplications(getRequest).getApplicationList().size());
++
++    KillApplicationResponse killResponse2 =
++        rmService.forceKillApplication(killRequest2);
++    assertTrue("Killing UnmanagedAM should falsely acknowledge true",
++        killResponse2.getIsKillCompleted());
++    for (int i = 0; i < 100; i++) {
++      if (2 ==
++          rmService.getApplications(getRequest).getApplicationList().size()) {
++        break;
++      }
++      Thread.sleep(10);
++    }
++    assertEquals("Incorrect number of apps in the RM", 2,
++        rmService.getApplications(getRequest).getApplicationList().size());
++  }
+   
+   @Test (expected = ApplicationNotFoundException.class)
+   public void testMoveAbsentApplication() throws YarnException {
+@@ -629,6 +685,12 @@ private SubmitApplicationRequest mockSubmitAppRequest(ApplicationId appId,
+ 
+   private SubmitApplicationRequest mockSubmitAppRequest(ApplicationId appId,
+       String name, String queue, Set<String> tags) {
++    return mockSubmitAppRequest(appId, name, queue, tags, false);
++  }
++
++  private SubmitApplicationRequest mockSubmitAppRequest(ApplicationId appId,
++        String name, String queue, Set<String> tags, boolean unmanaged) {
++
+     ContainerLaunchContext amContainerSpec = mock(ContainerLaunchContext.class);
+ 
+     Resource resource = Resources.createResource(
+@@ -643,6 +705,7 @@ private SubmitApplicationRequest mockSubmitAppRequest(ApplicationId appId,
+     submissionContext.setResource(resource);
+     submissionContext.setApplicationType(appType);
+     submissionContext.setApplicationTags(tags);
++    submissionContext.setUnmanagedAM(unmanaged);
+ 
+     SubmitApplicationRequest submitRequest =
+         recordFactory.newRecordInstance(SubmitApplicationRequest.class);
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/applicationsmanager/MockAsm.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/applicationsmanager/MockAsm.java
+index 01e5eea..2cdbf95 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/applicationsmanager/MockAsm.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/applicationsmanager/MockAsm.java
+@@ -151,7 +151,7 @@ public void setQueue(String name) {
+     }
+ 
+     @Override
+-    public boolean isAppSafeToTerminate() {
++    public boolean isAppFinalStateStored() {
+       throw new UnsupportedOperationException("Not supported yet.");
+     }
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/MockRMApp.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/MockRMApp.java
+index ac3751a..b07525d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/MockRMApp.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/MockRMApp.java
+@@ -224,7 +224,7 @@ public String getApplicationType() {
+   }
+ 
+   @Override
+-  public boolean isAppSafeToTerminate() {
++  public boolean isAppFinalStateStored() {
+     return true;
+   }
+ 
+-- 
+1.7.0.4
+

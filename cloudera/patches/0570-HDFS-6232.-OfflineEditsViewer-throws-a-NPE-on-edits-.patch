@@ -1,0 +1,88 @@
+From 33ccc09bb4da89af237773adfff4b6ffe35f4666 Mon Sep 17 00:00:00 2001
+From: Stephen Chu <schu@cloudera.com>
+Date: Tue, 15 Apr 2014 17:10:15 -0700
+Subject: [PATCH 570/795] HDFS-6232. OfflineEditsViewer throws a NPE on edits containing ACL modifications (ajisakaa via cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1586791 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1706fa1d03f2772daf465ba775a4b6c9d1ad8e19)
+---
+ .../hadoop/hdfs/server/namenode/FSEditLogOp.java   |    6 ++-
+ .../java/org/apache/hadoop/hdfs/DFSTestUtil.java   |   31 +++++++++++++++++++-
+ 2 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
+index f75917d..24de9db 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
+@@ -4025,7 +4025,9 @@ private static void appendAclEntriesToXml(ContentHandler contentHandler,
+       contentHandler.startElement("", "", "ENTRY", new AttributesImpl());
+       XMLUtils.addSaxString(contentHandler, "SCOPE", e.getScope().name());
+       XMLUtils.addSaxString(contentHandler, "TYPE", e.getType().name());
+-      XMLUtils.addSaxString(contentHandler, "NAME", e.getName());
++      if (e.getName() != null) {
++        XMLUtils.addSaxString(contentHandler, "NAME", e.getName());
++      }
+       fsActionToXml(contentHandler, e.getPermission());
+       contentHandler.endElement("", "", "ENTRY");
+     }
+@@ -4041,7 +4043,7 @@ private static void appendAclEntriesToXml(ContentHandler contentHandler,
+       AclEntry e = new AclEntry.Builder()
+         .setScope(AclEntryScope.valueOf(s.getValue("SCOPE")))
+         .setType(AclEntryType.valueOf(s.getValue("TYPE")))
+-        .setName(s.getValue("NAME"))
++        .setName(s.getValueOrNull("NAME"))
+         .setPermission(fsActionFromXml(s)).build();
+       aclEntries.add(e);
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
+index 3ac14e8..29d393d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/DFSTestUtil.java
+@@ -32,6 +32,9 @@
+ import org.apache.hadoop.fs.FileSystem.Statistics;
+ import org.apache.hadoop.fs.Options.Rename;
+ import org.apache.hadoop.fs.permission.AclEntry;
++import org.apache.hadoop.fs.permission.AclEntryScope;
++import org.apache.hadoop.fs.permission.AclEntryType;
++import org.apache.hadoop.fs.permission.FsAction;
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.MiniDFSCluster.NameNodeInfo;
+ import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
+@@ -1106,7 +1109,33 @@ public static void runOperations(MiniDFSCluster cluster,
+     // OP_REMOVE_CACHE_POOL
+     filesystem.removeCachePool("pool1");
+     // OP_SET_ACL
+-    filesystem.setAcl(pathConcatTarget, Lists.<AclEntry> newArrayList());
++    List<AclEntry> aclEntryList = Lists.newArrayList();
++    aclEntryList.add(
++        new AclEntry.Builder()
++            .setPermission(FsAction.READ_WRITE)
++            .setScope(AclEntryScope.ACCESS)
++            .setType(AclEntryType.USER)
++            .build());
++    aclEntryList.add(
++        new AclEntry.Builder()
++            .setName("user")
++            .setPermission(FsAction.READ_WRITE)
++            .setScope(AclEntryScope.ACCESS)
++            .setType(AclEntryType.USER)
++            .build());
++    aclEntryList.add(
++        new AclEntry.Builder()
++            .setPermission(FsAction.WRITE)
++            .setScope(AclEntryScope.ACCESS)
++            .setType(AclEntryType.GROUP)
++            .build());
++    aclEntryList.add(
++        new AclEntry.Builder()
++            .setPermission(FsAction.NONE)
++            .setScope(AclEntryScope.ACCESS)
++            .setType(AclEntryType.OTHER)
++            .build());
++    filesystem.setAcl(pathConcatTarget, aclEntryList);
+   }
+ 
+   public static void abortStream(DFSOutputStream out) throws IOException {
+-- 
+1.7.0.4
+

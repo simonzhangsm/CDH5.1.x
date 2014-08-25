@@ -1,0 +1,1904 @@
+From 3ee8ea9941a56570872ce64de642cb307842434b Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Wed, 23 Apr 2014 20:16:16 +0000
+Subject: [PATCH 688/795] HDFS-6274. Merge r1589506 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1589507 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit a40f912b7c9a33954c7f63fb4f4f357354f60d81)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+---
+ .../src/main/java/org/apache/hadoop/fs/Hdfs.java   |    5 +-
+ .../org/apache/hadoop/hdfs/BlockReaderLocal.java   |    2 +-
+ .../hadoop/hdfs/BlockStorageLocationUtil.java      |    3 +-
+ .../java/org/apache/hadoop/hdfs/DFSClient.java     |    4 +-
+ .../org/apache/hadoop/hdfs/DFSInputStream.java     |   20 ++-------
+ .../main/java/org/apache/hadoop/hdfs/DFSUtil.java  |   13 ++----
+ .../apache/hadoop/hdfs/DistributedFileSystem.java  |    2 +-
+ .../hdfs/protocol/ClientDatanodeProtocol.java      |    5 +-
+ .../hadoop/hdfs/protocol/ClientProtocol.java       |    3 +-
+ .../datatransfer/DataTransferProtocol.java         |    2 +-
+ .../token/block/BlockTokenSecretManager.java       |    9 ++--
+ .../delegation/DelegationTokenSecretManager.java   |    5 +-
+ .../hdfs/server/blockmanagement/BlockInfo.java     |    3 -
+ .../hdfs/server/blockmanagement/BlockManager.java  |    2 -
+ .../blockmanagement/BlockPlacementPolicy.java      |   12 +++---
+ .../server/blockmanagement/DatanodeManager.java    |    4 +-
+ .../apache/hadoop/hdfs/server/common/Storage.java  |    8 ++--
+ .../hadoop/hdfs/server/common/StorageInfo.java     |    4 +-
+ .../hdfs/server/datanode/BPServiceActor.java       |    6 +--
+ .../hdfs/server/datanode/BlockMetadataHeader.java  |   11 +----
+ .../hadoop/hdfs/server/datanode/BlockReceiver.java |    6 +-
+ .../hadoop/hdfs/server/datanode/BlockSender.java   |    2 +-
+ .../hadoop/hdfs/server/datanode/DataNode.java      |   17 +++-----
+ .../hadoop/hdfs/server/datanode/DataXceiver.java   |    2 +-
+ .../hdfs/server/datanode/DirectoryScanner.java     |    3 +-
+ .../hdfs/server/datanode/FinalizedReplica.java     |    2 +-
+ .../hdfs/server/datanode/ReplicaBeingWritten.java  |    2 +-
+ .../hdfs/server/datanode/ReplicaInPipeline.java    |    2 +-
+ .../datanode/ReplicaInPipelineInterface.java       |    2 +-
+ .../hadoop/hdfs/server/datanode/ReplicaInfo.java   |    2 +-
+ .../hdfs/server/datanode/ReplicaUnderRecovery.java |    2 +-
+ .../datanode/ReplicaWaitingToBeRecovered.java      |    2 +-
+ .../AvailableSpaceVolumeChoosingPolicy.java        |    9 +---
+ .../server/datanode/fsdataset/FsDatasetSpi.java    |   17 ++------
+ .../datanode/fsdataset/impl/BlockPoolSlice.java    |    2 +-
+ .../datanode/fsdataset/impl/FsDatasetImpl.java     |    8 +--
+ .../datanode/fsdataset/impl/MappableBlock.java     |    1 -
+ .../hadoop/hdfs/server/namenode/BackupNode.java    |    2 +-
+ .../hadoop/hdfs/server/namenode/CacheManager.java  |    2 +-
+ .../hadoop/hdfs/server/namenode/CachedBlock.java   |    2 +-
+ .../hdfs/server/namenode/ClusterJspHelper.java     |    3 -
+ .../server/namenode/EditLogFileInputStream.java    |    4 --
+ .../hdfs/server/namenode/EditLogOutputStream.java  |    4 +-
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   17 ++++----
+ .../hadoop/hdfs/server/namenode/FSEditLog.java     |    9 ++--
+ .../hdfs/server/namenode/FSEditLogLoader.java      |    3 -
+ .../hadoop/hdfs/server/namenode/FSEditLogOp.java   |    4 +-
+ .../hadoop/hdfs/server/namenode/FSImage.java       |    3 +-
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |    2 +-
+ .../hdfs/server/namenode/FSImageSerialization.java |    2 +-
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   43 +++++++++-----------
+ .../hdfs/server/namenode/FileJournalManager.java   |    2 +-
+ .../apache/hadoop/hdfs/server/namenode/INode.java  |    8 +--
+ .../hadoop/hdfs/server/namenode/LeaseManager.java  |    1 -
+ .../hadoop/hdfs/server/namenode/LogsPurgeable.java |    1 -
+ .../hadoop/hdfs/server/namenode/NNStorage.java     |    3 +-
+ .../hadoop/hdfs/server/namenode/NameNode.java      |    6 +--
+ .../hdfs/server/namenode/NameNodeRpcServer.java    |    5 +-
+ .../hadoop/hdfs/server/namenode/NamenodeFsck.java  |    1 -
+ .../hdfs/server/namenode/SecondaryNameNode.java    |    1 -
+ .../hadoop/hdfs/server/namenode/ha/HAState.java    |    4 +-
+ .../namenode/snapshot/AbstractINodeDiff.java       |    1 -
+ .../hdfs/server/protocol/BlockIdCommand.java       |    1 -
+ .../hdfs/server/protocol/DatanodeProtocol.java     |    6 +-
+ .../hdfs/server/protocol/DatanodeStorage.java      |    2 -
+ .../hadoop/hdfs/server/protocol/ServerCommand.java |    2 +-
+ .../java/org/apache/hadoop/hdfs/tools/DFSck.java   |    3 -
+ .../java/org/apache/hadoop/hdfs/tools/GetConf.java |    3 +-
+ .../org/apache/hadoop/hdfs/tools/HDFSConcat.java   |    4 +-
+ .../java/org/apache/hadoop/hdfs/tools/JMXGet.java  |    8 +---
+ .../offlineEditsViewer/BinaryEditsVisitor.java     |    3 +-
+ .../hadoop/hdfs/util/DataTransferThrottler.java    |    2 -
+ .../hdfs/web/resources/AclPermissionParam.java     |    5 +--
+ .../apache/hadoop/hdfs/BenchmarkThroughput.java    |    2 +-
+ .../org/apache/hadoop/hdfs/MiniDFSCluster.java     |   10 ++--
+ .../blockmanagement/BlockManagerTestUtil.java      |    8 +---
+ .../hdfs/server/datanode/BlockReportTestBase.java  |    3 -
+ .../hdfs/server/datanode/SimulatedFSDataset.java   |    9 +---
+ .../hdfs/server/namenode/CreateEditsLog.java       |    8 +---
+ .../server/namenode/NNThroughputBenchmark.java     |    5 +-
+ 80 files changed, 153 insertions(+), 268 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/fs/Hdfs.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/fs/Hdfs.java
+index b1df90a..3b65729 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/fs/Hdfs.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/fs/Hdfs.java
+@@ -66,9 +66,8 @@
+    * This constructor has the signature needed by
+    * {@link AbstractFileSystem#createFileSystem(URI, Configuration)}
+    * 
+-   * @param theUri
+-   *          which must be that of Hdfs
+-   * @param conf
++   * @param theUri which must be that of Hdfs
++   * @param conf configuration
+    * @throws IOException
+    */
+   Hdfs(final URI theUri, final Configuration conf) throws IOException, URISyntaxException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderLocal.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderLocal.java
+index 60cb23f..1401491 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderLocal.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockReaderLocal.java
+@@ -182,7 +182,7 @@ public BlockReaderLocal build() {
+ 
+   /**
+    * Maximum amount of readahead we'll do.  This will always be at least the,
+-   * size of a single chunk, even if {@link zeroReadaheadRequested} is true.
++   * size of a single chunk, even if {@link #zeroReadaheadRequested} is true.
+    * The reason is because we need to do a certain amount of buffering in order
+    * to do checksumming.
+    * 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockStorageLocationUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockStorageLocationUtil.java
+index fddaf0a..ba74978 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockStorageLocationUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/BlockStorageLocationUtil.java
+@@ -191,7 +191,8 @@ else if (t instanceof UnsupportedOperationException) {
+   
+   /**
+    * Group the per-replica {@link VolumeId} info returned from
+-   * {@link DFSClient#queryDatanodesForHdfsBlocksMetadata(Map)} to be associated
++   * {@link DFSClient#queryDatanodesForHdfsBlocksMetadata(Map)} to be
++   * associated
+    * with the corresponding {@link LocatedBlock}.
+    * 
+    * @param blocks
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+index c40d4e4..fa65431 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSClient.java
+@@ -1603,7 +1603,7 @@ private DFSOutputStream append(String src, int buffersize, Progressable progress
+   /**
+    * Set replication for an existing file.
+    * @param src file name
+-   * @param replication
++   * @param replication replication to set the file to
+    * 
+    * @see ClientProtocol#setReplication(String, short)
+    */
+@@ -2112,7 +2112,7 @@ private static Type inferChecksumTypeByReading(
+   /**
+    * Set permissions to a file or directory.
+    * @param src path name.
+-   * @param permission
++   * @param permission permission to set to
+    * 
+    * @see ClientProtocol#setPermission(String, FsPermission)
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+index d536342..aa046de 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+@@ -389,7 +389,7 @@ synchronized public ExtendedBlock getCurrentBlock() {
+    * Get block at the specified position.
+    * Fetch it from the namenode if not cached.
+    * 
+-   * @param offset
++   * @param offset block corresponding to this offset in file is returned
+    * @param updatePosition whether to update current position
+    * @return located block
+    * @throws IOException
+@@ -453,14 +453,13 @@ private synchronized void fetchBlockAt(long offset) throws IOException {
+    * Get blocks in the specified range.
+    * Fetch them from the namenode if not cached. This function
+    * will not get a read request beyond the EOF.
+-   * @param offset
+-   * @param length
++   * @param offset starting offset in file
++   * @param length length of data
+    * @return consequent segment of located blocks
+    * @throws IOException
+    */
+-  private synchronized List<LocatedBlock> getBlockRange(long offset, 
+-                                                        long length) 
+-                                                      throws IOException {
++  private synchronized List<LocatedBlock> getBlockRange(long offset,
++      long length)  throws IOException {
+     // getFileLength(): returns total file length
+     // locatedBlocks.getFileLength(): returns length of completed blocks
+     if (offset >= getFileLength()) {
+@@ -847,7 +846,6 @@ public synchronized int read(final ByteBuffer buf) throws IOException {
+ 
+   /**
+    * Add corrupted block replica into map.
+-   * @param corruptedBlockMap 
+    */
+   private void addIntoCorruptedBlockMap(ExtendedBlock blk, DatanodeInfo node, 
+       Map<ExtendedBlock, Set<DatanodeInfo>> corruptedBlockMap) {
+@@ -1093,14 +1091,6 @@ private void actualGetFromOneDataNode(final DNAddrPair datanode,
+    * int, Map)} except we start up a second, parallel, 'hedged' read
+    * if the first read is taking longer than configured amount of
+    * time.  We then wait on which ever read returns first.
+-   * 
+-   * @param block
+-   * @param start
+-   * @param end
+-   * @param buf
+-   * @param offset
+-   * @param corruptedBlockMap
+-   * @throws IOException
+    */
+   private void hedgedFetchBlockByteRange(LocatedBlock block, long start,
+       long end, byte[] buf, int offset,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+index aa5598e..efe4f2c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSUtil.java
+@@ -292,9 +292,7 @@ public static boolean isValidNameForComponent(String component) {
+    * <p>
+    * Note that some components are only reserved under certain directories, e.g.
+    * "/.reserved" is reserved, while "/hadoop/.reserved" is not.
+-   * 
+-   * @param component
+-   * @return if the component is reserved
++   * @return true, if the component is reserved
+    */
+   public static boolean isReservedPathComponent(String component) {
+     for (String reserved : HdfsConstants.RESERVED_PATH_COMPONENTS) {
+@@ -1059,8 +1057,8 @@ public static String getNameServiceIdFromAddress(final Configuration conf,
+   /**
+    * return server http or https address from the configuration for a
+    * given namenode rpc address.
+-   * @param conf
+    * @param namenodeAddr - namenode RPC address
++   * @param conf configuration
+    * @param scheme - the scheme (http / https)
+    * @return server http or https address
+    * @throws IOException 
+@@ -1371,7 +1369,7 @@ private static String getNameServiceId(Configuration conf, String addressKey) {
+   /**
+    * For given set of {@code keys} adds nameservice Id and or namenode Id
+    * and returns {nameserviceId, namenodeId} when address match is found.
+-   * @see #getSuffixIDs(Configuration, String, AddressMatcher)
++   * @see #getSuffixIDs(Configuration, String, String, String, AddressMatcher)
+    */
+   static String[] getSuffixIDs(final Configuration conf,
+       final InetSocketAddress address, final String... keys) {
+@@ -1543,9 +1541,8 @@ public static int getReplWorkMultiplier(Configuration conf) {
+   /**
+    * Get SPNEGO keytab Key from configuration
+    * 
+-   * @param conf
+-   *          Configuration
+-   * @param defaultKey
++   * @param conf Configuration
++   * @param defaultKey default key to be used for config lookup
+    * @return DFS_WEB_AUTHENTICATION_KERBEROS_KEYTAB_KEY if the key is not empty
+    *         else return defaultKey
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
+index 3f69a5c..c8dc088 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DistributedFileSystem.java
+@@ -1585,7 +1585,7 @@ public Void next(final FileSystem fs, final Path p)
+    * Get the difference between two snapshots, or between a snapshot and the
+    * current tree of a directory.
+    * 
+-   * @see DFSClient#getSnapshotDiffReport(Path, String, String)
++   * @see DFSClient#getSnapshotDiffReport(String, String, String)
+    */
+   public SnapshotDiffReport getSnapshotDiffReport(final Path snapshotDir,
+       final String fromSnapshot, final String toSnapshot) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientDatanodeProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientDatanodeProtocol.java
+index 50955fa..ad45732 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientDatanodeProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientDatanodeProtocol.java
+@@ -112,8 +112,9 @@ BlockLocalPathInfo getBlockLocalPathInfo(ExtendedBlock block,
+   
+   /**
+    * Retrieves volume location information about a list of blocks on a datanode.
+-   * This is in the form of an opaque {@link VolumeId} for each configured
+-   * data directory, which is not guaranteed to be the same across DN restarts.
++   * This is in the form of an opaque {@link org.apache.hadoop.fs.VolumeId}
++   * for each configured data directory, which is not guaranteed to be
++   * the same across DN restarts.
+    * 
+    * @param blockPoolId the pool to query
+    * @param blockIds
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+index 0e08555..f199350 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/ClientProtocol.java
+@@ -268,7 +268,7 @@ public void setPermission(String src, FsPermission permission)
+   /**
+    * Set Owner of a path (i.e. a file or a directory).
+    * The parameters username and groupname cannot both be null.
+-   * @param src
++   * @param src file path
+    * @param username If it is null, the original username remains unchanged.
+    * @param groupname If it is null, the original groupname remains unchanged.
+    *
+@@ -1126,7 +1126,6 @@ public long addCacheDirective(CacheDirectiveInfo directive,
+   /**
+    * Modify a CacheDirective in the CacheManager.
+    * 
+-   * @return directive The directive to modify. Must contain a directive ID.
+    * @param flags {@link CacheFlag}s to use for this operation.
+    * @throws IOException if the directive could not be modified
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/DataTransferProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/DataTransferProtocol.java
+index be5f3d1..0ce97fb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/DataTransferProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/DataTransferProtocol.java
+@@ -136,7 +136,7 @@ public void requestShortCircuitFds(final ExtendedBlock blk,
+   /**
+    * Request a short circuit shared memory area from a DataNode.
+    * 
+-   * @pram clientName       The name of the client.
++   * @param clientName       The name of the client.
+    */
+   public void requestShortCircuitShm(String clientName) throws IOException;
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+index 954f169..8f3f183 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+@@ -101,9 +101,9 @@ public BlockTokenSecretManager(long keyUpdateInterval,
+    * 
+    * @param keyUpdateInterval how often a new key will be generated
+    * @param tokenLifetime how long an individual token is valid
+-   * @param isHaEnabled whether or not HA is enabled
+-   * @param thisNnId the NN ID of this NN in an HA setup
+-   * @param otherNnId the NN ID of the other NN in an HA setup
++   * @param nnIndex namenode index
++   * @param blockPoolId block pool ID
++   * @param encryptionAlgorithm encryption algorithm to use
+    */
+   public BlockTokenSecretManager(long keyUpdateInterval,
+       long tokenLifetime, int nnIndex, String blockPoolId,
+@@ -412,8 +412,7 @@ public DataEncryptionKey generateDataEncryptionKey() {
+    * @param keyId identifier of the secret key used to generate the encryption key.
+    * @param nonce random value used to create the encryption key
+    * @return the encryption key which corresponds to this (keyId, blockPoolId, nonce)
+-   * @throws InvalidToken
+-   * @throws InvalidEncryptionKeyException 
++   * @throws InvalidEncryptionKeyException
+    */
+   public byte[] retrieveDataEncryptionKey(int keyId, byte[] nonce)
+       throws InvalidEncryptionKeyException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
+index c89ca7b..e0a8f30 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/delegation/DelegationTokenSecretManager.java
+@@ -299,7 +299,7 @@ public synchronized void updatePersistedMasterKey(DelegationKey key)
+    * Update the token cache with renewal record in edit logs.
+    * 
+    * @param identifier DelegationTokenIdentifier of the renewed token
+-   * @param expiryTime
++   * @param expiryTime expirty time in milliseconds
+    * @throws IOException
+    */
+   public synchronized void updatePersistedTokenRenewal(
+@@ -429,8 +429,7 @@ private synchronized void loadCurrentTokens(DataInput in)
+ 
+     /**
+      * Private helper method to load delegation keys from fsimage.
+-     * @param in
+-     * @throws IOException
++     * @throws IOException on error
+      */
+     private synchronized void loadAllKeys(DataInput in) throws IOException {
+       StartupProgress prog = NameNode.getStartupProgress();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java
+index 5600d78..2b0466d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java
+@@ -242,7 +242,6 @@ assert getPrevious(dnIndex) == null && getNext(dnIndex) == null :
+ 
+   /**
+    * Find specified DatanodeDescriptor.
+-   * @param dn
+    * @return index or -1 if not found.
+    */
+   int findDatanode(DatanodeDescriptor dn) {
+@@ -258,7 +257,6 @@ int findDatanode(DatanodeDescriptor dn) {
+   }
+   /**
+    * Find specified DatanodeStorageInfo.
+-   * @param dn
+    * @return index or -1 if not found.
+    */
+   int findStorageInfo(DatanodeInfo dn) {
+@@ -275,7 +273,6 @@ int findStorageInfo(DatanodeInfo dn) {
+   
+   /**
+    * Find specified DatanodeStorageInfo.
+-   * @param storageInfo
+    * @return index or -1 if not found.
+    */
+   int findStorageInfo(DatanodeStorageInfo storageInfo) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
+index decdcf3..76576fb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
+@@ -553,7 +553,6 @@ public int getMaxReplicationStreams() {
+   }
+ 
+   /**
+-   * @param block
+    * @return true if the block has minimum replicas
+    */
+   public boolean checkMinReplication(Block block) {
+@@ -3367,7 +3366,6 @@ public void run() {
+    * heartbeat.
+    * 
+    * @return number of blocks scheduled for replication or removal.
+-   * @throws IOException
+    */
+   int computeDatanodeWork() {
+     // Blocks should not be replicated or removed if in safe mode.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockPlacementPolicy.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockPlacementPolicy.java
+index 93712e9..455b670 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockPlacementPolicy.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockPlacementPolicy.java
+@@ -61,7 +61,7 @@
+    * @param srcPath the file to which this chooseTargets is being invoked.
+    * @param numOfReplicas additional number of replicas wanted.
+    * @param writer the writer's machine, null if not in the cluster.
+-   * @param chosenNodes datanodes that have been chosen as targets.
++   * @param chosen datanodes that have been chosen as targets.
+    * @param returnChosenNodes decide if the chosenNodes are returned.
+    * @param excludedNodes datanodes that should not be considered as targets.
+    * @param blocksize size of the data to be written.
+@@ -78,8 +78,8 @@
+                                              StorageType storageType);
+   
+   /**
+-   * Same as {@link #chooseTarget(String, int, Node, List, boolean, 
+-   * Set, long)} with added parameter {@code favoredDatanodes}
++   * Same as {@link #chooseTarget(String, int, Node, Set, long, List, StorageType)}
++   * with added parameter {@code favoredDatanodes}
+    * @param favoredNodes datanodes that should be favored as targets. This
+    *          is only a hint and due to cluster state, namenode may not be 
+    *          able to place the blocks on these datanodes.
+@@ -143,7 +143,8 @@ abstract protected void initialize(Configuration conf,  FSClusterStats stats,
+     
+   /**
+    * Get an instance of the configured Block Placement Policy based on the
+-   * the configuration property {@link DFS_BLOCK_REPLICATOR_CLASSNAME_KEY}.
++   * the configuration property
++   * {@link  DFSConfigKeys#DFS_BLOCK_REPLICATOR_CLASSNAME_KEY}.
+    * 
+    * @param conf the configuration to be used
+    * @param stats an object that is used to retrieve the load on the cluster
+@@ -195,7 +196,6 @@ public void adjustSetsWithChosenReplica(final Map<String,
+ 
+   /**
+    * Get rack string from a data node
+-   * @param datanode
+    * @return rack of data node
+    */
+   protected String getRack(final DatanodeInfo datanode) {
+@@ -206,7 +206,7 @@ protected String getRack(final DatanodeInfo datanode) {
+    * Split data nodes into two sets, one set includes nodes on rack with
+    * more than one  replica, the other set contains the remaining nodes.
+    * 
+-   * @param dataNodes
++   * @param dataNodes datanodes to be split into two sets
+    * @param rackMap a map from rack to datanodes
+    * @param moreThanOne contains nodes on rack with more than one replica
+    * @param exactlyOne remains contains the remaining nodes
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
+index 7b4828c..c76d53b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
+@@ -435,9 +435,9 @@ DatanodeDescriptor getDatanode(final String datanodeUuid) {
+   }
+ 
+   /**
+-   * Get data node by storage ID.
++   * Get data node by datanode ID.
+    * 
+-   * @param nodeID
++   * @param nodeID datanode ID
+    * @return DatanodeDescriptor or null if the node is not found.
+    * @throws UnregisteredNodeException
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/Storage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/Storage.java
+index 3656aa2..fc5406d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/Storage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/Storage.java
+@@ -827,10 +827,10 @@ private void checkOldLayoutStorage(StorageDirectory sd) throws IOException {
+   }
+ 
+   /**
+-   * Checks if the upgrade from the given old version is supported. If
+-   * no upgrade is supported, it throws IncorrectVersionException.
+-   * 
+-   * @param oldVersion
++   * Checks if the upgrade from {@code oldVersion} is supported.
++   * @param oldVersion the version of the metadata to check with the current
++   *                   version
++   * @throws IOException if upgrade is not supported
+    */
+   public static void checkVersionUpgradable(int oldVersion) 
+                                      throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/StorageInfo.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/StorageInfo.java
+index 24909ae..94dbca4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/StorageInfo.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/StorageInfo.java
+@@ -148,8 +148,8 @@ public void readPreviousVersionProperties(StorageDirectory sd)
+    * Get common storage fields.
+    * Should be overloaded if additional fields need to be get.
+    * 
+-   * @param props
+-   * @throws IOException
++   * @param props properties
++   * @throws IOException on error
+    */
+   protected void setFieldsFromProperties(
+       Properties props, StorageDirectory sd) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
+index 4c44f4e..3fe56e8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
+@@ -314,9 +314,7 @@ private void reportReceivedDeletedBlocks() throws IOException {
+   }
+ 
+   /**
+-   * Retrieve the incremental BR state for a given storage UUID
+-   * @param storageUuid
+-   * @return
++   * @return pending incremental block report for given {@code storage}
+    */
+   private PerStoragePendingIncrementalBR getIncrementalBRMapForStorage(
+       DatanodeStorage storage) {
+@@ -339,8 +337,6 @@ private PerStoragePendingIncrementalBR getIncrementalBRMapForStorage(
+    * exists for the same block it is removed.
+    *
+    * Caller must synchronize access using pendingIncrementalBRperStorage.
+-   * @param bInfo
+-   * @param storageUuid
+    */
+   void addPendingReplicationBlockInfo(ReceivedDeletedBlockInfo bInfo,
+       DatanodeStorage storage) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockMetadataHeader.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockMetadataHeader.java
+index 8029421..7a475a5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockMetadataHeader.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockMetadataHeader.java
+@@ -98,7 +98,6 @@ public static BlockMetadataHeader preadHeader(FileChannel fc)
+ 
+   /**
+    * This reads all the fields till the beginning of checksum.
+-   * @param in 
+    * @return Metadata Header
+    * @throws IOException
+    */
+@@ -109,9 +108,7 @@ public static BlockMetadataHeader readHeader(DataInputStream in) throws IOExcept
+   /**
+    * Reads header at the top of metadata file and returns the header.
+    * 
+-   * @param dataset
+-   * @param block
+-   * @return
++   * @return metadata header for the block
+    * @throws IOException
+    */
+   public static BlockMetadataHeader readHeader(File file) throws IOException {
+@@ -147,8 +144,6 @@ private static BlockMetadataHeader readHeader(short version, DataInputStream in)
+   /**
+    * This writes all the fields till the beginning of checksum.
+    * @param out DataOutputStream
+-   * @param header 
+-   * @return 
+    * @throws IOException
+    */
+   @VisibleForTesting
+@@ -161,9 +156,7 @@ public static void writeHeader(DataOutputStream out,
+   
+   /**
+    * Writes all the fields till the beginning of checksum.
+-   * @param out
+-   * @param checksum
+-   * @throws IOException
++   * @throws IOException on error
+    */
+   static void writeHeader(DataOutputStream out, DataChecksum checksum)
+                          throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
+index 03dcb6d..485d829 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java
+@@ -956,9 +956,9 @@ private boolean isRunning() {
+     
+     /**
+      * enqueue the seqno that is still be to acked by the downstream datanode.
+-     * @param seqno
+-     * @param lastPacketInBlock
+-     * @param offsetInBlock
++     * @param seqno sequence number of the packet
++     * @param lastPacketInBlock if true, this is the last packet in block
++     * @param offsetInBlock offset of this packet in block
+      */
+     void enqueue(final long seqno, final boolean lastPacketInBlock,
+         final long offsetInBlock, final Status ackStatus) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java
+index 50f866f..eb72625 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java
+@@ -168,7 +168,7 @@
+    * @param block Block that is being read
+    * @param startOffset starting offset to read from
+    * @param length length of data to read
+-   * @param corruptChecksumOk
++   * @param corruptChecksumOk if true, corrupt checksum is okay
+    * @param verifyChecksum verify checksum while reading the data
+    * @param sendChecksum send checksum to client.
+    * @param datanode datanode from which the block is being read
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index d124b9c..732e8b0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -685,7 +685,6 @@ void trySendErrorReport(String bpid, int errCode, String errMsg) {
+   
+   /**
+    * Return the BPOfferService instance corresponding to the given block.
+-   * @param block
+    * @return the BPOS
+    * @throws IOException if no such BPOS can be found
+    */
+@@ -853,9 +852,7 @@ synchronized void bpRegistrationSucceeded(DatanodeRegistration bpRegistration,
+   /**
+    * After the block pool has contacted the NN, registers that block pool
+    * with the secret manager, updating it with the secrets provided by the NN.
+-   * @param bpRegistration
+-   * @param blockPoolId
+-   * @throws IOException
++   * @throws IOException on error
+    */
+   private synchronized void registerBlockPoolWithSecretManager(
+       DatanodeRegistration bpRegistration, String blockPoolId) throws IOException {
+@@ -1023,9 +1020,8 @@ public int getIpcPort() {
+   
+   /**
+    * get BP registration by blockPool id
+-   * @param bpid
+    * @return BP registration object
+-   * @throws IOException
++   * @throws IOException on error
+    */
+   @VisibleForTesting
+   public DatanodeRegistration getDNRegistrationForBP(String bpid) 
+@@ -1728,8 +1724,9 @@ public void run() {
+   /**
+    * After a block becomes finalized, a datanode increases metric counter,
+    * notifies namenode, and adds it to the block scanner
+-   * @param block
+-   * @param delHint
++   * @param block block to close
++   * @param delHint hint on which excess block to delete
++   * @param storageUuid UUID of the storage where block is stored
+    */
+   void closeBlock(ExtendedBlock block, String delHint, String storageUuid) {
+     metrics.incrBlocksWritten();
+@@ -2352,8 +2349,8 @@ private void checkWriteAccess(final ExtendedBlock block) throws IOException {
+    *          The corresponding replica must be an RBW or a Finalized.
+    *          Its GS and numBytes will be set to
+    *          the stored GS and the visible length. 
+-   * @param targets
+-   * @param client
++   * @param targets targets to transfer the block to
++   * @param client client name
+    */
+   void transferReplicaForPipelineRecovery(final ExtendedBlock b,
+       final DatanodeInfo[] targets, final String client) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+index 25acf51..c010e2d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+@@ -1047,7 +1047,7 @@ private long elapsed() {
+   /**
+    * Utility function for sending a response.
+    * 
+-   * @param opStatus status message to write
++   * @param status status message to write
+    * @param message message to send to the client or other DN
+    */
+   private void sendResponse(Status status,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DirectoryScanner.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DirectoryScanner.java
+index 9ebd574..c486e70 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DirectoryScanner.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DirectoryScanner.java
+@@ -108,8 +108,7 @@ public String toString() {
+     ScanInfoPerBlockPool(int sz) {super(sz);}
+     
+     /**
+-     * Merges "that" ScanInfoPerBlockPool into this one
+-     * @param that
++     * Merges {@code that} ScanInfoPerBlockPool into this one
+      */
+     public void addAll(ScanInfoPerBlockPool that) {
+       if (that == null) return;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/FinalizedReplica.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/FinalizedReplica.java
+index 9065873..cc32874 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/FinalizedReplica.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/FinalizedReplica.java
+@@ -54,7 +54,7 @@ public FinalizedReplica(Block block, FsVolumeSpi vol, File dir) {
+ 
+   /**
+    * Copy constructor.
+-   * @param from
++   * @param from where to copy construct from
+    */
+   public FinalizedReplica(FinalizedReplica from) {
+     super(from);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaBeingWritten.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaBeingWritten.java
+index c61807b..728dd38 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaBeingWritten.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaBeingWritten.java
+@@ -68,7 +68,7 @@ public ReplicaBeingWritten(long blockId, long len, long genStamp,
+ 
+   /**
+    * Copy constructor.
+-   * @param from
++   * @param from where to copy from
+    */
+   public ReplicaBeingWritten(ReplicaBeingWritten from) {
+     super(from);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInPipeline.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInPipeline.java
+index 9ea7b7d..f808e01 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInPipeline.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInPipeline.java
+@@ -89,7 +89,7 @@ public ReplicaInPipeline(long blockId, long genStamp,
+ 
+   /**
+    * Copy constructor.
+-   * @param from
++   * @param from where to copy from
+    */
+   public ReplicaInPipeline(ReplicaInPipeline from) {
+     super(from);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInPipelineInterface.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInPipelineInterface.java
+index acc3113..7f08b81 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInPipelineInterface.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInPipelineInterface.java
+@@ -40,7 +40,7 @@
+   
+   /**
+    * Set the number bytes that have acked
+-   * @param bytesAcked
++   * @param bytesAcked number bytes acked
+    */
+   void setBytesAcked(long bytesAcked);
+   
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInfo.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInfo.java
+index 27467f2..a703d86 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInfo.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaInfo.java
+@@ -100,7 +100,7 @@
+ 
+   /**
+    * Copy constructor.
+-   * @param from
++   * @param from where to copy from
+    */
+   ReplicaInfo(ReplicaInfo from) {
+     this(from, from.getVolume(), from.getDir());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaUnderRecovery.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaUnderRecovery.java
+index e92a6b5..35f7c93 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaUnderRecovery.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaUnderRecovery.java
+@@ -50,7 +50,7 @@ public ReplicaUnderRecovery(ReplicaInfo replica, long recoveryId) {
+ 
+   /**
+    * Copy constructor.
+-   * @param from
++   * @param from where to copy from
+    */
+   public ReplicaUnderRecovery(ReplicaUnderRecovery from) {
+     super(from);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaWaitingToBeRecovered.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaWaitingToBeRecovered.java
+index 49c8d3d..26ab3db 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaWaitingToBeRecovered.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/ReplicaWaitingToBeRecovered.java
+@@ -60,7 +60,7 @@ public ReplicaWaitingToBeRecovered(Block block, FsVolumeSpi vol, File dir) {
+   
+   /**
+    * Copy constructor.
+-   * @param from
++   * @param from where to copy from
+    */
+   public ReplicaWaitingToBeRecovered(ReplicaWaitingToBeRecovered from) {
+     super(from);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/AvailableSpaceVolumeChoosingPolicy.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/AvailableSpaceVolumeChoosingPolicy.java
+index 77e2f3e..61120c2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/AvailableSpaceVolumeChoosingPolicy.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/AvailableSpaceVolumeChoosingPolicy.java
+@@ -165,13 +165,8 @@ public AvailableSpaceVolumeList(List<V> volumes) throws IOException {
+     }
+     
+     /**
+-     * Check if the available space on all the volumes is roughly equal.
+-     * 
+-     * @param volumes the volumes to check
+-     * @return true if all volumes' free space is within the configured threshold,
+-     *         false otherwise.
+-     * @throws IOException
+-     *           in the event of error checking amount of available space
++     * @return true if all volumes' free space is within the
++     *         configured threshold, false otherwise.
+      */
+     public boolean areAllVolumesWithinFreeSpaceThreshold() {
+       long leastAvailable = Long.MAX_VALUE;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/FsDatasetSpi.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/FsDatasetSpi.java
+index 1f6f965..6c78ac7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/FsDatasetSpi.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/FsDatasetSpi.java
+@@ -124,16 +124,14 @@ public LengthInputStream getMetaDataInputStream(ExtendedBlock b
+ 
+   /**
+    * Returns the specified block's on-disk length (excluding metadata)
+-   * @param b
+    * @return   the specified block's on-disk length (excluding metadta)
+-   * @throws IOException
++   * @throws IOException on error
+    */
+   public long getLength(ExtendedBlock b) throws IOException;
+ 
+   /**
+    * Get reference to the replica meta info in the replicasMap. 
+    * To be called from methods that are synchronized on {@link FSDataset}
+-   * @param blockId
+    * @return replica from the replicas map
+    */
+   @Deprecated
+@@ -151,8 +149,8 @@ public LengthInputStream getMetaDataInputStream(ExtendedBlock b
+   
+   /**
+    * Returns an input stream at specified offset of the specified block
+-   * @param b
+-   * @param seekOffset
++   * @param b block
++   * @param seekOffset offset with in the block to seek to
+    * @return an input stream to read the contents of the specified block,
+    *  starting at the offset
+    * @throws IOException
+@@ -163,9 +161,6 @@ public InputStream getBlockInputStream(ExtendedBlock b, long seekOffset)
+   /**
+    * Returns an input stream at specified offset of the specified block
+    * The block is still in the tmp directory and is not finalized
+-   * @param b
+-   * @param blkoff
+-   * @param ckoff
+    * @return an input stream to read the contents of the specified block,
+    *  starting at the offset
+    * @throws IOException
+@@ -256,7 +251,6 @@ public String recoverClose(ExtendedBlock b, long newGS, long expectedBlockLen
+    * Finalizes the block previously opened for writing using writeToBlock.
+    * The block size is what is in the parameter b and it must match the amount
+    *  of data written
+-   * @param b
+    * @throws IOException
+    */
+   public void finalizeBlock(ExtendedBlock b) throws IOException;
+@@ -264,7 +258,6 @@ public String recoverClose(ExtendedBlock b, long newGS, long expectedBlockLen
+   /**
+    * Unfinalizes the block previously opened for writing using writeToBlock.
+    * The temporary file associated with this block is deleted.
+-   * @param b
+    * @throws IOException
+    */
+   public void unfinalizeBlock(ExtendedBlock b) throws IOException;
+@@ -289,14 +282,12 @@ public String recoverClose(ExtendedBlock b, long newGS, long expectedBlockLen
+ 
+   /**
+    * Is the block valid?
+-   * @param b
+    * @return - true if the specified block is valid
+    */
+   public boolean isValidBlock(ExtendedBlock b);
+ 
+   /**
+    * Is the block a valid RBW?
+-   * @param b
+    * @return - true if the specified block is a valid RBW
+    */
+   public boolean isValidRbw(ExtendedBlock b);
+@@ -327,7 +318,7 @@ public String recoverClose(ExtendedBlock b, long newGS, long expectedBlockLen
+    * Determine if the specified block is cached.
+    * @param bpid Block pool id
+    * @param blockIds - block id
+-   * @returns true if the block is cached
++   * @return true if the block is cached
+    */
+   public boolean isCached(String bpid, long blockId);
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/BlockPoolSlice.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/BlockPoolSlice.java
+index 6eeb23e..f581d90 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/BlockPoolSlice.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/BlockPoolSlice.java
+@@ -74,7 +74,7 @@
+    * @param bpid Block pool Id
+    * @param volume {@link FsVolumeImpl} to which this BlockPool belongs to
+    * @param bpDir directory corresponding to the BlockPool
+-   * @param conf
++   * @param conf configuration
+    * @throws IOException
+    */
+   BlockPoolSlice(String bpid, FsVolumeImpl volume, File bpDir,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
+index 043e277..3320c65 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java
+@@ -120,10 +120,8 @@ public synchronized Block getStoredBlock(String bpid, long blkid)
+ 
+ 
+   /**
+-   * Returns a clone of a replica stored in data-node memory.
+-   * Should be primarily used for testing.
+-   * @param blockId
+-   * @return
++   * This should be primarily used for testing.
++   * @return clone of replica store in datanode memory
+    */
+   ReplicaInfo fetchReplicaInfo(String bpid, long blockId) {
+     ReplicaInfo r = volumeMap.get(bpid, blockId);
+@@ -1579,7 +1577,7 @@ public synchronized ReplicaRecoveryInfo initReplicaRecovery(
+         datanode.getDnConf().getXceiverStopTimeout());
+   }
+ 
+-  /** static version of {@link #initReplicaRecovery(Block, long)}. */
++  /** static version of {@link #initReplicaRecovery(RecoveringBlock)}. */
+   static ReplicaRecoveryInfo initReplicaRecovery(String bpid, ReplicaMap map,
+       Block block, long recoveryId, long xceiverStopTimeout) throws IOException {
+     final ReplicaInfo replica = map.get(bpid, block.getBlockId());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/MappableBlock.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/MappableBlock.java
+index ae36822..330498f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/MappableBlock.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/MappableBlock.java
+@@ -97,7 +97,6 @@ public static MappableBlock load(long length,
+ 
+   /**
+    * Verifies the block's checksum. This is an I/O intensive operation.
+-   * @return if the block was successfully checksummed.
+    */
+   private static void verifyChecksum(long length,
+       FileInputStream metaIn, FileChannel blockChannel, String blockFileName)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/BackupNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/BackupNode.java
+index 8bb5966..d9e3792 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/BackupNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/BackupNode.java
+@@ -345,7 +345,7 @@ void doCheckpoint() throws IOException {
+ 
+   /**
+    * Register this backup node with the active name-node.
+-   * @param nsInfo
++   * @param nsInfo namespace information
+    * @throws IOException
+    */
+   private void registerWith(NamespaceInfo nsInfo) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
+index 3925bdf..b6edfb7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CacheManager.java
+@@ -216,7 +216,7 @@ public PersistState(CacheManagerSection section,
+ 
+   /**
+    * Resets all tracked directives and pools. Called during 2NN checkpointing to
+-   * reset FSNamesystem state. See {FSNamesystem{@link #clear()}.
++   * reset FSNamesystem state. See {@link FSNamesystem#clear()}.
+    */
+   void clear() {
+     directivesById.clear();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CachedBlock.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CachedBlock.java
+index 9584ea7..98c6543 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CachedBlock.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/CachedBlock.java
+@@ -125,7 +125,7 @@ public boolean isPresent(CachedBlocksList cachedBlocksList) {
+    * @param type      If null, this parameter is ignored.
+    *                  If it is non-null, we match only datanodes which
+    *                  have it on this list.
+-   *                  See {@link DatanodeDescriptor#CachedBlocksList#Type}
++   *                  See {@link DatanodeDescriptor.CachedBlocksList.Type}
+    *                  for a description of all the lists.
+    *                  
+    * @return          The list of datanodes.  Modifying this list does not
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ClusterJspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ClusterJspHelper.java
+index e2e71e4..c343bdb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ClusterJspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ClusterJspHelper.java
+@@ -388,7 +388,6 @@ private void getDecomNodeInfoForReport(
+      *          is an inner map whose key is namenode, value is datanode status.
+      *          reported by each namenode.
+      * @param namenodeHost host name of the namenode
+-     * @param decomnode update DecommissionNode with alive node status
+      * @param json JSON string contains datanode status
+      * @throws IOException
+      */
+@@ -426,7 +425,6 @@ private static void getLiveNodeStatus(
+      * @param statusMap map with key being datanode, value being an
+      *          inner map (key:namenode, value:decommisionning state).
+      * @param host datanode hostname
+-     * @param decomnode DecommissionNode
+      * @param json String
+      * @throws IOException
+      */
+@@ -468,7 +466,6 @@ private static void getDeadNodeStatus(
+      * @param dataNodeStatusMap map with key being datanode, value being an
+      *          inner map (key:namenode, value:decommisionning state).
+      * @param host datanode
+-     * @param decomnode DecommissionNode
+      * @param json String
+      */
+     private static void getDecommissionNodeStatus(
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EditLogFileInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EditLogFileInputStream.java
+index e4c64c8..bc89d83 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EditLogFileInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EditLogFileInputStream.java
+@@ -93,10 +93,6 @@
+    * @param name filename to open
+    * @param firstTxId first transaction found in file
+    * @param lastTxId last transaction id found in file
+-   * @throws LogHeaderCorruptException if the header is either missing or
+-   *         appears to be corrupt/truncated
+-   * @throws IOException if an actual IO error occurs while reading the
+-   *         header
+    */
+   public EditLogFileInputStream(File name, long firstTxId, long lastTxId,
+       boolean isInProgress) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EditLogOutputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EditLogOutputStream.java
+index 16ae5cd..b2fdf14 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EditLogOutputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/EditLogOutputStream.java
+@@ -126,14 +126,14 @@ public boolean shouldForceSync() {
+   }
+   
+   /**
+-   * Return total time spent in {@link #flushAndSync()}
++   * Return total time spent in {@link #flushAndSync(boolean)}
+    */
+   long getTotalSyncTime() {
+     return totalTimeSync;
+   }
+ 
+   /**
+-   * Return number of calls to {@link #flushAndSync()}
++   * Return number of calls to {@link #flushAndSync(boolean)}
+    */
+   protected long getNumSync() {
+     return numSync;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 7dc909b..6e0708f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -525,7 +525,7 @@ boolean unprotectedRemoveBlock(String path,
+   /**
+    * @throws SnapshotAccessControlException 
+    * @see #unprotectedRenameTo(String, String, long)
+-   * @deprecated Use {@link #renameTo(String, String, Rename...)} instead.
++   * @deprecated Use {@link #renameTo(String, String, boolean, Rename...)}
+    */
+   @Deprecated
+   boolean renameTo(String src, String dst, boolean logRetryCache) 
+@@ -582,7 +582,7 @@ void renameTo(String src, String dst, boolean logRetryCache,
+    * @throws QuotaExceededException if the operation violates any quota limit
+    * @throws FileAlreadyExistsException if the src is a symlink that points to dst
+    * @throws SnapshotAccessControlException if path is in RO snapshot
+-   * @deprecated See {@link #renameTo(String, String)}
++   * @deprecated See {@link #renameTo(String, String, boolean, Rename...)}
+    */
+   @Deprecated
+   boolean unprotectedRenameTo(String src, String dst, long timestamp)
+@@ -1843,7 +1843,7 @@ private void updateCount(INodesInPath iip, int numOfINodes,
+   
+   /** 
+    * update quota of each inode and check to see if quota is exceeded. 
+-   * See {@link #updateCount(INode[], int, long, long, boolean)}
++   * See {@link #updateCount(INodesInPath, long, long, boolean)}
+    */ 
+   private void updateCountNoQuotaCheck(INodesInPath inodesInPath,
+       int numOfINodes, long nsDelta, long dsDelta) {
+@@ -1927,14 +1927,13 @@ static String getFullPathName(INode inode) {
+ 
+    * @param src string representation of the path to the directory
+    * @param permissions the permission of the directory
+-   * @param isAutocreate if the permission of the directory should inherit
++   * @param inheritPermission if the permission of the directory should inherit
+    *                          from its parent or not. u+wx is implicitly added to
+    *                          the automatically created directories, and to the
+    *                          given directory if inheritPermission is true
+    * @param now creation time
+    * @return true if the operation succeeds false otherwise
+-   * @throws FileNotFoundException if an ancestor or itself is a file
+-   * @throws QuotaExceededException if directory creation violates 
++   * @throws QuotaExceededException if directory creation violates
+    *                                any quota limit
+    * @throws UnresolvedLinkException if a symlink is encountered in src.                      
+    * @throws SnapshotAccessControlException if path is in RO snapshot
+@@ -2063,7 +2062,7 @@ private void unprotectedMkdir(long inodeId, INodesInPath inodesInPath,
+   /**
+    * Add the given child to the namespace.
+    * @param src The full path name of the child node.
+-   * @throw QuotaExceededException is thrown if it violates quota limit
++   * @throws QuotaExceededException is thrown if it violates quota limit
+    */
+   private boolean addINode(String src, INode child
+       ) throws QuotaExceededException, UnresolvedLinkException {
+@@ -2231,7 +2230,7 @@ private boolean addLastINode(INodesInPath inodesInPath,
+    * Its ancestors are stored at [0, pos-1].
+    * @return false if the child with this name already exists; 
+    *         otherwise return true;
+-   * @throw QuotaExceededException is thrown if it violates quota limit
++   * @throws QuotaExceededException is thrown if it violates quota limit
+    */
+   private boolean addChild(INodesInPath iip, int pos,
+       INode child, boolean checkQuota) throws QuotaExceededException {
+@@ -2418,7 +2417,7 @@ int getInodeMapSize() {
+   /**
+    * See {@link ClientProtocol#setQuota(String, long, long)} for the contract.
+    * Sets quota for for a directory.
+-   * @returns INodeDirectory if any of the quotas have changed. null other wise.
++   * @return INodeDirectory if any of the quotas have changed. null other wise.
+    * @throws FileNotFoundException if the path does not exist.
+    * @throws PathIsNotDirectoryException if the path is not a directory.
+    * @throws QuotaExceededException if the directory tree size is 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+index ef77b83..af10025 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+@@ -425,7 +425,6 @@ assert isOpenForWrite() :
+ 
+   /**
+    * Wait if an automatic sync is scheduled
+-   * @throws InterruptedException
+    */
+   synchronized void waitIfAutoSyncScheduled() {
+     try {
+@@ -803,7 +802,8 @@ void logSetReplication(String src, short replication) {
+   /** Add set namespace quota record to edit log
+    * 
+    * @param src the string representation of the path to a directory
+-   * @param quota the directory size limit
++   * @param nsQuota namespace quota
++   * @param dsQuota diskspace quota
+    */
+   void logSetQuota(String src, long nsQuota, long dsQuota) {
+     SetQuotaOp op = SetQuotaOp.getInstance(cache.get())
+@@ -1408,8 +1408,9 @@ public void selectInputStreams(Collection<EditLogInputStream> streams,
+    * Select a list of input streams.
+    * 
+    * @param fromTxId first transaction in the selected streams
+-   * @param toAtLeast the selected streams must contain this transaction
+-   * @param inProgessOk set to true if in-progress streams are OK
++   * @param toAtLeastTxId the selected streams must contain this transaction
++   * @param recovery recovery context
++   * @param inProgressOk set to true if in-progress streams are OK
+    */
+   public synchronized Collection<EditLogInputStream> selectInputStreams(
+       long fromTxId, long toAtLeastTxId, MetaRecoveryContext recovery,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+index f37b706..b31fc44 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+@@ -996,9 +996,6 @@ private void check203UpgradeFailure(int logVersion, Throwable e)
+    * If there are invalid or corrupt transactions in the middle of the stream,
+    * validateEditLog will skip over them.
+    * This reads through the stream but does not close it.
+-   *
+-   * @throws IOException if the stream cannot be read due to an IO error (eg
+-   *                     if the log does not exist)
+    */
+   static EditLogValidation validateEditLog(EditLogInputStream in) {
+     long lastPos = 0;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
+index 24de9db..d8a470f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogOp.java
+@@ -667,8 +667,8 @@ void fromXml(Stanza st) throws InvalidXmlException {
+   }
+ 
+   /**
+-   * {@literal @AtMostOnce} for {@link ClientProtocol#startFile} and
+-   * {@link ClientProtocol#appendFile}
++   * {@literal @AtMostOnce} for {@link ClientProtocol#create} and
++   * {@link ClientProtocol#append}
+    */
+   static class AddOp extends AddCloseOp {
+     private AddOp() {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+index 4a9315f..b42d01c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java
+@@ -160,7 +160,7 @@ void format(FSNamesystem fsn, String clusterId) throws IOException {
+    * directory to allow them to format anyway. Otherwise, returns
+    * false, unless 'force' is specified.
+    * 
+-   * @param force format regardless of whether dirs exist
++   * @param force if true, format regardless of whether dirs exist
+    * @param interactive prompt the user when a dir exists
+    * @return true if formatting should proceed
+    * @throws IOException if some storage cannot be accessed
+@@ -1005,7 +1005,6 @@ public synchronized void saveNamespace(FSNamesystem source)
+   /**
+    * Save the contents of the FS image to a new image file in each of the
+    * current storage directories.
+-   * @param canceler
+    */
+   public synchronized void saveNamespace(FSNamesystem source, NameNodeFile nnf,
+       Canceler canceler) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index 4e02ccc..4b1a7c9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -485,7 +485,7 @@ private void loadDirectoryWithSnapshot(DataInput in, Counter counter)
+    /**
+     * Load all children of a directory
+     * 
+-    * @param in
++    * @param in input to load from
+     * @param counter Counter to increment for namenode startup progress
+     * @return number of child inodes read
+     * @throws IOException
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+index 62127c8..b863737 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+@@ -206,7 +206,7 @@ static void writeShort(short value, DataOutputStream out) throws IOException {
+   /**
+    * Reading the path from the image and converting it to byte[][] directly
+    * this saves us an array copy and conversions to and from String
+-   * @param in
++   * @param in input to read from
+    * @return the array each element of which is a byte[] representation 
+    *            of a path component
+    * @throws IOException
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 000863e..7e1dde6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -1344,8 +1344,8 @@ private boolean shouldRetrySafeMode(SafeModeInfo safeMode) {
+   
+   /**
+    * Returns edit directories that are shared between primary and secondary.
+-   * @param conf
+-   * @return Collection of edit directories.
++   * @param conf configuration
++   * @return collection of edit directories from {@code conf}
+    */
+   public static List<URI> getSharedEditsDirs(Configuration conf) {
+     // don't use getStorageDirs here, because we want an empty default
+@@ -1780,9 +1780,9 @@ private LocatedBlocks getBlockLocationsUpdateTimes(String src, long offset,
+    * before we start actual move.
+    * 
+    * This does not support ".inodes" relative path
+-   * @param target
+-   * @param srcs
+-   * @throws IOException
++   * @param target target to concat into
++   * @param srcs file that will be concatenated
++   * @throws IOException on error
+    */
+   void concat(String target, String [] srcs) 
+       throws IOException, UnresolvedLinkException {
+@@ -4088,11 +4088,10 @@ void commitBlockSynchronization(ExtendedBlock lastblock,
+   }
+ 
+   /**
+-   *
+-   * @param pendingFile
+-   * @param storedBlock
++   * @param pendingFile open file that needs to be closed
++   * @param storedBlock last block
+    * @return Path of the file that was closed.
+-   * @throws IOException
++   * @throws IOException on error
+    */
+   @VisibleForTesting
+   String closeFileCommitBlocks(INodeFile pendingFile, BlockInfo storedBlock)
+@@ -4300,7 +4299,6 @@ boolean nameNodeHasResourcesAvailable() {
+ 
+   /**
+    * Perform resource checks and cache the results.
+-   * @throws IOException
+    */
+   void checkAvailableResources() {
+     Preconditions.checkState(nnResourceChecker != null,
+@@ -5340,7 +5338,6 @@ void enterSafeMode(boolean resourcesLow) throws IOException {
+ 
+   /**
+    * Leave safe mode.
+-   * @throws IOException
+    */
+   void leaveSafeMode() {
+     writeLock();
+@@ -5756,7 +5753,7 @@ long upgradeGenerationStampToV2() {
+   /**
+    * Sets the generation stamp that delineates random and sequentially
+    * allocated block IDs.
+-   * @param stamp
++   * @param stamp set generation stamp limit to this value
+    */
+   void setGenerationStampV1Limit(long stamp) {
+     Preconditions.checkState(generationStampV1Limit ==
+@@ -5841,7 +5838,6 @@ long getGenerationStampV1Limit() {
+    * Determine whether the block ID was randomly generated (legacy) or
+    * sequentially generated. The generation stamp value is used to
+    * make the distinction.
+-   * @param block
+    * @return true if the block ID was randomly generated, false otherwise.
+    */
+   boolean isLegacyBlock(Block block) {
+@@ -6076,7 +6072,6 @@ void registerBackupNode(NamenodeRegistration bnReg,
+    * Release (unregister) backup node.
+    * <p>
+    * Find and remove the backup stream corresponding to the node.
+-   * @param registration
+    * @throws IOException
+    */
+   void releaseBackupNode(NamenodeRegistration registration)
+@@ -6212,9 +6207,9 @@ DelegationTokenSecretManager getDelegationTokenSecretManager() {
+   }
+ 
+   /**
+-   * @param renewer
+-   * @return Token<DelegationTokenIdentifier>
+-   * @throws IOException
++   * @param renewer Renewer information
++   * @return delegation toek
++   * @throws IOException on error
+    */
+   Token<DelegationTokenIdentifier> getDelegationToken(Text renewer)
+       throws IOException {
+@@ -6255,10 +6250,10 @@ DelegationTokenSecretManager getDelegationTokenSecretManager() {
+ 
+   /**
+    * 
+-   * @param token
+-   * @return New expiryTime of the token
+-   * @throws InvalidToken
+-   * @throws IOException
++   * @param token token to renew
++   * @return new expiryTime of the token
++   * @throws InvalidToken if {@code token} is invalid
++   * @throws IOException on other errors
+    */
+   long renewDelegationToken(Token<DelegationTokenIdentifier> token)
+       throws InvalidToken, IOException {
+@@ -6289,8 +6284,8 @@ long renewDelegationToken(Token<DelegationTokenIdentifier> token)
+ 
+   /**
+    * 
+-   * @param token
+-   * @throws IOException
++   * @param token token to cancel
++   * @throws IOException on error
+    */
+   void cancelDelegationToken(Token<DelegationTokenIdentifier> token)
+       throws IOException {
+@@ -7200,7 +7195,7 @@ RollingUpgradeInfo startRollingUpgrade() throws IOException {
+ 
+   /**
+    * Update internal state to indicate that a rolling upgrade is in progress.
+-   * @param startTime
++   * @param startTime rolling upgrade start time
+    */
+   void startRollingUpgradeInternal(long startTime)
+       throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
+index 5f006e4..61c9f20 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileJournalManager.java
+@@ -168,7 +168,7 @@ public void purgeLogsOlderThan(long minTxIdToKeep)
+ 
+   /**
+    * Find all editlog segments starting at or above the given txid.
+-   * @param fromTxId the txnid which to start looking
++   * @param firstTxId the txnid which to start looking
+    * @param inProgressOk whether or not to include the in-progress edit log 
+    *        segment       
+    * @return a list of remote edit logs
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+index b08324f..ffb40f5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INode.java
+@@ -652,9 +652,8 @@ public final INode setAccessTime(long accessTime, int latestSnapshotId)
+ 
+ 
+   /**
+-   * Breaks file path into components.
+-   * @param path
+-   * @return array of byte arrays each of which represents 
++   * Breaks {@code path} into components.
++   * @return array of byte arrays each of which represents
+    * a single path component.
+    */
+   static byte[][] getPathComponents(String path) {
+@@ -673,8 +672,7 @@ public final INode setAccessTime(long accessTime, int latestSnapshotId)
+   }
+ 
+   /**
+-   * Splits an absolute path into an array of path components.
+-   * @param path
++   * Splits an absolute {@code path} into an array of path components.
+    * @throws AssertionError if the given path is invalid.
+    * @return array of path components.
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
+index 43e59ff..3561573 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
+@@ -402,7 +402,6 @@ public void run() {
+   /**
+    * Get the list of inodes corresponding to valid leases.
+    * @return list of inodes
+-   * @throws UnresolvedLinkException
+    */
+   Map<String, INodeFile> getINodesUnderConstruction() {
+     Map<String, INodeFile> inodes = new TreeMap<String, INodeFile>();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LogsPurgeable.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LogsPurgeable.java
+index f997fa0..71e3a35 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LogsPurgeable.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LogsPurgeable.java
+@@ -42,7 +42,6 @@
+    * 
+    * @param fromTxId the first transaction id we want to read
+    * @param inProgressOk whether or not in-progress streams should be returned
+-   * @return a list of streams
+    * @throws IOException if the underlying storage has an error or is otherwise
+    * inaccessible
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+index 0a5594b..946024b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+@@ -425,8 +425,7 @@ static long readTransactionIdFile(StorageDirectory sd) throws IOException {
+   
+   /**
+    * Write last checkpoint time into a separate file.
+-   *
+-   * @param sd
++   * @param sd storage directory
+    * @throws IOException
+    */
+   void writeTransactionIdFile(StorageDirectory sd, long txid) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+index c59ec53..dcfa835 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+@@ -340,8 +340,6 @@ public static InetSocketAddress getAddress(Configuration conf) {
+ 
+ 
+   /**
+-   * TODO:FEDERATION
+-   * @param filesystemURI
+    * @return address of file system
+    */
+   public static InetSocketAddress getAddress(URI filesystemURI) {
+@@ -781,8 +779,8 @@ public InetSocketAddress getHttpsAddress() {
+    * Interactively confirm that formatting is desired 
+    * for each existing directory and format them.
+    * 
+-   * @param conf
+-   * @param force
++   * @param conf configuration to use
++   * @param force if true, format regardless of whether dirs exist
+    * @return true if formatting was aborted, false otherwise
+    * @throws IOException
+    */
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+index 1f2c9ec..e182f23 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNodeRpcServer.java
+@@ -1150,9 +1150,8 @@ public synchronized HAServiceStatus getServiceStatus()
+ 
+   /**
+    * Verify version.
+-   * 
+-   * @param version
+-   * @throws IOException
++   * @param version layout version
++   * @throws IOException on layout version mismatch
+    */
+   void verifyLayoutVersion(int version) throws IOException {
+     if (version != HdfsConstants.NAMENODE_LAYOUT_VERSION)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NamenodeFsck.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NamenodeFsck.java
+index 49874b6..31d10e1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NamenodeFsck.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NamenodeFsck.java
+@@ -161,7 +161,6 @@
+    * @param totalDatanodes number of live datanodes
+    * @param minReplication minimum replication
+    * @param remoteAddress source address of the fsck request
+-   * @throws IOException
+    */
+   NamenodeFsck(Configuration conf, NameNode namenode,
+       NetworkTopology networktopology, 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+index 2c308a3..74daadf 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+@@ -209,7 +209,6 @@ public static InetSocketAddress getHttpAddress(Configuration conf) {
+   
+   /**
+    * Initialize SecondaryNameNode.
+-   * @param commandLineOpts
+    */
+   private void initialize(final Configuration conf,
+       CommandLineOpts commandLineOpts) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/HAState.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/HAState.java
+index 20ea854..34a5da2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/HAState.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/HAState.java
+@@ -130,8 +130,8 @@ public void setState(HAContext context, HAState s) throws ServiceFailedException
+    * Check if an operation is supported in a given state.
+    * @param context HA context
+    * @param op Type of the operation.
+-   * @throws UnsupportedActionException if a given type of operation is not
+-   *           supported in this state.
++   * @throws StandbyException if a given type of operation is not
++   *           supported in standby state
+    */
+   public abstract void checkOperation(final HAContext context, final OperationCategory op)
+       throws StandbyException;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/AbstractINodeDiff.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/AbstractINodeDiff.java
+index 5df84fc..9952317 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/AbstractINodeDiff.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/AbstractINodeDiff.java
+@@ -86,7 +86,6 @@ final D getPosterior() {
+     return posteriorDiff;
+   }
+ 
+-  /** @return the posterior diff. */
+   final void setPosterior(D posterior) {
+     posteriorDiff = posterior;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/BlockIdCommand.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/BlockIdCommand.java
+index f4837a1..2cf3f07 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/BlockIdCommand.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/BlockIdCommand.java
+@@ -32,7 +32,6 @@
+ 
+   /**
+    * Create BlockCommand for the given action
+-   * @param blocks blocks related to the action
+    */
+   public BlockIdCommand(int action, String poolId, long[] blockIds) {
+     super(action);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeProtocol.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeProtocol.java
+index cbc5f67..c3b0f68 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeProtocol.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeProtocol.java
+@@ -119,9 +119,9 @@ public HeartbeatResponse sendHeartbeat(DatanodeRegistration registration,
+    * and should be deleted.  This function is meant to upload *all*
+    * the locally-stored blocks.  It's invoked upon startup and then
+    * infrequently afterwards.
+-   * @param registration
+-   * @param poolId - the block pool ID for the blocks
+-   * @param reports - report of blocks per storage
++   * @param registration datanode registration
++   * @param poolId the block pool ID for the blocks
++   * @param reports report of blocks per storage
+    *     Each finalized block is represented as 3 longs. Each under-
+    *     construction replica is represented as 4 longs.
+    *     This is done instead of Block[] to reduce memory used by block reports.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeStorage.java
+index 09675cd..a1c048c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/DatanodeStorage.java
+@@ -48,8 +48,6 @@
+ 
+   /**
+    * Create a storage with {@link State#NORMAL} and {@link StorageType#DEFAULT}.
+-   *
+-   * @param storageID
+    */
+   public DatanodeStorage(String storageID) {
+     this(storageID, State.NORMAL, StorageType.DEFAULT);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/ServerCommand.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/ServerCommand.java
+index 193839c..9f43bdc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/ServerCommand.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/protocol/ServerCommand.java
+@@ -39,7 +39,7 @@
+    * 
+    * @see DatanodeProtocol
+    * @see NamenodeProtocol
+-   * @param action
++   * @param action protocol specific action
+    */
+   public ServerCommand(int action) {
+     this.action = action;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSck.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSck.java
+index 60b7e4c..db253b6 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSck.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSck.java
+@@ -130,9 +130,6 @@ static void printUsage(PrintStream out) {
+     out.println(USAGE + "\n");
+     ToolRunner.printGenericCommandUsage(out);
+   }
+-  /**
+-   * @param args
+-   */
+   @Override
+   public int run(final String[] args) throws IOException {
+     if (args.length == 0) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/GetConf.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/GetConf.java
+index 92a3864..77485f2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/GetConf.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/GetConf.java
+@@ -167,8 +167,7 @@ protected void checkArgs(String args[]) {
+     }
+ 
+     
+-    /** Method to be overridden by sub classes for specific behavior 
+-     * @param args */
++    /** Method to be overridden by sub classes for specific behavior */
+     int doWorkInternal(GetConf tool, String[] args) throws Exception {
+ 
+       String value = tool.getConf().getTrimmed(key);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/HDFSConcat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/HDFSConcat.java
+index a6c5c77..15a585b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/HDFSConcat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/HDFSConcat.java
+@@ -30,9 +30,7 @@
+ @InterfaceAudience.Private
+ public class HDFSConcat {
+   private final static String def_uri = "hdfs://localhost:9000";
+-  /**
+-   * @param args
+-   */
++
+   public static void main(String... args) throws IOException {
+ 
+     if(args.length < 2) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/JMXGet.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/JMXGet.java
+index a89c423..bafef25 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/JMXGet.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/JMXGet.java
+@@ -217,7 +217,7 @@ static void printUsage(Options opts) {
+   }
+ 
+   /**
+-   * @param msg
++   * @param msg error message
+    */
+   private static void err(String msg) {
+     System.err.println(msg);
+@@ -274,13 +274,7 @@ private static CommandLine parseArgs(Options opts, String... args)
+     return commandLine;
+   }
+ 
+-  /**
+-   * main
+-   * 
+-   * @param args
+-   */
+   public static void main(String[] args) {
+-
+     int res = -1;
+ 
+     // parse arguments
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineEditsViewer/BinaryEditsVisitor.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineEditsViewer/BinaryEditsVisitor.java
+index 6ada9db..66afdcc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineEditsViewer/BinaryEditsVisitor.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineEditsViewer/BinaryEditsVisitor.java
+@@ -36,8 +36,7 @@
+ 
+   /**
+    * Create a processor that writes to a given file
+-   *
+-   * @param filename Name of file to write output to
++   * @param outputName Name of file to write output to
+    */
+   public BinaryEditsVisitor(String outputName) throws IOException {
+     this.elfos = new EditLogFileOutputStream(new Configuration(),
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/DataTransferThrottler.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/DataTransferThrottler.java
+index 24693c3..55bf12d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/DataTransferThrottler.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/util/DataTransferThrottler.java
+@@ -63,8 +63,6 @@ public synchronized long getBandwidth() {
+   /**
+    * Sets throttle bandwidth. This takes affect latest by the end of current
+    * period.
+-   * 
+-   * @param bytesPerSecond 
+    */
+   public synchronized void setBandwidth(long bytesPerSecond) {
+     if ( bytesPerSecond <= 0 ) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/resources/AclPermissionParam.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/resources/AclPermissionParam.java
+index b335379..6263a50 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/resources/AclPermissionParam.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/web/resources/AclPermissionParam.java
+@@ -60,10 +60,7 @@ public String getName() {
+   }
+ 
+   /**
+-   * Parse the list of AclEntry and returns aclspec.
+-   * 
+-   * @param List <AclEntry>
+-   * @return String
++   * @return parse {@code aclEntry} and return aclspec
+    */
+   private static String parseAclSpec(List<AclEntry> aclEntry) {
+     return StringUtils.join(aclEntry, ",");
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/BenchmarkThroughput.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/BenchmarkThroughput.java
+index b3dd55a..96e1f29 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/BenchmarkThroughput.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/BenchmarkThroughput.java
+@@ -229,7 +229,7 @@ public int run(String[] args) throws IOException {
+   }
+ 
+   /**
+-   * @param args
++   * @param args arguments
+    */
+   public static void main(String[] args) throws Exception {
+     int res = ToolRunner.run(new HdfsConfiguration(),
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
+index cee1b29..0d251b1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/MiniDFSCluster.java
+@@ -1388,8 +1388,8 @@ private void finalizeNamenode(NameNode nn, Configuration conf) throws Exception 
+   /**
+    * Finalize cluster for the namenode at the given index 
+    * @see MiniDFSCluster#finalizeCluster(Configuration)
+-   * @param nnIndex
+-   * @param conf
++   * @param nnIndex index of the namenode
++   * @param conf configuration
+    * @throws Exception
+    */
+   public void finalizeCluster(int nnIndex, Configuration conf) throws Exception {
+@@ -2258,7 +2258,7 @@ public static File getStorageDir(int dnIndex, int dirIndex) {
+    * to determine the location of the storage of a DN instance in the mini cluster
+    * @param dnIndex datanode index
+    * @param dirIndex directory index.
+-   * @return
++   * @return storage directory path
+    */
+   private static String getStorageDirPath(int dnIndex, int dirIndex) {
+     return "data/data" + (2 * dnIndex + 1 + dirIndex);
+@@ -2284,8 +2284,8 @@ public static String getBPDir(File storageDir, String bpid) {
+   }
+   /**
+    * Get directory relative to block pool directory in the datanode
+-   * @param storageDir
+-   * @return current directory
++   * @param storageDir storage directory
++   * @return current directory in the given storage directory
+    */
+   public static String getBPDir(File storageDir, String bpid, String dirName) {
+     return getBPDir(storageDir, bpid) + dirName + "/";
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManagerTestUtil.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManagerTestUtil.java
+index fecc7be..0336fb4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManagerTestUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManagerTestUtil.java
+@@ -101,7 +101,6 @@ private static int getNumberOfRacks(final BlockManager blockManager,
+   }
+ 
+   /**
+-   * @param blockManager
+    * @return replication monitor thread instance from block manager.
+    */
+   public static Daemon getReplicationThread(final BlockManager blockManager)
+@@ -111,7 +110,6 @@ public static Daemon getReplicationThread(final BlockManager blockManager)
+   
+   /**
+    * Stop the replication monitor thread
+-   * @param blockManager
+    */
+   public static void stopReplicationThread(final BlockManager blockManager) 
+       throws IOException {
+@@ -126,7 +124,6 @@ public static void stopReplicationThread(final BlockManager blockManager)
+   }
+ 
+   /**
+-   * @param blockManager
+    * @return corruptReplicas from block manager
+    */
+   public static  CorruptReplicasMap getCorruptReplicas(final BlockManager blockManager){
+@@ -135,7 +132,6 @@ public static  CorruptReplicasMap getCorruptReplicas(final BlockManager blockMan
+   }
+ 
+   /**
+-   * @param blockManager
+    * @return computed block replication and block invalidation work that can be
+    *         scheduled on data-nodes.
+    * @throws IOException
+@@ -158,7 +154,7 @@ public static int computeInvalidationWork(BlockManager bm) {
+    * regardless of invalidation/replication limit configurations.
+    * 
+    * NB: you may want to set
+-   * {@link DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY} to
++   * {@link DFSConfigKeys#DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY} to
+    * a high value to ensure that all work is calculated.
+    */
+   public static int computeAllPendingWork(BlockManager bm) {
+@@ -200,7 +196,7 @@ public static void noticeDeadDatanode(NameNode nn, String dnName) {
+   /**
+    * Change whether the block placement policy will prefer the writer's
+    * local Datanode or not.
+-   * @param prefer
++   * @param prefer if true, prefer local node
+    */
+   public static void setWritingPrefersLocalNode(
+       BlockManager bm, boolean prefer) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/BlockReportTestBase.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/BlockReportTestBase.java
+index bf74b32..15b4244 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/BlockReportTestBase.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/BlockReportTestBase.java
+@@ -171,9 +171,6 @@ protected static void resetConfiguration() {
+    * Utility routine to send block reports to the NN, either in a single call
+    * or reporting one storage per call.
+    *
+-   * @param dnR
+-   * @param poolId
+-   * @param reports
+    * @throws IOException
+    */
+   protected abstract void sendBlockReports(DatanodeRegistration dnR, String poolId,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/SimulatedFSDataset.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/SimulatedFSDataset.java
+index 64774a2..8a99075 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/SimulatedFSDataset.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/SimulatedFSDataset.java
+@@ -833,8 +833,8 @@ public synchronized void adjustCrcChannelPosition(ExtendedBlock b,
+     
+     /**
+      * An input stream of size l with repeated bytes
+-     * @param l
+-     * @param iRepeatedData
++     * @param l size of the stream
++     * @param iRepeatedData byte that is repeated in the stream
+      */
+     SimulatedInputStream(long l, byte iRepeatedData) {
+       length = l;
+@@ -843,17 +843,14 @@ public synchronized void adjustCrcChannelPosition(ExtendedBlock b,
+     
+     /**
+      * An input stream of of the supplied data
+-     * 
+-     * @param iData
++     * @param iData data to construct the stream
+      */
+     SimulatedInputStream(byte[] iData) {
+       data = iData;
+       length = data.length;
+-      
+     }
+     
+     /**
+-     * 
+      * @return the lenght of the input stream
+      */
+     long getLength() {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
+index db18e27..5126b68 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
+@@ -131,14 +131,10 @@ static void printUsageExit(String err) {
+     printUsageExit();
+   }
+   /**
+-   * @param args
++   * @param args arguments
+    * @throws IOException 
+    */
+-  public static void main(String[] args) 
+-      throws IOException {
+-
+-
+-
++  public static void main(String[] args)  throws IOException {
+     long startingBlockId = 1;
+     int numFiles = 0;
+     short replication = 1;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/NNThroughputBenchmark.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/NNThroughputBenchmark.java
+index aacc08c..9cf8114 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/NNThroughputBenchmark.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/NNThroughputBenchmark.java
+@@ -202,7 +202,7 @@ static void setNameNodeLoggingLevel(Level logLevel) {
+      * {@link #executeOp(int, int, String)}, which can have different meanings
+      * depending on the operation performed.
+      * 
+-     * @param daemonId
++     * @param daemonId id of the daemon calling this method
+      * @return the argument
+      */
+     abstract String getExecutionArgument(int daemonId);
+@@ -322,11 +322,10 @@ void incrementStats(int ops, long time) {
+     /**
+      * Parse first 2 arguments, corresponding to the "-op" option.
+      * 
+-     * @param args
++     * @param args argument list
+      * @return true if operation is all, which means that options not related
+      * to this operation should be ignored, or false otherwise, meaning
+      * that usage should be printed when an unrelated option is encountered.
+-     * @throws IOException
+      */
+     protected boolean verifyOpArgument(List<String> args) {
+       if(args.size() < 2 || ! args.get(0).startsWith("-op"))
+-- 
+1.7.0.4
+

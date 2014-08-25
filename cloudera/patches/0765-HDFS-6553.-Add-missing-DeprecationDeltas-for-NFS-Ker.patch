@@ -1,0 +1,46 @@
+From a5f22837721c314d3e544c28032180302660326e Mon Sep 17 00:00:00 2001
+From: Stephen Chu <schu@cloudera.com>
+Date: Wed, 18 Jun 2014 17:57:21 -0700
+Subject: [PATCH 765/795] HDFS-6553. Add missing DeprecationDeltas for NFS Kerberos configurations. Contributed by Stephen Chu
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1603677 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 8fd70299962cc72e7e4b3fbc096691712d4c013d)
+---
+ .../hadoop/hdfs/nfs/conf/NfsConfiguration.java     |   14 +++++++++++++-
+ 1 files changed, 13 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
+index 5dc53d8..ff92794 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
+@@ -36,6 +36,8 @@ private static void addDeprecatedKeys() {
+             NfsConfigKeys.DFS_NFS_SERVER_PORT_KEY),
+         new DeprecationDelta("nfs3.mountd.port",
+             NfsConfigKeys.DFS_NFS_MOUNTD_PORT_KEY),
++        new DeprecationDelta("dfs.nfs.exports.cache.size",
++            Nfs3Constant.NFS_EXPORTS_CACHE_SIZE_KEY),
+         new DeprecationDelta("dfs.nfs.exports.cache.expirytime.millis",
+             Nfs3Constant.NFS_EXPORTS_CACHE_EXPIRYTIME_MILLIS_KEY),
+         new DeprecationDelta("hadoop.nfs.userupdate.milly",
+@@ -51,6 +53,16 @@ private static void addDeprecatedKeys() {
+         new DeprecationDelta("dfs.nfs3.export.point",
+             NfsConfigKeys.DFS_NFS_EXPORT_POINT_KEY),
+         new DeprecationDelta("nfs.allow.insecure.ports",
+-            NfsConfigKeys.DFS_NFS_PORT_MONITORING_DISABLED_KEY) });
++            NfsConfigKeys.DFS_NFS_PORT_MONITORING_DISABLED_KEY),
++        new DeprecationDelta("dfs.nfs.keytab.file",
++            NfsConfigKeys.DFS_NFS_KEYTAB_FILE_KEY),
++        new DeprecationDelta("dfs.nfs.kerberos.principal",
++            NfsConfigKeys.DFS_NFS_KERBEROS_PRINCIPAL_KEY),
++        new DeprecationDelta("dfs.nfs.rtmax",
++            NfsConfigKeys.DFS_NFS_MAX_READ_TRANSFER_SIZE_KEY),
++        new DeprecationDelta("dfs.nfs.wtmax",
++            NfsConfigKeys.DFS_NFS_MAX_WRITE_TRANSFER_SIZE_KEY),
++        new DeprecationDelta("dfs.nfs.dtmax",
++            NfsConfigKeys.DFS_NFS_MAX_READDIR_TRANSFER_SIZE_KEY) });
+   }
+ }
+\ No newline at end of file
+-- 
+1.7.0.4
+

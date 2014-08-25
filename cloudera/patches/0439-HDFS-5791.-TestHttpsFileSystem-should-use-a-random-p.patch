@@ -1,0 +1,26 @@
+From e7f583e96861c0529b01fc3502f60d1f9cbb3ba8 Mon Sep 17 00:00:00 2001
+From: Brandon Li <brandonli@apache.org>
+Date: Tue, 4 Feb 2014 05:14:22 +0000
+Subject: [PATCH 439/795] HDFS-5791. TestHttpsFileSystem should use a random port to avoid binding error during testing. Contributed by Haohui Mai
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1564201 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit dd6efac263beaafe7b4e3cf44c611e0926935785)
+---
+ .../hadoop/hdfs/web/TestHttpsFileSystem.java       |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHttpsFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHttpsFileSystem.java
+index 883fdea..c4f30b3 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHttpsFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHttpsFileSystem.java
+@@ -52,6 +52,7 @@ public static void setUp() throws Exception {
+     conf.setBoolean(DFSConfigKeys.DFS_WEBHDFS_ENABLED_KEY, true);
+     conf.set(DFSConfigKeys.DFS_HTTP_POLICY_KEY, HttpConfig.Policy.HTTPS_ONLY.name());
+     conf.set(DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_KEY, "localhost:0");
++    conf.set(DFSConfigKeys.DFS_DATANODE_HTTPS_ADDRESS_KEY, "localhost:0");
+ 
+     File base = new File(BASEDIR);
+     FileUtil.fullyDelete(base);
+-- 
+1.7.0.4
+

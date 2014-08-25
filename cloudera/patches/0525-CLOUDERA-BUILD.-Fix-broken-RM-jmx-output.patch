@@ -1,0 +1,115 @@
+From 0113b8517072848162460d8b15a3b657e257f1fd Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@cloudera.com>
+Date: Fri, 7 Mar 2014 18:54:32 -0800
+Subject: [PATCH 525/795] CLOUDERA-BUILD. Fix broken RM jmx output.
+
+---
+ .../server/resourcemanager/rmapp/RMAppImpl.java    |   26 ++++++++++++++++----
+ .../resourcemanager/scheduler/QueueMetrics.java    |    5 ++-
+ 2 files changed, 24 insertions(+), 7 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+index 7040ad4..dc82034 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/rmapp/RMAppImpl.java
+@@ -121,7 +121,6 @@
+   private String queue;
+   @SuppressWarnings("rawtypes")
+   private EventHandler handler;
+-  private static final FinalTransition FINAL_TRANSITION = new FinalTransition();
+   private static final AppFinishedTransition FINISHED_TRANSITION =
+       new AppFinishedTransition();
+ 
+@@ -747,7 +746,7 @@ public RMAppState transition(RMAppImpl app, RMAppEvent event) {
+ 
+       // The app has completed.
+       if (app.recoveredFinalState != null) {
+-        FINAL_TRANSITION.transition(app, event);
++        new FinalTransition(app.recoveredFinalState).transition(app, event);
+         return app.recoveredFinalState;
+       }
+ 
+@@ -830,7 +829,7 @@ public void transition(RMAppImpl app, RMAppEvent event) {
+       LOG.info(msg);
+       app.diagnostics.append(msg);
+       // Inform the node for app-finish
+-      FINAL_TRANSITION.transition(app, event);
++      new FinalTransition(RMAppState.FAILED).transition(app, event);
+     }
+   }
+ 
+@@ -943,6 +942,10 @@ public void transition(RMAppImpl app, RMAppEvent event) {
+   }
+ 
+   private static class AppFinishedTransition extends FinalTransition {
++    public AppFinishedTransition() {
++      super(RMAppState.FINISHED);
++    }
++
+     public void transition(RMAppImpl app, RMAppEvent event) {
+       RMAppFinishedAttemptEvent finishedEvent =
+           (RMAppFinishedAttemptEvent)event;
+@@ -986,6 +989,10 @@ public void transition(RMAppImpl app, RMAppEvent event) {
+ 
+ 
+   private static class AppKilledTransition extends FinalTransition {
++    public AppKilledTransition() {
++      super(RMAppState.KILLED);
++    }
++
+     @Override
+     public void transition(RMAppImpl app, RMAppEvent event) {
+       app.diagnostics.append(getAppKilledDiagnostics());
+@@ -1008,6 +1015,10 @@ public void transition(RMAppImpl app, RMAppEvent event) {
+ 
+   private static final class AppRejectedTransition extends
+       FinalTransition{
++    public AppRejectedTransition() {
++      super(RMAppState.FAILED);
++    }
++
+     public void transition(RMAppImpl app, RMAppEvent event) {
+       RMAppRejectedEvent rejectedEvent = (RMAppRejectedEvent)event;
+       app.diagnostics.append(rejectedEvent.getMessage());
+@@ -1017,6 +1028,12 @@ public void transition(RMAppImpl app, RMAppEvent event) {
+ 
+   private static class FinalTransition extends RMAppTransition {
+ 
++    private final RMAppState finalState;
++
++    public FinalTransition(RMAppState finalState) {
++      this.finalState = finalState;
++    }
++
+     private Set<NodeId> getNodesOnWhichAttemptRan(RMAppImpl app) {
+       Set<NodeId> nodes = new HashSet<NodeId>();
+       for (RMAppAttempt attempt : app.attempts.values()) {
+@@ -1035,8 +1052,7 @@ public void transition(RMAppImpl app, RMAppEvent event) {
+       if (app.finishTime == 0 ) {
+         app.finishTime = System.currentTimeMillis();
+       }
+-      app.handler.handle(new AppRemovedSchedulerEvent(app.applicationId, app
+-        .getState()));
++      app.handler.handle(new AppRemovedSchedulerEvent(app.applicationId, finalState));
+       app.handler.handle(
+           new RMAppManagerEvent(app.applicationId,
+           RMAppManagerEventType.APP_COMPLETED));
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/QueueMetrics.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/QueueMetrics.java
+index a0519e2..07ff9ae 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/QueueMetrics.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/QueueMetrics.java
+@@ -269,8 +269,9 @@ public void finishAppAttempt(
+   public void finishApp(String user, RMAppState rmAppFinalState) {
+     switch (rmAppFinalState) {
+       case KILLED: appsKilled.incr(); break;
+-      case FAILED: appsFailed.incr(); break;
+-      default: appsCompleted.incr();  break;
++      case FAILED: appsFailed.incr();  break;
++      case FINISHED: appsCompleted.incr();  break;
++      default: LOG.error("Unknown state {} in finishApp", rmAppFinalState); break;
+     }
+     QueueMetrics userMetrics = getUserMetrics(user);
+     if (userMetrics != null) {
+-- 
+1.7.0.4
+

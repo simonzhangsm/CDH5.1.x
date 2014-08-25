@@ -1,0 +1,148 @@
+From 12534693cdf218a5124c22ce95e382797ba46b0a Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 11 Apr 2014 16:45:06 +0000
+Subject: [PATCH 652/795] HDFS-6229. Merge r1586714 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1586715 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 3f0f55999e83e5015268ec7a057c59182fc53380)
+---
+ .../java/org/apache/hadoop/ipc/RetryCache.java     |   25 +++++++++++++++++--
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   16 +++++++++++-
+ .../hadoop/hdfs/server/namenode/NameNode.java      |    2 +
+ 3 files changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/RetryCache.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/RetryCache.java
+index 2b8ad12..d35ed95 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/RetryCache.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/RetryCache.java
+@@ -20,6 +20,7 @@
+ 
+ import java.util.Arrays;
+ import java.util.UUID;
++import java.util.concurrent.locks.ReentrantLock;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -183,6 +184,8 @@ public Object getPayload() {
+   private final long expirationTime;
+   private String cacheName;
+ 
++  private final ReentrantLock lock = new ReentrantLock();
++
+   /**
+    * Constructor
+    * @param cacheName name to identify the cache by
+@@ -206,6 +209,13 @@ private static boolean skipRetryCache() {
+         || Arrays.equals(Server.getClientId(), RpcConstants.DUMMY_CLIENT_ID);
+   }
+ 
++  public void lock() {
++    this.lock.lock();
++  }
++
++  public void unlock() {
++    this.lock.unlock();
++  }
+ 
+   private void incrCacheClearedCounter() {
+     retryCacheMetrics.incrCacheCleared();
+@@ -247,7 +257,8 @@ public String getCacheName() {
+    */
+   private CacheEntry waitForCompletion(CacheEntry newEntry) {
+     CacheEntry mapEntry = null;
+-    synchronized (this) {
++    lock.lock();
++    try {
+       mapEntry = set.get(newEntry);
+       // If an entry in the cache does not exist, add a new one
+       if (mapEntry == null) {
+@@ -262,6 +273,8 @@ private CacheEntry waitForCompletion(CacheEntry newEntry) {
+       } else {
+         retryCacheMetrics.incrCacheHit();
+       }
++    } finally {
++      lock.unlock();
+     }
+     // Entry already exists in cache. Wait for completion and return its state
+     Preconditions.checkNotNull(mapEntry,
+@@ -292,8 +305,11 @@ private CacheEntry waitForCompletion(CacheEntry newEntry) {
+   public void addCacheEntry(byte[] clientId, int callId) {
+     CacheEntry newEntry = new CacheEntry(clientId, callId, System.nanoTime()
+         + expirationTime, true);
+-    synchronized(this) {
++    lock.lock();
++    try {
+       set.put(newEntry);
++    } finally {
++      lock.unlock();
+     }
+     retryCacheMetrics.incrCacheUpdated();
+   }
+@@ -303,8 +319,11 @@ public void addCacheEntryWithPayload(byte[] clientId, int callId,
+     // since the entry is loaded from editlog, we can assume it succeeded.    
+     CacheEntry newEntry = new CacheEntryWithPayload(clientId, callId, payload,
+         System.nanoTime() + expirationTime, true);
+-    synchronized(this) {
++    lock.lock();
++    try {
+       set.put(newEntry);
++    } finally {
++      lock.unlock();
+     }
+     retryCacheMetrics.incrCacheUpdated();
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index f25f547..54b71ea 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -793,7 +793,19 @@ static FSNamesystem loadFromDisk(Configuration conf) throws IOException {
+   public RetryCache getRetryCache() {
+     return retryCache;
+   }
+-  
++
++  void lockRetryCache() {
++    if (retryCache != null) {
++      retryCache.lock();
++    }
++  }
++
++  void unlockRetryCache() {
++    if (retryCache != null) {
++      retryCache.unlock();
++    }
++  }
++
+   /** Whether or not retry cache is enabled */
+   boolean hasRetryCache() {
+     return retryCache != null;
+@@ -6966,8 +6978,8 @@ String createSnapshot(String snapshotRoot, String snapshotName)
+     if (cacheEntry != null && cacheEntry.isSuccess()) {
+       return (String) cacheEntry.getPayload();
+     }
+-    writeLock();
+     String snapshotPath = null;
++    writeLock();
+     try {
+       checkOperation(OperationCategory.WRITE);
+       checkNameNodeSafeMode("Cannot create snapshot for " + snapshotRoot);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+index f1314ad..d9f40d8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NameNode.java
+@@ -1551,10 +1551,12 @@ public void stopStandbyServices() throws IOException {
+     @Override
+     public void writeLock() {
+       namesystem.writeLock();
++      namesystem.lockRetryCache();
+     }
+     
+     @Override
+     public void writeUnlock() {
++      namesystem.unlockRetryCache();
+       namesystem.writeUnlock();
+     }
+     
+-- 
+1.7.0.4
+

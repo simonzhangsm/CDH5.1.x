@@ -1,0 +1,2325 @@
+From f93d46212adab42b21ab180dde5b4faccb5546ba Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Fri, 14 Feb 2014 06:59:06 +0000
+Subject: [PATCH 382/795] HDFS-5285. Flatten INodeFile hierarchy: Add UnderContruction Feature. Merge change r1544389 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568201 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 13ed4599d16b0c1363a16d942be7da4cdaaf4c75)
+---
+ .../server/blockmanagement/BlockCollection.java    |   17 ++
+ .../hdfs/server/blockmanagement/BlockManager.java  |   26 +--
+ .../hadoop/hdfs/server/namenode/FSDirectory.java   |   78 ++-----
+ .../hadoop/hdfs/server/namenode/FSEditLog.java     |   15 +-
+ .../hdfs/server/namenode/FSEditLogLoader.java      |   43 ++--
+ .../hadoop/hdfs/server/namenode/FSImageFormat.java |   64 ++----
+ .../hdfs/server/namenode/FSImageSerialization.java |   31 +--
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |  163 +++++++-------
+ .../namenode/FileUnderConstructionFeature.java     |   99 ++++++++
+ .../hdfs/server/namenode/INodeDirectory.java       |   29 ---
+ .../hadoop/hdfs/server/namenode/INodeFile.java     |  165 ++++++++++++--
+ .../namenode/INodeFileUnderConstruction.java       |  244 --------------------
+ .../hadoop/hdfs/server/namenode/LeaseManager.java  |   10 +-
+ .../snapshot/INodeDirectoryWithSnapshot.java       |    9 -
+ .../INodeFileUnderConstructionWithSnapshot.java    |  130 -----------
+ .../namenode/snapshot/INodeFileWithSnapshot.java   |   10 -
+ .../hdfs/server/namenode/CreateEditsLog.java       |   14 +-
+ .../namenode/TestCommitBlockSynchronization.java   |   24 ++-
+ .../hadoop/hdfs/server/namenode/TestEditLog.java   |    8 +-
+ .../hadoop/hdfs/server/namenode/TestINodeFile.java |   58 ++---
+ .../server/namenode/ha/TestRetryCacheWithHA.java   |    5 +-
+ .../namenode/snapshot/TestRenameWithSnapshots.java |    8 +-
+ .../namenode/snapshot/TestSnapshotBlocksMap.java   |    4 +-
+ 23 files changed, 505 insertions(+), 749 deletions(-)
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockCollection.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockCollection.java
+index 23aadb6..e215c17 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockCollection.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockCollection.java
+@@ -64,4 +64,21 @@
+    * Get the name of the collection.
+    */
+   public String getName();
++
++  /**
++   * Set the block at the given index.
++   */
++  public void setBlock(int index, BlockInfo blk);
++
++  /**
++   * Convert the last block of the collection to an under-construction block
++   * and set the locations.
++   */
++  public BlockInfoUnderConstruction setLastBlock(BlockInfo lastBlock,
++      DatanodeStorageInfo[] locations) throws IOException;
++
++  /**
++   * @return whether the block collection is under construction.
++   */
++  public boolean isUnderConstruction();
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
+index ee59d82..f79886a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java
+@@ -563,7 +563,7 @@ private static boolean commitBlock(final BlockInfoUnderConstruction block,
+    * @throws IOException if the block does not have at least a minimal number
+    * of replicas reported from data-nodes.
+    */
+-  public boolean commitOrCompleteLastBlock(MutableBlockCollection bc, 
++  public boolean commitOrCompleteLastBlock(BlockCollection bc,
+       Block commitBlock) throws IOException {
+     if(commitBlock == null)
+       return false; // not committing, this is a block allocation retry
+@@ -586,7 +586,7 @@ public boolean commitOrCompleteLastBlock(MutableBlockCollection bc,
+    * @throws IOException if the block does not have at least a minimal number
+    * of replicas reported from data-nodes.
+    */
+-  private BlockInfo completeBlock(final MutableBlockCollection bc,
++  private BlockInfo completeBlock(final BlockCollection bc,
+       final int blkIndex, boolean force) throws IOException {
+     if(blkIndex < 0)
+       return null;
+@@ -619,7 +619,7 @@ private BlockInfo completeBlock(final MutableBlockCollection bc,
+     return blocksMap.replaceBlock(completeBlock);
+   }
+ 
+-  private BlockInfo completeBlock(final MutableBlockCollection bc,
++  private BlockInfo completeBlock(final BlockCollection bc,
+       final BlockInfo block, boolean force) throws IOException {
+     BlockInfo[] fileBlocks = bc.getBlocks();
+     for(int idx = 0; idx < fileBlocks.length; idx++)
+@@ -634,7 +634,7 @@ private BlockInfo completeBlock(final MutableBlockCollection bc,
+    * regardless of whether enough replicas are present. This is necessary
+    * when tailing edit logs as a Standby.
+    */
+-  public BlockInfo forceCompleteBlock(final MutableBlockCollection bc,
++  public BlockInfo forceCompleteBlock(final BlockCollection bc,
+       final BlockInfoUnderConstruction block) throws IOException {
+     block.commitBlock(block);
+     return completeBlock(bc, block, true);
+@@ -655,7 +655,7 @@ public BlockInfo forceCompleteBlock(final MutableBlockCollection bc,
+    * @return the last block locations if the block is partial or null otherwise
+    */
+   public LocatedBlock convertLastBlockToUnderConstruction(
+-      MutableBlockCollection bc) throws IOException {
++      BlockCollection bc) throws IOException {
+     BlockInfo oldBlock = bc.getLastBlock();
+     if(oldBlock == null ||
+         bc.getPreferredBlockSize() == oldBlock.getNumBytes())
+@@ -1214,10 +1214,8 @@ int computeReplicationWorkForBlocks(List<List<Block>> blocksToReplicate) {
+             // block should belong to a file
+             bc = blocksMap.getBlockCollection(block);
+             // abandoned block or block reopened for append
+-            if(bc == null
+-	        || (bc instanceof MutableBlockCollection && block.equals(bc.getLastBlock()))) {
+-	      // remove from neededReplications
+-              neededReplications.remove(block, priority);
++            if(bc == null || (bc.isUnderConstruction() && block.equals(bc.getLastBlock()))) {
++              neededReplications.remove(block, priority); // remove from neededReplications
+               neededReplications.decrementReplicationIndex(priority);
+               continue;
+             }
+@@ -1299,7 +1297,7 @@ int computeReplicationWorkForBlocks(List<List<Block>> blocksToReplicate) {
+           // block should belong to a file
+           bc = blocksMap.getBlockCollection(block);
+           // abandoned block or block reopened for append
+-          if(bc == null || (bc instanceof MutableBlockCollection && block.equals(bc.getLastBlock()))) {
++          if(bc == null || (bc.isUnderConstruction() && block.equals(bc.getLastBlock()))) {
+             neededReplications.remove(block, priority); // remove from neededReplications
+             rw.targets = null;
+             neededReplications.decrementReplicationIndex(priority);
+@@ -2169,7 +2167,7 @@ private void addStoredBlockImmediate(BlockInfo storedBlock,
+     int numCurrentReplica = countLiveNodes(storedBlock);
+     if (storedBlock.getBlockUCState() == BlockUCState.COMMITTED
+         && numCurrentReplica >= minReplication) {
+-      completeBlock((MutableBlockCollection)storedBlock.getBlockCollection(), storedBlock, false);
++      completeBlock(storedBlock.getBlockCollection(), storedBlock, false);
+     } else if (storedBlock.isComplete()) {
+       // check whether safe replication is reached for the block
+       // only complete blocks are counted towards that.
+@@ -2240,7 +2238,7 @@ private Block addStoredBlock(final BlockInfo block,
+ 
+     if(storedBlock.getBlockUCState() == BlockUCState.COMMITTED &&
+         numLiveReplicas >= minReplication) {
+-      storedBlock = completeBlock((MutableBlockCollection)bc, storedBlock, false);
++      storedBlock = completeBlock(bc, storedBlock, false);
+     } else if (storedBlock.isComplete()) {
+       // check whether safe replication is reached for the block
+       // only complete blocks are counted towards that
+@@ -2251,7 +2249,7 @@ private Block addStoredBlock(final BlockInfo block,
+     }
+     
+     // if file is under construction, then done for now
+-    if (bc instanceof MutableBlockCollection) {
++    if (bc.isUnderConstruction()) {
+       return storedBlock;
+     }
+ 
+@@ -2864,7 +2862,7 @@ private void logBlockReplicationInfo(Block block, DatanodeDescriptor srcNode,
+         + ", corrupt replicas: " + num.corruptReplicas()
+         + ", decommissioned replicas: " + num.decommissionedReplicas()
+         + ", excess replicas: " + num.excessReplicas()
+-        + ", Is Open File: " + (bc instanceof MutableBlockCollection)
++        + ", Is Open File: " + bc.isUnderConstruction()
+         + ", Datanodes having this block: " + nodeList + ", Current Datanode: "
+         + srcNode + ", Is current datanode decommissioning: "
+         + srcNode.isDecommissionInProgress());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+index 658b938..d48385b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirectory.java
+@@ -276,13 +276,9 @@ void waitForReady() {
+    * @throws UnresolvedLinkException
+    * @throws SnapshotAccessControlException 
+    */
+-  INodeFileUnderConstruction addFile(String path, 
+-                PermissionStatus permissions,
+-                short replication,
+-                long preferredBlockSize,
+-                String clientName,
+-                String clientMachine,
+-                DatanodeDescriptor clientNode)
++  INodeFile addFile(String path, PermissionStatus permissions,
++      short replication, long preferredBlockSize, String clientName,
++      String clientMachine, DatanodeDescriptor clientNode)
+     throws FileAlreadyExistsException, QuotaExceededException,
+       UnresolvedLinkException, SnapshotAccessControlException {
+     waitForReady();
+@@ -300,11 +296,11 @@ INodeFileUnderConstruction addFile(String path,
+     if (!mkdirs(parent.toString(), permissions, true, modTime)) {
+       return null;
+     }
+-    INodeFileUnderConstruction newNode = new INodeFileUnderConstruction(
+-                                 namesystem.allocateNewInodeId(),
+-                                 permissions,replication,
+-                                 preferredBlockSize, modTime, clientName, 
+-                                 clientMachine, clientNode);
++    INodeFile newNode = new INodeFile(namesystem.allocateNewInodeId(), null,
++        permissions, modTime, modTime, BlockInfo.EMPTY_ARRAY, replication,
++        preferredBlockSize);
++    newNode.toUnderConstruction(clientName, clientMachine, clientNode);
++
+     boolean added = false;
+     writeLock();
+     try {
+@@ -336,8 +332,11 @@ INodeFile unprotectedAddFile( long id,
+     final INodeFile newNode;
+     assert hasWriteLock();
+     if (underConstruction) {
+-      newNode = new INodeFileUnderConstruction(id, permissions, replication,
+-          preferredBlockSize, modificationTime, clientName, clientMachine, null);
++      newNode = new INodeFile(id, null, permissions, modificationTime,
++          modificationTime, BlockInfo.EMPTY_ARRAY, replication,
++          preferredBlockSize);
++      newNode.toUnderConstruction(clientName, clientMachine, null);
++
+     } else {
+       newNode = new INodeFile(id, null, permissions, modificationTime, atime,
+           BlockInfo.EMPTY_ARRAY, replication, preferredBlockSize);
+@@ -366,8 +365,8 @@ BlockInfo addBlock(String path, INodesInPath inodesInPath, Block block,
+ 
+     writeLock();
+     try {
+-      final INodeFileUnderConstruction fileINode = 
+-          INodeFileUnderConstruction.valueOf(inodesInPath.getLastINode(), path);
++      final INodeFile fileINode = inodesInPath.getLastINode().asFile();
++      Preconditions.checkState(fileINode.isUnderConstruction());
+ 
+       // check quota limits and updated space consumed
+       updateCount(inodesInPath, 0, fileINode.getBlockDiskspace(), true);
+@@ -397,8 +396,8 @@ BlockInfo addBlock(String path, INodesInPath inodesInPath, Block block,
+   /**
+    * Persist the block list for the inode.
+    */
+-  void persistBlocks(String path, INodeFileUnderConstruction file,
+-      boolean logRetryCache) {
++  void persistBlocks(String path, INodeFile file, boolean logRetryCache) {
++    Preconditions.checkArgument(file.isUnderConstruction());
+     waitForReady();
+ 
+     writeLock();
+@@ -417,7 +416,8 @@ void persistBlocks(String path, INodeFileUnderConstruction file,
+   /**
+    * Persist the new block (the last block of the given file).
+    */
+-  void persistNewBlock(String path, INodeFileUnderConstruction file) {
++  void persistNewBlock(String path, INodeFile file) {
++    Preconditions.checkArgument(file.isUnderConstruction());
+     waitForReady();
+ 
+     writeLock();
+@@ -456,8 +456,9 @@ void closeFile(String path, INodeFile file) {
+    * Remove a block from the file.
+    * @return Whether the block exists in the corresponding file
+    */
+-  boolean removeBlock(String path, INodeFileUnderConstruction fileNode,
+-                      Block block) throws IOException {
++  boolean removeBlock(String path, INodeFile fileNode, Block block)
++      throws IOException {
++    Preconditions.checkArgument(fileNode.isUnderConstruction());
+     waitForReady();
+ 
+     writeLock();
+@@ -469,7 +470,8 @@ boolean removeBlock(String path, INodeFileUnderConstruction fileNode,
+   }
+   
+   boolean unprotectedRemoveBlock(String path,
+-      INodeFileUnderConstruction fileNode, Block block) throws IOException {
++      INodeFile fileNode, Block block) throws IOException {
++    Preconditions.checkArgument(fileNode.isUnderConstruction());
+     // modify file-> block and blocksMap
+     boolean removed = fileNode.removeLastBlock(block);
+     if (!removed) {
+@@ -1497,38 +1499,6 @@ private static void checkSnapshot(INode target,
+   }
+ 
+   /**
+-   * Replaces the specified INodeFile with the specified one.
+-   */
+-  void replaceINodeFile(String path, INodeFile oldnode,
+-      INodeFile newnode) throws IOException {
+-    writeLock();
+-    try {
+-      unprotectedReplaceINodeFile(path, oldnode, newnode);
+-    } finally {
+-      writeUnlock();
+-    }
+-  }
+-
+-  /** Replace an INodeFile and record modification for the latest snapshot. */
+-  void unprotectedReplaceINodeFile(final String path, final INodeFile oldnode,
+-      final INodeFile newnode) {
+-    Preconditions.checkState(hasWriteLock());
+-
+-    oldnode.getParent().replaceChild(oldnode, newnode, inodeMap);
+-    oldnode.clear();
+-
+-    /* Currently oldnode and newnode are assumed to contain the same
+-     * blocks. Otherwise, blocks need to be removed from the blocksMap.
+-     */
+-    int index = 0;
+-    for (BlockInfo b : newnode.getBlocks()) {
+-      BlockInfo info = getBlockManager().addBlockCollection(b, newnode);
+-      newnode.setBlock(index, info); // inode refers to the block in BlocksMap
+-      index++;
+-    }
+-  }
+-
+-  /**
+    * Get a partial listing of the indicated directory
+    *
+    * We will stop when any of the following conditions is met:
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+index 765c282..1cb652e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java
+@@ -682,8 +682,8 @@ private void logRpcIds(FSEditLogOp op, boolean toLogRpcIds) {
+    * Add open lease record to edit log. 
+    * Records the block locations of the last block.
+    */
+-  public void logOpenFile(String path, INodeFileUnderConstruction newNode,
+-      boolean toLogRpcIds) {
++  public void logOpenFile(String path, INodeFile newNode, boolean toLogRpcIds) {
++    Preconditions.checkArgument(newNode.isUnderConstruction());
+     AddOp op = AddOp.getInstance(cache.get())
+       .setInodeId(newNode.getId())
+       .setPath(path)
+@@ -693,8 +693,8 @@ public void logOpenFile(String path, INodeFileUnderConstruction newNode,
+       .setBlockSize(newNode.getPreferredBlockSize())
+       .setBlocks(newNode.getBlocks())
+       .setPermissionStatus(newNode.getPermissionStatus())
+-      .setClientName(newNode.getClientName())
+-      .setClientMachine(newNode.getClientMachine());
++      .setClientName(newNode.getFileUnderConstructionFeature().getClientName())
++      .setClientMachine(newNode.getFileUnderConstructionFeature().getClientMachine());
+     logRpcIds(op, toLogRpcIds);
+     logEdit(op);
+   }
+@@ -715,7 +715,8 @@ public void logCloseFile(String path, INodeFile newNode) {
+     logEdit(op);
+   }
+   
+-  public void logAddBlock(String path, INodeFileUnderConstruction file) {
++  public void logAddBlock(String path, INodeFile file) {
++    Preconditions.checkArgument(file.isUnderConstruction());
+     BlockInfo[] blocks = file.getBlocks();
+     Preconditions.checkState(blocks != null && blocks.length > 0);
+     BlockInfo pBlock = blocks.length > 1 ? blocks[blocks.length - 2] : null;
+@@ -725,8 +726,8 @@ public void logAddBlock(String path, INodeFileUnderConstruction file) {
+     logEdit(op);
+   }
+   
+-  public void logUpdateBlocks(String path, INodeFileUnderConstruction file, 
+-      boolean toLogRpcIds) {
++  public void logUpdateBlocks(String path, INodeFile file, boolean toLogRpcIds) {
++    Preconditions.checkArgument(file.isUnderConstruction());
+     UpdateBlocksOp op = UpdateBlocksOp.getInstance(cache.get())
+       .setPath(path)
+       .setBlocks(file.getBlocks());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+index 9220c7e..bfe92ff 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLogLoader.java
+@@ -25,7 +25,6 @@
+ import java.io.InputStream;
+ import java.util.Arrays;
+ import java.util.EnumMap;
+-import java.util.EnumSet;
+ import java.util.List;
+ 
+ import org.apache.commons.logging.Log;
+@@ -33,21 +32,20 @@
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ import org.apache.hadoop.fs.FileSystem;
+-import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.hdfs.protocol.Block;
++import org.apache.hadoop.hdfs.protocol.CacheDirectiveInfo;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+ import org.apache.hadoop.hdfs.protocol.LayoutVersion;
+ import org.apache.hadoop.hdfs.protocol.LayoutVersion.Feature;
+ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+-import org.apache.hadoop.hdfs.protocol.CacheDirectiveInfo;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstruction;
+ import org.apache.hadoop.hdfs.server.common.Storage;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AddBlockOp;
++import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AddCacheDirectiveInfoOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AddCachePoolOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AddCloseOp;
+-import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AddCacheDirectiveInfoOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AllocateBlockIdOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.AllowSnapshotOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.BlockListUpdatingOp;
+@@ -60,11 +58,11 @@
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.DisallowSnapshotOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.GetDelegationTokenOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.MkdirOp;
+-import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.ModifyCachePoolOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.ModifyCacheDirectiveInfoOp;
++import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.ModifyCachePoolOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.ReassignLeaseOp;
+-import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.RemoveCachePoolOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.RemoveCacheDirectiveInfoOp;
++import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.RemoveCachePoolOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.RenameOldOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.RenameOp;
+ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.RenameSnapshotOp;
+@@ -88,7 +86,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.startupprogress.Step;
+ import org.apache.hadoop.hdfs.util.ChunkedArrayList;
+ import org.apache.hadoop.hdfs.util.Holder;
+-import org.apache.jasper.tagplugins.jstl.core.Remove;
+ 
+ import com.google.common.base.Joiner;
+ import com.google.common.base.Preconditions;
+@@ -379,15 +376,15 @@ private long applyEditLogOp(FSEditLogOp op, FSDirectory fsDir,
+       }
+ 
+       final INodesInPath iip = fsDir.getLastINodeInPath(path);
+-      final INodeFile oldFile = INodeFile.valueOf(iip.getINode(0), path);
++      final INodeFile file = INodeFile.valueOf(iip.getINode(0), path);
+ 
+       // Update the salient file attributes.
+-      oldFile.setAccessTime(addCloseOp.atime, null, fsDir.getINodeMap());
+-      oldFile.setModificationTime(addCloseOp.mtime, null, fsDir.getINodeMap());
+-      updateBlocks(fsDir, addCloseOp, oldFile);
++      file.setAccessTime(addCloseOp.atime, null, fsDir.getINodeMap());
++      file.setModificationTime(addCloseOp.mtime, null, fsDir.getINodeMap());
++      updateBlocks(fsDir, addCloseOp, file);
+ 
+       // Now close the file
+-      if (!oldFile.isUnderConstruction() &&
++      if (!file.isUnderConstruction() &&
+           logVersion <= LayoutVersion.BUGFIX_HDFS_2991_VERSION) {
+         // There was a bug (HDFS-2991) in hadoop < 0.23.1 where OP_CLOSE
+         // could show up twice in a row. But after that version, this
+@@ -397,11 +394,9 @@ private long applyEditLogOp(FSEditLogOp op, FSDirectory fsDir,
+       }
+       // One might expect that you could use removeLease(holder, path) here,
+       // but OP_CLOSE doesn't serialize the holder. So, remove by path.
+-      if (oldFile.isUnderConstruction()) {
+-        INodeFileUnderConstruction ucFile = (INodeFileUnderConstruction) oldFile;
++      if (file.isUnderConstruction()) {
+         fsNamesys.leaseManager.removeLeaseWithPrefixPath(path);
+-        INodeFile newFile = ucFile.toINodeFile(ucFile.getModificationTime());
+-        fsDir.unprotectedReplaceINodeFile(path, ucFile, newFile);
++        file.toCompleteFile(file.getModificationTime());
+       }
+       break;
+     }
+@@ -608,9 +603,8 @@ private long applyEditLogOp(FSEditLogOp op, FSDirectory fsDir,
+           reassignLeaseOp.leaseHolder);
+       final String path =
+           renameReservedPathsOnUpgrade(reassignLeaseOp.path, logVersion);
+-      INodeFileUnderConstruction pendingFile =
+-          INodeFileUnderConstruction.valueOf( 
+-              fsDir.getINode(path), path);
++      INodeFile pendingFile = fsDir.getINode(path).asFile();
++      Preconditions.checkState(pendingFile.isUnderConstruction());
+       fsNamesys.reassignLeaseInternal(lease,
+           path, reassignLeaseOp.newHolder, pendingFile);
+       break;
+@@ -795,8 +789,7 @@ private void addNewBlock(FSDirectory fsDir, AddBlockOp op, INodeFile file)
+       
+       oldLastBlock.setNumBytes(pBlock.getNumBytes());
+       if (oldLastBlock instanceof BlockInfoUnderConstruction) {
+-        fsNamesys.getBlockManager().forceCompleteBlock(
+-            (INodeFileUnderConstruction) file,
++        fsNamesys.getBlockManager().forceCompleteBlock(file,
+             (BlockInfoUnderConstruction) oldLastBlock);
+         fsNamesys.getBlockManager().processQueuedMessagesForBlock(pBlock);
+       }
+@@ -848,9 +841,8 @@ private void updateBlocks(FSDirectory fsDir, BlockListUpdatingOp op,
+       if (oldBlock instanceof BlockInfoUnderConstruction &&
+           (!isLastBlock || op.shouldCompleteLastBlock())) {
+         changeMade = true;
+-        fsNamesys.getBlockManager().forceCompleteBlock(
+-            (INodeFileUnderConstruction)file,
+-            (BlockInfoUnderConstruction)oldBlock);
++        fsNamesys.getBlockManager().forceCompleteBlock(file,
++            (BlockInfoUnderConstruction) oldBlock);
+       }
+       if (changeMade) {
+         // The state or gen-stamp of the block has changed. So, we may be
+@@ -871,8 +863,7 @@ private void updateBlocks(FSDirectory fsDir, BlockListUpdatingOp op,
+             + path);
+       }
+       Block oldBlock = oldBlocks[oldBlocks.length - 1];
+-      boolean removed = fsDir.unprotectedRemoveBlock(path,
+-          (INodeFileUnderConstruction) file, oldBlock);
++      boolean removed = fsDir.unprotectedRemoveBlock(path, file, oldBlock);
+       if (!removed && !(op instanceof UpdateBlocksOp)) {
+         throw new IOException("Trying to delete non-existant block " + oldBlock);
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+index fb18f68..61bb7e1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormat.java
+@@ -60,7 +60,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiffList;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeFileUnderConstructionWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeFileWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotFSImageFormat;
+@@ -675,13 +674,10 @@ INode loadINode(final byte[] localName, boolean isSnapshotINode,
+       // file
+       
+       // read blocks
+-      BlockInfo[] blocks = null;
+-      if (numBlocks >= 0) {
+-        blocks = new BlockInfo[numBlocks];
+-        for (int j = 0; j < numBlocks; j++) {
+-          blocks[j] = new BlockInfo(replication);
+-          blocks[j].readFields(in);
+-        }
++      BlockInfo[] blocks = new BlockInfo[numBlocks];
++      for (int j = 0; j < numBlocks; j++) {
++        blocks[j] = new BlockInfo(replication);
++        blocks[j].readFields(in);
+       }
+ 
+       String clientName = "";
+@@ -716,10 +712,9 @@ INode loadINode(final byte[] localName, boolean isSnapshotINode,
+       final INodeFile file = new INodeFile(inodeId, localName, permissions,
+           modificationTime, atime, blocks, replication, blockSize);
+       if (underConstruction) {
+-        INodeFileUnderConstruction fileUC = new INodeFileUnderConstruction(
+-            file, clientName, clientMachine, null);
+-        return fileDiffs == null ? fileUC :
+-          new INodeFileUnderConstructionWithSnapshot(fileUC, fileDiffs);
++        file.toUnderConstruction(clientName, clientMachine, null);
++        return fileDiffs == null ? file : new INodeFileWithSnapshot(file,
++            fileDiffs);
+       } else {
+         return fileDiffs == null ? file : 
+           new INodeFileWithSnapshot(file, fileDiffs);
+@@ -848,8 +843,8 @@ private void loadFilesUnderConstruction(DataInput in,
+       LOG.info("Number of files under construction = " + size);
+ 
+       for (int i = 0; i < size; i++) {
+-        INodeFileUnderConstruction cons = FSImageSerialization
+-            .readINodeUnderConstruction(in, namesystem, getLayoutVersion());
++        INodeFile cons = FSImageSerialization.readINodeUnderConstruction(in,
++            namesystem, getLayoutVersion());
+         counter.increment();
+ 
+         // verify that file exists in namespace
+@@ -867,33 +862,21 @@ private void loadFilesUnderConstruction(DataInput in,
+           final INodesInPath iip = fsDir.getLastINodeInPath(path);
+           oldnode = INodeFile.valueOf(iip.getINode(0), path);
+         }
+-        
+-        cons.setLocalName(oldnode.getLocalNameBytes());
+-        INodeReference parentRef = oldnode.getParentReference();
+-        if (parentRef != null) {
+-          cons.setParentReference(parentRef);
+-        } else {
+-          cons.setParent(oldnode.getParent());
+-        }
+ 
+-        if (oldnode instanceof INodeFileWithSnapshot) {
+-          cons = new INodeFileUnderConstructionWithSnapshot(cons,
+-              ((INodeFileWithSnapshot) oldnode).getDiffs());
++        FileUnderConstructionFeature uc = cons.getFileUnderConstructionFeature();
++        oldnode.toUnderConstruction(uc.getClientName(), uc.getClientMachine(),
++            uc.getClientNode());
++        if (oldnode.numBlocks() > 0) {
++          BlockInfo ucBlock = cons.getLastBlock();
++          // we do not replace the inode, just replace the last block of oldnode
++          BlockInfo info = namesystem.getBlockManager().addBlockCollection(
++              ucBlock, oldnode);
++          oldnode.setBlock(oldnode.numBlocks() - 1, info);
+         }
+ 
+         if (!inSnapshot) {
+-          fsDir.replaceINodeFile(path, oldnode, cons);
+-          namesystem.leaseManager.addLease(cons.getClientName(), path);
+-        } else {
+-          if (parentRef != null) {
+-            // replace oldnode with cons
+-            parentRef.setReferredINode(cons);
+-          } else {
+-            // replace old node in its parent's children list and deleted list
+-            oldnode.getParent().replaceChildFileInSnapshot(oldnode, cons);
+-            namesystem.dir.addToInodeMap(cons);
+-            updateBlocksMap(cons);
+-          }
++          namesystem.leaseManager.addLease(cons
++              .getFileUnderConstructionFeature().getClientName(), path);
+         }
+       }
+     }
+@@ -1123,8 +1106,8 @@ static String renameReservedPathsOnUpgrade(String path,
+     private MD5Hash savedDigest;
+     private final ReferenceMap referenceMap = new ReferenceMap();
+     
+-    private final Map<Long, INodeFileUnderConstruction> snapshotUCMap = 
+-        new HashMap<Long, INodeFileUnderConstruction>();
++    private final Map<Long, INodeFile> snapshotUCMap =
++        new HashMap<Long, INodeFile>();
+ 
+     /** @throws IllegalStateException if the instance has not yet saved an image */
+     private void checkSaved() {
+@@ -1265,8 +1248,7 @@ private int saveChildren(ReadOnlyList<INode> children,
+           dirNum++;
+         } else if (inSnapshot && child.isFile()
+             && child.asFile().isUnderConstruction()) {
+-          this.snapshotUCMap.put(child.getId(),
+-              (INodeFileUnderConstruction) child.asFile());
++          this.snapshotUCMap.put(child.getId(), child.asFile());
+         }
+         if (i++ % 50 == 0) {
+           context.checkCancelled();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+index 654bc55..485621b 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageSerialization.java
+@@ -115,7 +115,7 @@ private static void writeBlocks(final Block[] blocks,
+   // Helper function that reads in an INodeUnderConstruction
+   // from the input stream
+   //
+-  static INodeFileUnderConstruction readINodeUnderConstruction(
++  static INodeFile readINodeUnderConstruction(
+       DataInput in, FSNamesystem fsNamesys, int imgVersion)
+       throws IOException {
+     byte[] name = readBytes(in);
+@@ -148,25 +148,17 @@ static INodeFileUnderConstruction readINodeUnderConstruction(
+     int numLocs = in.readInt();
+     assert numLocs == 0 : "Unexpected block locations";
+ 
+-    return new INodeFileUnderConstruction(inodeId,
+-                                          name,
+-                                          blockReplication, 
+-                                          modificationTime,
+-                                          preferredBlockSize,
+-                                          blocks,
+-                                          perm,
+-                                          clientName,
+-                                          clientMachine,
+-                                          null);
++    INodeFile file = new INodeFile(inodeId, name, perm, modificationTime,
++        modificationTime, blocks, blockReplication, preferredBlockSize);
++    file.toUnderConstruction(clientName, clientMachine, null);
++    return file;
+   }
+ 
+   // Helper function that writes an INodeUnderConstruction
+   // into the input stream
+   //
+-  static void writeINodeUnderConstruction(DataOutputStream out,
+-                                           INodeFileUnderConstruction cons,
+-                                           String path) 
+-                                           throws IOException {
++  static void writeINodeUnderConstruction(DataOutputStream out, INodeFile cons,
++      String path) throws IOException {
+     writeString(path, out);
+     out.writeLong(cons.getId());
+     out.writeShort(cons.getFileReplication());
+@@ -176,8 +168,9 @@ static void writeINodeUnderConstruction(DataOutputStream out,
+     writeBlocks(cons.getBlocks(), out);
+     cons.getPermissionStatus().write(out);
+ 
+-    writeString(cons.getClientName(), out);
+-    writeString(cons.getClientMachine(), out);
++    FileUnderConstructionFeature uc = cons.getFileUnderConstructionFeature();
++    writeString(uc.getClientName(), out);
++    writeString(uc.getClientMachine(), out);
+ 
+     out.writeInt(0); //  do not store locations of last block
+   }
+@@ -201,9 +194,9 @@ public static void writeINodeFile(INodeFile file, DataOutput out,
+     SnapshotFSImageFormat.saveFileDiffList(file, out);
+ 
+     if (writeUnderConstruction) {
+-      if (file instanceof INodeFileUnderConstruction) {
++      if (file.isUnderConstruction()) {
+         out.writeBoolean(true);
+-        final INodeFileUnderConstruction uc = (INodeFileUnderConstruction)file;
++        final FileUnderConstructionFeature uc = file.getFileUnderConstructionFeature();
+         writeString(uc.getClientName(), out);
+         writeString(uc.getClientMachine(), out);
+       } else {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index e93bbc0..a7629e1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -2222,13 +2222,14 @@ private void startFileInternal(FSPermissionChecker pc, String src,
+       final DatanodeDescriptor clientNode = 
+           blockManager.getDatanodeManager().getDatanodeByHost(clientMachine);
+ 
+-      INodeFileUnderConstruction newNode = dir.addFile(src, permissions,
+-          replication, blockSize, holder, clientMachine, clientNode);
++      INodeFile newNode = dir.addFile(src, permissions, replication, blockSize,
++          holder, clientMachine, clientNode);
+       if (newNode == null) {
+         throw new IOException("DIR* NameSystem.startFile: " +
+                               "Unable to add file to namespace.");
+       }
+-      leaseManager.addLease(newNode.getClientName(), src);
++      leaseManager.addLease(newNode.getFileUnderConstructionFeature()
++          .getClientName(), src);
+ 
+       // record file record in log, record new generation stamp
+       getEditLog().logOpenFile(src, newNode, logRetryEntry);
+@@ -2320,11 +2321,11 @@ LocatedBlock prepareFileForWrite(String src, INodeFile file,
+       boolean writeToEditLog, Snapshot latestSnapshot, boolean logRetryCache)
+       throws IOException {
+     file = file.recordModification(latestSnapshot, dir.getINodeMap());
+-    final INodeFileUnderConstruction cons = file.toUnderConstruction(
+-        leaseHolder, clientMachine, clientNode);
++    final INodeFile cons = file.toUnderConstruction(leaseHolder, clientMachine,
++        clientNode);
+ 
+-    dir.replaceINodeFile(src, file, cons);
+-    leaseManager.addLease(cons.getClientName(), src);
++    leaseManager.addLease(cons.getFileUnderConstructionFeature()
++        .getClientName(), src);
+     
+     LocatedBlock ret = blockManager.convertLastBlockToUnderConstruction(cons);
+     if (writeToEditLog) {
+@@ -2387,7 +2388,6 @@ private void recoverLeaseInternal(INodeFile fileInode,
+       throws IOException {
+     assert hasWriteLock();
+     if (fileInode != null && fileInode.isUnderConstruction()) {
+-      INodeFileUnderConstruction pendingFile = (INodeFileUnderConstruction) fileInode;
+       //
+       // If the file is under construction , then it must be in our
+       // leases. Find the appropriate lease record.
+@@ -2410,7 +2410,9 @@ private void recoverLeaseInternal(INodeFile fileInode,
+       //
+       // Find the original holder.
+       //
+-      lease = leaseManager.getLease(pendingFile.getClientName());
++      FileUnderConstructionFeature uc = fileInode.getFileUnderConstructionFeature();
++      String clientName = uc.getClientName();
++      lease = leaseManager.getLease(clientName);
+       if (lease == null) {
+         throw new AlreadyBeingCreatedException(
+           "failed to create file " + src + " for " + holder +
+@@ -2421,26 +2423,26 @@ private void recoverLeaseInternal(INodeFile fileInode,
+         // close now: no need to wait for soft lease expiration and 
+         // close only the file src
+         LOG.info("recoverLease: " + lease + ", src=" + src +
+-          " from client " + pendingFile.getClientName());
++          " from client " + clientName);
+         internalReleaseLease(lease, src, holder);
+       } else {
+-        assert lease.getHolder().equals(pendingFile.getClientName()) :
++        assert lease.getHolder().equals(clientName) :
+           "Current lease holder " + lease.getHolder() +
+-          " does not match file creator " + pendingFile.getClientName();
++          " does not match file creator " + clientName;
+         //
+         // If the original holder has not renewed in the last SOFTLIMIT 
+         // period, then start lease recovery.
+         //
+         if (lease.expiredSoftLimit()) {
+           LOG.info("startFile: recover " + lease + ", src=" + src + " client "
+-              + pendingFile.getClientName());
++              + clientName);
+           boolean isClosed = internalReleaseLease(lease, src, null);
+           if(!isClosed)
+             throw new RecoveryInProgressException(
+                 "Failed to close file " + src +
+                 ". Lease recovery is in progress. Try again later.");
+         } else {
+-          final BlockInfo lastBlock = pendingFile.getLastBlock();
++          final BlockInfo lastBlock = fileInode.getLastBlock();
+           if (lastBlock != null
+               && lastBlock.getBlockUCState() == BlockUCState.UNDER_RECOVERY) {
+             throw new RecoveryInProgressException("Recovery in progress, file ["
+@@ -2449,8 +2451,8 @@ private void recoverLeaseInternal(INodeFile fileInode,
+             throw new AlreadyBeingCreatedException("Failed to create file ["
+                 + src + "] for [" + holder + "] on client [" + clientMachine
+                 + "], because this file is already being created by ["
+-                + pendingFile.getClientName() + "] on ["
+-                + pendingFile.getClientMachine() + "]");
++                + clientName + "] on ["
++                + uc.getClientMachine() + "]");
+           }
+         }
+       }
+@@ -2580,8 +2582,7 @@ LocatedBlock getAdditionalBlock(String src, long fileId, String clientName,
+       LocatedBlock[] onRetryBlock = new LocatedBlock[1];
+       final INode[] inodes = analyzeFileState(
+           src, fileId, clientName, previous, onRetryBlock).getINodes();
+-      final INodeFileUnderConstruction pendingFile =
+-          (INodeFileUnderConstruction) inodes[inodes.length - 1].asFile();
++      final INodeFile pendingFile = inodes[inodes.length - 1].asFile();
+ 
+       if (onRetryBlock[0] != null && onRetryBlock[0].getLocations().length > 0) {
+         // This is a retry. Just return the last block if having locations.
+@@ -2594,7 +2595,7 @@ LocatedBlock getAdditionalBlock(String src, long fileId, String clientName,
+             + maxBlocksPerFile);
+       }
+       blockSize = pendingFile.getPreferredBlockSize();
+-      clientNode = pendingFile.getClientNode();
++      clientNode = pendingFile.getFileUnderConstructionFeature().getClientNode();
+       replication = pendingFile.getFileReplication();
+     } finally {
+       readUnlock();
+@@ -2618,8 +2619,7 @@ LocatedBlock getAdditionalBlock(String src, long fileId, String clientName,
+       INodesInPath inodesInPath =
+           analyzeFileState(src, fileId, clientName, previous, onRetryBlock);
+       final INode[] inodes = inodesInPath.getINodes();
+-      final INodeFileUnderConstruction pendingFile =
+-          (INodeFileUnderConstruction) inodes[inodes.length - 1].asFile();
++      final INodeFile pendingFile = inodes[inodes.length - 1].asFile();
+ 
+       if (onRetryBlock[0] != null) {
+         if (onRetryBlock[0].getLocations().length > 0) {
+@@ -2672,7 +2672,7 @@ INodesInPath analyzeFileState(String src,
+ 
+     Block previousBlock = ExtendedBlock.getLocalBlock(previous);
+     final INodesInPath iip = dir.getINodesInPath4Write(src);
+-    final INodeFileUnderConstruction pendingFile
++    final INodeFile pendingFile
+         = checkLease(src, fileId, clientName, iip.getLastINode());
+     BlockInfo lastBlockInFile = pendingFile.getLastBlock();
+     if (!Block.matchingIdAndGenStamp(previousBlock, lastBlockInFile)) {
+@@ -2778,8 +2778,8 @@ LocatedBlock getAdditionalDatanode(String src, final ExtendedBlock blk,
+       src = FSDirectory.resolvePath(src, pathComponents, dir);
+ 
+       //check lease
+-      final INodeFileUnderConstruction file = checkLease(src, clientName);
+-      clientnode = file.getClientNode();
++      final INodeFile file = checkLease(src, clientName);
++      clientnode = file.getFileUnderConstructionFeature().getClientNode();
+       preferredblocksize = file.getPreferredBlockSize();
+ 
+       //find datanode storages
+@@ -2820,7 +2820,7 @@ boolean abandonBlock(ExtendedBlock b, String src, String holder)
+       //
+       // Remove the block from the pending creates list
+       //
+-      INodeFileUnderConstruction file = checkLease(src, holder);
++      INodeFile file = checkLease(src, holder);
+       boolean removed = dir.removeBlock(src, file,
+           ExtendedBlock.getLocalBlock(b));
+       if (!removed) {
+@@ -2840,16 +2840,15 @@ boolean abandonBlock(ExtendedBlock b, String src, String holder)
+   }
+   
+   /** make sure that we still have the lease on this file. */
+-  private INodeFileUnderConstruction checkLease(String src, String holder)
++  private INodeFile checkLease(String src, String holder)
+       throws LeaseExpiredException, UnresolvedLinkException,
+       FileNotFoundException {
+     return checkLease(src, INodeId.GRANDFATHER_INODE_ID, holder,
+         dir.getINode(src));
+   }
+   
+-  private INodeFileUnderConstruction checkLease(String src, long fileId,
+-      String holder, INode inode) throws LeaseExpiredException,
+-      FileNotFoundException {
++  private INodeFile checkLease(String src, long fileId, String holder,
++      INode inode) throws LeaseExpiredException, FileNotFoundException {
+     assert hasReadLock();
+     if (inode == null || !inode.isFile()) {
+       Lease lease = leaseManager.getLease(holder);
+@@ -2866,13 +2865,13 @@ private INodeFileUnderConstruction checkLease(String src, long fileId,
+           + (lease != null ? lease.toString()
+               : "Holder " + holder + " does not have any open files."));
+     }
+-    INodeFileUnderConstruction pendingFile = (INodeFileUnderConstruction)file;
+-    if (holder != null && !pendingFile.getClientName().equals(holder)) {
++    String clientName = file.getFileUnderConstructionFeature().getClientName();
++    if (holder != null && !clientName.equals(holder)) {
+       throw new LeaseExpiredException("Lease mismatch on " + src + " owned by "
+-          + pendingFile.getClientName() + " but is accessed by " + holder);
++          + clientName + " but is accessed by " + holder);
+     }
+-    INodeId.checkId(fileId, pendingFile);
+-    return pendingFile;
++    INodeId.checkId(fileId, file);
++    return file;
+   }
+  
+   /**
+@@ -2915,7 +2914,7 @@ private boolean completeFileInternal(String src,
+       UnresolvedLinkException, IOException {
+     assert hasWriteLock();
+     final INodesInPath iip = dir.getLastINodeInPath(src);
+-    final INodeFileUnderConstruction pendingFile;
++    final INodeFile pendingFile;
+     try {
+       pendingFile = checkLease(src, fileId, holder, iip.getINode(0));
+     } catch (LeaseExpiredException lee) {
+@@ -3611,9 +3610,10 @@ void fsync(String src, String clientName, long lastBlockLength)
+       checkOperation(OperationCategory.WRITE);
+       checkNameNodeSafeMode("Cannot fsync file " + src);
+       src = FSDirectory.resolvePath(src, pathComponents, dir);
+-      INodeFileUnderConstruction pendingFile  = checkLease(src, clientName);
++      INodeFile pendingFile  = checkLease(src, clientName);
+       if (lastBlockLength > 0) {
+-        pendingFile.updateLengthOfLastBlock(lastBlockLength);
++        pendingFile.getFileUnderConstructionFeature().updateLengthOfLastBlock(
++            pendingFile, lastBlockLength);
+       }
+       dir.persistBlocks(src, pendingFile, false);
+     } finally {
+@@ -3644,8 +3644,7 @@ boolean internalReleaseLease(Lease lease, String src,
+     assert hasWriteLock();
+ 
+     final INodesInPath iip = dir.getLastINodeInPath(src);
+-    final INodeFileUnderConstruction pendingFile
+-        = INodeFileUnderConstruction.valueOf(iip.getINode(0), src);
++    final INodeFile pendingFile = iip.getINode(0).asFile();
+     int nrBlocks = pendingFile.numBlocks();
+     BlockInfo[] blocks = pendingFile.getBlocks();
+ 
+@@ -3767,7 +3766,7 @@ boolean internalReleaseLease(Lease lease, String src,
+   }
+ 
+   private Lease reassignLease(Lease lease, String src, String newHolder,
+-      INodeFileUnderConstruction pendingFile) {
++      INodeFile pendingFile) {
+     assert hasWriteLock();
+     if(newHolder == null)
+       return lease;
+@@ -3777,15 +3776,16 @@ private Lease reassignLease(Lease lease, String src, String newHolder,
+   }
+   
+   Lease reassignLeaseInternal(Lease lease, String src, String newHolder,
+-      INodeFileUnderConstruction pendingFile) {
++      INodeFile pendingFile) {
+     assert hasWriteLock();
+-    pendingFile.setClientName(newHolder);
++    pendingFile.getFileUnderConstructionFeature().setClientName(newHolder);
+     return leaseManager.reassignLease(lease, src, newHolder);
+   }
+ 
+-  private void commitOrCompleteLastBlock(final INodeFileUnderConstruction fileINode,
++  private void commitOrCompleteLastBlock(final INodeFile fileINode,
+       final Block commitBlock) throws IOException {
+     assert hasWriteLock();
++    Preconditions.checkArgument(fileINode.isUnderConstruction());
+     if (!blockManager.commitOrCompleteLastBlock(fileINode, commitBlock)) {
+       return;
+     }
+@@ -3802,19 +3802,21 @@ private void commitOrCompleteLastBlock(final INodeFileUnderConstruction fileINod
+     }
+   }
+ 
+-  private void finalizeINodeFileUnderConstruction(String src, 
+-      INodeFileUnderConstruction pendingFile, Snapshot latestSnapshot) 
+-      throws IOException, UnresolvedLinkException {
++  private void finalizeINodeFileUnderConstruction(String src,
++      INodeFile pendingFile, Snapshot latestSnapshot) throws IOException,
++      UnresolvedLinkException {
+     assert hasWriteLock();
+-    leaseManager.removeLease(pendingFile.getClientName(), src);
++    FileUnderConstructionFeature uc = pendingFile.getFileUnderConstructionFeature();
++    Preconditions.checkArgument(uc != null);
++    leaseManager.removeLease(uc.getClientName(), src);
+     
+     pendingFile = pendingFile.recordModification(latestSnapshot,
+         dir.getINodeMap());
+ 
+     // The file is no longer pending.
+-    // Create permanent INode, update blocks
+-    final INodeFile newFile = pendingFile.toINodeFile(now());
+-    dir.replaceINodeFile(src, pendingFile, newFile);
++    // Create permanent INode, update blocks. No need to replace the inode here
++    // since we just remove the uc feature from pendingFile
++    final INodeFile newFile = pendingFile.toCompleteFile(now());
+ 
+     // close file and persist block allocations for this file
+     dir.closeFile(src, newFile);
+@@ -3831,12 +3833,12 @@ BlockInfo getStoredBlock(Block block) {
+   public boolean isInSnapshot(BlockInfoUnderConstruction blockUC) {
+     assert hasReadLock();
+     final BlockCollection bc = blockUC.getBlockCollection();
+-    if (bc == null || !(bc instanceof INodeFileUnderConstruction)) {
++    if (bc == null || !(bc instanceof INodeFile)
++        || !((INodeFile) bc).isUnderConstruction()) {
+       return false;
+     }
+ 
+-    INodeFileUnderConstruction inodeUC = (INodeFileUnderConstruction) blockUC
+-        .getBlockCollection();
++    INodeFile inodeUC = (INodeFile) bc;
+     String fullName = inodeUC.getName();
+     try {
+       if (fullName != null && fullName.startsWith(Path.SEPARATOR)
+@@ -3914,11 +3916,9 @@ void commitBlockSynchronization(ExtendedBlock lastblock,
+                               + recoveryId + " for block " + lastblock); 
+       }
+ 
+-      INodeFileUnderConstruction pendingFile = (INodeFileUnderConstruction)iFile;
+-
+       if (deleteblock) {
+         Block blockToDel = ExtendedBlock.getLocalBlock(lastblock);
+-        boolean remove = pendingFile.removeLastBlock(blockToDel);
++        boolean remove = iFile.removeLastBlock(blockToDel);
+         if (remove) {
+           blockManager.removeBlockFromMap(storedBlock);
+         }
+@@ -3963,14 +3963,14 @@ void commitBlockSynchronization(ExtendedBlock lastblock,
+             blockManager.getDatanodeManager().getDatanodeStorageInfos(
+                 trimmedTargets.toArray(new DatanodeID[trimmedTargets.size()]),
+                 trimmedStorages.toArray(new String[trimmedStorages.size()]));
+-        pendingFile.setLastBlock(storedBlock, trimmedStorageInfos);
++        iFile.setLastBlock(storedBlock, trimmedStorageInfos);
+       }
+ 
+       if (closeFile) {
+-        src = closeFileCommitBlocks(pendingFile, storedBlock);
++        src = closeFileCommitBlocks(iFile, storedBlock);
+       } else {
+         // If this commit does not want to close the file, persist blocks
+-        src = persistBlocks(pendingFile, false);
++        src = persistBlocks(iFile, false);
+       }
+     } finally {
+       writeUnlock();
+@@ -3995,10 +3995,8 @@ void commitBlockSynchronization(ExtendedBlock lastblock,
+    * @throws IOException
+    */
+   @VisibleForTesting
+-  String closeFileCommitBlocks(INodeFileUnderConstruction pendingFile,
+-                                       BlockInfo storedBlock)
++  String closeFileCommitBlocks(INodeFile pendingFile, BlockInfo storedBlock)
+       throws IOException {
+-
+     String src = pendingFile.getFullPathName();
+ 
+     // commit the last block and complete it if it has minimum replicas
+@@ -4006,7 +4004,7 @@ String closeFileCommitBlocks(INodeFileUnderConstruction pendingFile,
+ 
+     //remove lease, close file
+     finalizeINodeFileUnderConstruction(src, pendingFile,
+-                                       Snapshot.findLatestSnapshot(pendingFile, null));
++        Snapshot.findLatestSnapshot(pendingFile, null));
+ 
+     return src;
+   }
+@@ -4019,8 +4017,8 @@ String closeFileCommitBlocks(INodeFileUnderConstruction pendingFile,
+    * @throws IOException
+    */
+   @VisibleForTesting
+-  String persistBlocks(INodeFileUnderConstruction pendingFile,
+-      boolean logRetryCache) throws IOException {
++  String persistBlocks(INodeFile pendingFile, boolean logRetryCache)
++      throws IOException {
+     String src = pendingFile.getFullPathName();
+     dir.persistBlocks(src, pendingFile, logRetryCache);
+     return src;
+@@ -5205,13 +5203,12 @@ private long getCompleteBlocksTotal() {
+     try {
+       for (Lease lease : leaseManager.getSortedLeases()) {
+         for (String path : lease.getPaths()) {
+-          final INodeFileUnderConstruction cons;
++          final INodeFile cons;
+           try {
+-            cons = INodeFileUnderConstruction.valueOf(dir.getINode(path), path);
++            cons = dir.getINode(path).asFile();
++            Preconditions.checkState(cons.isUnderConstruction());
+           } catch (UnresolvedLinkException e) {
+             throw new AssertionError("Lease files should reside on this FS");
+-          } catch (IOException e) {
+-            throw new RuntimeException(e);
+           }
+           BlockInfo[] blocks = cons.getBlocks();
+           if(blocks == null)
+@@ -5787,7 +5784,7 @@ private long nextBlockId() throws IOException {
+     return blockId;
+   }
+ 
+-  private INodeFileUnderConstruction checkUCBlock(ExtendedBlock block,
++  private INodeFile checkUCBlock(ExtendedBlock block,
+       String clientName) throws IOException {
+     assert hasWriteLock();
+     checkNameNodeSafeMode("Cannot get a new generation stamp and an "
+@@ -5803,19 +5800,20 @@ private INodeFileUnderConstruction checkUCBlock(ExtendedBlock block,
+     
+     // check file inode
+     final INodeFile file = ((INode)storedBlock.getBlockCollection()).asFile();
+-    if (file==null || !file.isUnderConstruction()) {
++    if (file == null || !file.isUnderConstruction()) {
+       throw new IOException("The file " + storedBlock + 
+           " belonged to does not exist or it is not under construction.");
+     }
+     
+     // check lease
+-    INodeFileUnderConstruction pendingFile = (INodeFileUnderConstruction)file;
+-    if (clientName == null || !clientName.equals(pendingFile.getClientName())) {
++    if (clientName == null
++        || !clientName.equals(file.getFileUnderConstructionFeature()
++            .getClientName())) {
+       throw new LeaseExpiredException("Lease mismatch: " + block + 
+           " is accessed by a non lease holder " + clientName); 
+     }
+ 
+-    return pendingFile;
++    return file;
+   }
+   
+   /**
+@@ -5926,8 +5924,7 @@ private void updatePipelineInternal(String clientName, ExtendedBlock oldBlock,
+       throws IOException {
+     assert hasWriteLock();
+     // check the vadility of the block and lease holder name
+-    final INodeFileUnderConstruction pendingFile
+-        = checkUCBlock(oldBlock, clientName);
++    final INodeFile pendingFile = checkUCBlock(oldBlock, clientName);
+     final BlockInfoUnderConstruction blockinfo
+         = (BlockInfoUnderConstruction)pendingFile.getLastBlock();
+ 
+@@ -5965,15 +5962,13 @@ void unprotectedChangeLease(String src, String dst) {
+    * Serializes leases. 
+    */
+   void saveFilesUnderConstruction(DataOutputStream out,
+-      Map<Long, INodeFileUnderConstruction> snapshotUCMap) throws IOException {
++      Map<Long, INodeFile> snapshotUCMap) throws IOException {
+     // This is run by an inferior thread of saveNamespace, which holds a read
+     // lock on our behalf. If we took the read lock here, we could block
+     // for fairness if a writer is waiting on the lock.
+     synchronized (leaseManager) {
+-      Map<String, INodeFileUnderConstruction> nodes =
+-          leaseManager.getINodesUnderConstruction();
+-      for (Map.Entry<String, INodeFileUnderConstruction> entry
+-          : nodes.entrySet()) {
++      Map<String, INodeFile> nodes = leaseManager.getINodesUnderConstruction();
++      for (Map.Entry<String, INodeFile> entry : nodes.entrySet()) {
+         // TODO: for HDFS-5428, because of rename operations, some
+         // under-construction files that are
+         // in the current fs directory can also be captured in the
+@@ -5982,13 +5977,11 @@ void saveFilesUnderConstruction(DataOutputStream out,
+       }
+       
+       out.writeInt(nodes.size() + snapshotUCMap.size()); // write the size    
+-      for (Map.Entry<String, INodeFileUnderConstruction> entry
+-           : nodes.entrySet()) {
++      for (Map.Entry<String, INodeFile> entry : nodes.entrySet()) {
+         FSImageSerialization.writeINodeUnderConstruction(
+             out, entry.getValue(), entry.getKey());
+       }
+-      for (Map.Entry<Long, INodeFileUnderConstruction> entry
+-          : snapshotUCMap.entrySet()) {
++      for (Map.Entry<Long, INodeFile> entry : snapshotUCMap.entrySet()) {
+         // for those snapshot INodeFileUC, we use "/.reserved/.inodes/<inodeid>"
+         // as their paths
+         StringBuilder b = new StringBuilder();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
+new file mode 100644
+index 0000000..a6947d7
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FileUnderConstructionFeature.java
+@@ -0,0 +1,99 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.namenode;
++
++import java.io.IOException;
++
++import org.apache.hadoop.classification.InterfaceAudience;
++import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
++import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstruction;
++import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
++import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
++
++/**
++ * I-node for file being written.
++ */
++@InterfaceAudience.Private
++public class FileUnderConstructionFeature extends INodeFile.Feature {
++  private String clientName; // lease holder
++  private final String clientMachine;
++  // if client is a cluster node too.
++  private final DatanodeDescriptor clientNode;
++
++  public FileUnderConstructionFeature(final String clientName,
++      final String clientMachine,
++      final DatanodeDescriptor clientNode) {
++    this.clientName = clientName;
++    this.clientMachine = clientMachine;
++    this.clientNode = clientNode;
++  }
++
++  public String getClientName() {
++    return clientName;
++  }
++
++  void setClientName(String clientName) {
++    this.clientName = clientName;
++  }
++
++  public String getClientMachine() {
++    return clientMachine;
++  }
++
++  public DatanodeDescriptor getClientNode() {
++    return clientNode;
++  }
++
++  /**
++   * Update the length for the last block
++   *
++   * @param lastBlockLength
++   *          The length of the last block reported from client
++   * @throws IOException
++   */
++  void updateLengthOfLastBlock(INodeFile f, long lastBlockLength)
++      throws IOException {
++    BlockInfo lastBlock = f.getLastBlock();
++    assert (lastBlock != null) : "The last block for path "
++        + f.getFullPathName() + " is null when updating its length";
++    assert (lastBlock instanceof BlockInfoUnderConstruction)
++        : "The last block for path " + f.getFullPathName()
++            + " is not a BlockInfoUnderConstruction when updating its length";
++    lastBlock.setNumBytes(lastBlockLength);
++  }
++
++  /**
++   * When deleting a file in the current fs directory, and the file is contained
++   * in a snapshot, we should delete the last block if it's under construction
++   * and its size is 0.
++   */
++  void cleanZeroSizeBlock(final INodeFile f,
++      final BlocksMapUpdateInfo collectedBlocks) {
++    final BlockInfo[] blocks = f.getBlocks();
++    if (blocks != null && blocks.length > 0
++        && blocks[blocks.length - 1] instanceof BlockInfoUnderConstruction) {
++      BlockInfoUnderConstruction lastUC =
++          (BlockInfoUnderConstruction) blocks[blocks.length - 1];
++      if (lastUC.getNumBytes() == 0) {
++        // this is a 0-sized block. do not need check its UC state here
++        collectedBlocks.addDeleteBlock(lastUC);
++        f.removeLastBlock(lastUC);
++      }
++    }
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+index 8133de4..68ce123 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java
+@@ -34,7 +34,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference.WithCount;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectorySnapshottable;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeDirectoryWithSnapshot;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeFileUnderConstructionWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeFileWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+ import org.apache.hadoop.hdfs.util.ReadOnlyList;
+@@ -205,23 +204,6 @@ public INodeDirectory replaceSelf4INodeDirectory(final INodeMap inodeMap) {
+     return newDir;
+   }
+   
+-  /**
+-   * Used when load fileUC from fsimage. The file to be replaced is actually 
+-   * only in snapshot, thus may not be contained in the children list. 
+-   * See HDFS-5428 for details.
+-   */
+-  public void replaceChildFileInSnapshot(INodeFile oldChild,
+-      final INodeFile newChild) {
+-    if (children != null) {
+-      final int i = searchChildren(newChild.getLocalNameBytes());
+-      if (i >= 0 && children.get(i).getId() == oldChild.getId()) {
+-        // no need to consider reference node here, since we already do the 
+-        // replacement in FSImageFormat.Loader#loadFilesUnderConstruction
+-        children.set(i, newChild);
+-      }
+-    }
+-  }
+-  
+   /** Replace the given child with a new child. */
+   public void replaceChild(INode oldChild, final INode newChild,
+       final INodeMap inodeMap) {
+@@ -291,17 +273,6 @@ INodeFileWithSnapshot replaceChild4INodeFileWithSnapshot(
+     return newChild;
+   }
+ 
+-  /** Replace a child {@link INodeFile} with an {@link INodeFileUnderConstructionWithSnapshot}. */
+-  INodeFileUnderConstructionWithSnapshot replaceChild4INodeFileUcWithSnapshot(
+-      final INodeFileUnderConstruction child, final INodeMap inodeMap) {
+-    Preconditions.checkArgument(!(child instanceof INodeFileUnderConstructionWithSnapshot),
+-        "Child file is already an INodeFileUnderConstructionWithSnapshot, child=" + child);
+-    final INodeFileUnderConstructionWithSnapshot newChild
+-        = new INodeFileUnderConstructionWithSnapshot(child, null);
+-    replaceChildFile(child, newChild, inodeMap);
+-    return newChild;
+-  }
+-
+   @Override
+   public INodeDirectory recordModification(Snapshot latest,
+       final INodeMap inodeMap) throws QuotaExceededException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+index 9bc0bd4..40510cc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFile.java
+@@ -20,17 +20,19 @@
+ import java.io.FileNotFoundException;
+ import java.io.IOException;
+ import java.io.PrintWriter;
++import java.util.Arrays;
+ import java.util.List;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.fs.permission.FsAction;
+-import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.fs.permission.PermissionStatus;
++import org.apache.hadoop.hdfs.protocol.Block;
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstruction;
+ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
++import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
++import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiff;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.FileWithSnapshot.FileDiffList;
+@@ -45,6 +47,22 @@
+ @InterfaceAudience.Private
+ public class INodeFile extends INodeWithAdditionalFields
+     implements INodeFileAttributes, BlockCollection {
++  /**
++   * A feature contains specific information for a type of INodeFile. E.g.,
++   * we can have separate features for Under-Construction and Snapshot.
++   */
++  public static abstract class Feature {
++    private Feature nextFeature;
++
++    public Feature getNextFeature() {
++      return nextFeature;
++    }
++
++    public void setNextFeature(Feature next) {
++      this.nextFeature = next;
++    }
++  }
++
+   /** The same as valueOf(inode, path, false). */
+   public static INodeFile valueOf(INode inode, String path
+       ) throws FileNotFoundException {
+@@ -106,8 +124,11 @@ static long combinePreferredBlockSize(long header, long blockSize) {
+ 
+   private BlockInfo[] blocks;
+ 
+-  INodeFile(long id, byte[] name, PermissionStatus permissions, long mtime, long atime,
+-      BlockInfo[] blklist, short replication, long preferredBlockSize) {
++  private Feature headFeature;
++
++  INodeFile(long id, byte[] name, PermissionStatus permissions, long mtime,
++      long atime, BlockInfo[] blklist, short replication,
++      long preferredBlockSize) {
+     super(id, name, permissions, mtime, atime);
+     header = HeaderFormat.combineReplication(header, replication);
+     header = HeaderFormat.combinePreferredBlockSize(header, preferredBlockSize);
+@@ -118,6 +139,48 @@ public INodeFile(INodeFile that) {
+     super(that);
+     this.header = that.header;
+     this.blocks = that.blocks;
++    this.headFeature = that.headFeature;
++  }
++
++  /**
++   * If the inode contains a {@link FileUnderConstructionFeature}, return it;
++   * otherwise, return null.
++   */
++  public final FileUnderConstructionFeature getFileUnderConstructionFeature() {
++    for (Feature f = this.headFeature; f != null; f = f.nextFeature) {
++      if (f instanceof FileUnderConstructionFeature) {
++        return (FileUnderConstructionFeature) f;
++      }
++    }
++    return null;
++  }
++
++  /** Is this file under construction? */
++  @Override // BlockCollection
++  public boolean isUnderConstruction() {
++    return getFileUnderConstructionFeature() != null;
++  }
++
++  void addFeature(Feature f) {
++    f.nextFeature = headFeature;
++    headFeature = f;
++  }
++
++  void removeFeature(Feature f) {
++    if (f == headFeature) {
++      headFeature = headFeature.nextFeature;
++      return;
++    } else if (headFeature != null) {
++      Feature prev = headFeature;
++      Feature curr = headFeature.nextFeature;
++      for (; curr != null && curr != f; prev = curr, curr = curr.nextFeature)
++        ;
++      if (curr != null) {
++        prev.nextFeature = curr.nextFeature;
++        return;
++      }
++    }
++    throw new IllegalStateException("Feature " + f + " not found.");
+   }
+ 
+   /** @return true unconditionally. */
+@@ -132,22 +195,88 @@ public final INodeFile asFile() {
+     return this;
+   }
+ 
+-  /** Is this file under construction? */
+-  public boolean isUnderConstruction() {
+-    return false;
+-  }
++  /* Start of Under-Construction Feature */
+ 
+   /** Convert this file to an {@link INodeFileUnderConstruction}. */
+-  public INodeFileUnderConstruction toUnderConstruction(
+-      String clientName,
+-      String clientMachine,
++  public INodeFile toUnderConstruction(String clientName, String clientMachine,
+       DatanodeDescriptor clientNode) {
+     Preconditions.checkState(!isUnderConstruction(),
+         "file is already an INodeFileUnderConstruction");
+-    return new INodeFileUnderConstruction(this,
+-        clientName, clientMachine, clientNode); 
++    FileUnderConstructionFeature uc = new FileUnderConstructionFeature(
++        clientName, clientMachine, clientNode);
++    addFeature(uc);
++    return this;
+   }
+ 
++  /**
++   * Convert the file to a complete file, i.e., to remove the Under-Construction
++   * feature.
++   */
++  public INodeFile toCompleteFile(long mtime) {
++    FileUnderConstructionFeature uc = getFileUnderConstructionFeature();
++    if (uc != null) {
++      assertAllBlocksComplete();
++      removeFeature(uc);
++      this.setModificationTime(mtime);
++    }
++    return this;
++  }
++
++  /** Assert all blocks are complete. */
++  private void assertAllBlocksComplete() {
++    if (blocks == null) {
++      return;
++    }
++    for (int i = 0; i < blocks.length; i++) {
++      Preconditions.checkState(blocks[i].isComplete(), "Failed to finalize"
++          + " %s %s since blocks[%s] is non-complete, where blocks=%s.",
++          getClass().getSimpleName(), this, i, Arrays.asList(blocks));
++    }
++  }
++
++  @Override //BlockCollection
++  public void setBlock(int index, BlockInfo blk) {
++    this.blocks[index] = blk;
++  }
++
++  @Override // BlockCollection
++  public BlockInfoUnderConstruction setLastBlock(BlockInfo lastBlock,
++      DatanodeStorageInfo[] locations) throws IOException {
++    Preconditions.checkState(isUnderConstruction());
++
++    if (numBlocks() == 0) {
++      throw new IOException("Failed to set last block: File is empty.");
++    }
++    BlockInfoUnderConstruction ucBlock =
++      lastBlock.convertToBlockUnderConstruction(
++          BlockUCState.UNDER_CONSTRUCTION, locations);
++    ucBlock.setBlockCollection(this);
++    setBlock(numBlocks() - 1, ucBlock);
++    return ucBlock;
++  }
++
++  /**
++   * Remove a block from the block list. This block should be
++   * the last one on the list.
++   */
++  boolean removeLastBlock(Block oldblock) {
++    if (blocks == null || blocks.length == 0) {
++      return false;
++    }
++    int size_1 = blocks.length - 1;
++    if (!blocks[size_1].equals(oldblock)) {
++      return false;
++    }
++
++    //copy to a new list
++    BlockInfo[] newlist = new BlockInfo[size_1];
++    System.arraycopy(blocks, 0, newlist, 0, size_1);
++    setBlocks(newlist);
++    return true;
++  }
++
++  /* End of Under-Construction Feature */
++
+   @Override
+   public INodeFileAttributes getSnapshotINode(final Snapshot snapshot) {
+     return this;
+@@ -268,11 +397,6 @@ void addBlock(BlockInfo newblock) {
+     }
+   }
+ 
+-  /** Set the block of the file at the given index. */
+-  public void setBlock(int idx, BlockInfo blk) {
+-    this.blocks[idx] = blk;
+-  }
+-
+   /** Set the blocks. */
+   public void setBlocks(BlockInfo[] blocks) {
+     this.blocks = blocks;
+@@ -288,6 +412,11 @@ public void setBlocks(BlockInfo[] blocks) {
+       // this only happens when deleting the current file
+       computeQuotaUsage(counts, false);
+       destroyAndCollectBlocks(collectedBlocks, removedINodes);
++    } else if (snapshot == null && prior != null) {
++      FileUnderConstructionFeature uc = getFileUnderConstructionFeature();
++      if (uc != null) {
++        uc.cleanZeroSizeBlock(this, collectedBlocks);
++      }
+     }
+     return counts;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFileUnderConstruction.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFileUnderConstruction.java
+index b2ddc4e..e69de29 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFileUnderConstruction.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeFileUnderConstruction.java
+@@ -1,244 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.hdfs.server.namenode;
+-
+-import java.io.FileNotFoundException;
+-import java.io.IOException;
+-import java.util.Arrays;
+-import java.util.List;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.fs.permission.PermissionStatus;
+-import org.apache.hadoop.hdfs.protocol.Block;
+-import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+-import org.apache.hadoop.hdfs.server.blockmanagement.*;
+-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
+-import org.apache.hadoop.hdfs.server.namenode.Quota.Counts;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.INodeFileUnderConstructionWithSnapshot;
+-import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+-
+-import com.google.common.base.Preconditions;
+-
+-/**
+- * I-node for file being written.
+- */
+-@InterfaceAudience.Private
+-public class INodeFileUnderConstruction extends INodeFile implements MutableBlockCollection {
+-  /** Cast INode to INodeFileUnderConstruction. */
+-  public static INodeFileUnderConstruction valueOf(INode inode, String path
+-      ) throws FileNotFoundException {
+-    final INodeFile file = INodeFile.valueOf(inode, path);
+-    if (!file.isUnderConstruction()) {
+-      throw new FileNotFoundException("File is not under construction: " + path);
+-    }
+-    return (INodeFileUnderConstruction)file;
+-  }
+-
+-  private  String clientName;         // lease holder
+-  private final String clientMachine;
+-  private final DatanodeDescriptor clientNode; // if client is a cluster node too.
+-  
+-  INodeFileUnderConstruction(long id,
+-                             PermissionStatus permissions,
+-                             short replication,
+-                             long preferredBlockSize,
+-                             long modTime,
+-                             String clientName,
+-                             String clientMachine,
+-                             DatanodeDescriptor clientNode) {
+-    this(id, null, replication, modTime, preferredBlockSize, BlockInfo.EMPTY_ARRAY,
+-        permissions, clientName, clientMachine, clientNode);
+-  }
+-
+-  INodeFileUnderConstruction(long id,
+-                             byte[] name,
+-                             short blockReplication,
+-                             long modificationTime,
+-                             long preferredBlockSize,
+-                             BlockInfo[] blocks,
+-                             PermissionStatus perm,
+-                             String clientName,
+-                             String clientMachine,
+-                             DatanodeDescriptor clientNode) {
+-    super(id, name, perm, modificationTime, modificationTime,
+-        blocks, blockReplication, preferredBlockSize);
+-    this.clientName = clientName;
+-    this.clientMachine = clientMachine;
+-    this.clientNode = clientNode;
+-  }
+-  
+-  public INodeFileUnderConstruction(final INodeFile that,
+-      final String clientName,
+-      final String clientMachine,
+-      final DatanodeDescriptor clientNode) {
+-    super(that);
+-    this.clientName = clientName;
+-    this.clientMachine = clientMachine;
+-    this.clientNode = clientNode;
+-  }
+-
+-  public String getClientName() {
+-    return clientName;
+-  }
+-
+-  void setClientName(String clientName) {
+-    this.clientName = clientName;
+-  }
+-
+-  public String getClientMachine() {
+-    return clientMachine;
+-  }
+-
+-  public DatanodeDescriptor getClientNode() {
+-    return clientNode;
+-  }
+-
+-  /** @return true unconditionally. */
+-  @Override
+-  public final boolean isUnderConstruction() {
+-    return true;
+-  }
+-
+-  /**
+-   * Converts an INodeFileUnderConstruction to an INodeFile.
+-   * The original modification time is used as the access time.
+-   * The new modification is the specified mtime.
+-   */
+-  protected INodeFile toINodeFile(long mtime) {
+-    assertAllBlocksComplete();
+-
+-    final INodeFile f = new INodeFile(getId(), getLocalNameBytes(),
+-        getPermissionStatus(), mtime, getModificationTime(),
+-        getBlocks(), getFileReplication(), getPreferredBlockSize());
+-    f.setParent(getParent());
+-    return f;
+-  }
+-  
+-  @Override
+-  public Quota.Counts cleanSubtree(final Snapshot snapshot, Snapshot prior,
+-      final BlocksMapUpdateInfo collectedBlocks,
+-      final List<INode> removedINodes, final boolean countDiffChange)
+-      throws QuotaExceededException {
+-    if (snapshot == null && prior != null) {
+-      cleanZeroSizeBlock(collectedBlocks);
+-      return Counts.newInstance();
+-    } else {
+-      return super.cleanSubtree(snapshot, prior, collectedBlocks,
+-          removedINodes, countDiffChange);
+-    }
+-  }
+-  
+-  /**
+-   * When deleting a file in the current fs directory, and the file is contained
+-   * in a snapshot, we should delete the last block if it's under construction 
+-   * and its size is 0.
+-   */
+-  private void cleanZeroSizeBlock(final BlocksMapUpdateInfo collectedBlocks) {
+-    final BlockInfo[] blocks = getBlocks();
+-    if (blocks != null && blocks.length > 0
+-        && blocks[blocks.length - 1] instanceof BlockInfoUnderConstruction) {
+-      BlockInfoUnderConstruction lastUC = 
+-          (BlockInfoUnderConstruction) blocks[blocks.length - 1];
+-      if (lastUC.getNumBytes() == 0) {
+-        // this is a 0-sized block. do not need check its UC state here
+-        collectedBlocks.addDeleteBlock(lastUC);
+-        removeLastBlock(lastUC);
+-      }
+-    }
+-  }
+-  
+-  @Override
+-  public INodeFileUnderConstruction recordModification(final Snapshot latest,
+-      final INodeMap inodeMap) throws QuotaExceededException {
+-    if (isInLatestSnapshot(latest)) {
+-      INodeFileUnderConstructionWithSnapshot newFile = getParent()
+-          .replaceChild4INodeFileUcWithSnapshot(this, inodeMap)
+-          .recordModification(latest, inodeMap);
+-      return newFile;
+-    } else {
+-      return this;
+-    }
+-  }
+-
+-  /** Assert all blocks are complete. */
+-  protected void assertAllBlocksComplete() {
+-    final BlockInfo[] blocks = getBlocks();
+-    for (int i = 0; i < blocks.length; i++) {
+-      Preconditions.checkState(blocks[i].isComplete(), "Failed to finalize"
+-          + " %s %s since blocks[%s] is non-complete, where blocks=%s.",
+-          getClass().getSimpleName(), this, i, Arrays.asList(getBlocks()));
+-    }
+-  }
+-
+-  /**
+-   * Remove a block from the block list. This block should be
+-   * the last one on the list.
+-   */
+-  boolean removeLastBlock(Block oldblock) {
+-    final BlockInfo[] blocks = getBlocks();
+-    if (blocks == null || blocks.length == 0) {
+-      return false;
+-    }
+-    int size_1 = blocks.length - 1;
+-    if (!blocks[size_1].equals(oldblock)) {
+-      return false;
+-    }
+-
+-    //copy to a new list
+-    BlockInfo[] newlist = new BlockInfo[size_1];
+-    System.arraycopy(blocks, 0, newlist, 0, size_1);
+-    setBlocks(newlist);
+-    return true;
+-  }
+-
+-  /**
+-   * Convert the last block of the file to an under-construction block.
+-   * Set its locations.
+-   */
+-  @Override
+-  public BlockInfoUnderConstruction setLastBlock(BlockInfo lastBlock,
+-      DatanodeStorageInfo[] targets) throws IOException {
+-    if (numBlocks() == 0) {
+-      throw new IOException("Failed to set last block: File is empty.");
+-    }
+-    BlockInfoUnderConstruction ucBlock =
+-      lastBlock.convertToBlockUnderConstruction(
+-          BlockUCState.UNDER_CONSTRUCTION, targets);
+-    ucBlock.setBlockCollection(this);
+-    setBlock(numBlocks()-1, ucBlock);
+-    return ucBlock;
+-  }
+-
+-  /**
+-   * Update the length for the last block
+-   * 
+-   * @param lastBlockLength
+-   *          The length of the last block reported from client
+-   * @throws IOException
+-   */
+-  void updateLengthOfLastBlock(long lastBlockLength) throws IOException {
+-    BlockInfo lastBlock = this.getLastBlock();
+-    assert (lastBlock != null) : "The last block for path "
+-        + this.getFullPathName() + " is null when updating its length";
+-    assert (lastBlock instanceof BlockInfoUnderConstruction) : "The last block for path "
+-        + this.getFullPathName()
+-        + " is not a BlockInfoUnderConstruction when updating its length";
+-    lastBlock.setNumBytes(lastBlockLength);
+-  }
+-  
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
+index cb7b951..b9f9d10 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/LeaseManager.java
+@@ -399,14 +399,14 @@ public void run() {
+    * @return list of inodes
+    * @throws UnresolvedLinkException
+    */
+-  Map<String, INodeFileUnderConstruction> getINodesUnderConstruction() {
+-    Map<String, INodeFileUnderConstruction> inodes =
+-        new TreeMap<String, INodeFileUnderConstruction>();
++  Map<String, INodeFile> getINodesUnderConstruction() {
++    Map<String, INodeFile> inodes = new TreeMap<String, INodeFile>();
+     for (String p : sortedLeasesByPath.keySet()) {
+       // verify that path exists in namespace
+       try {
+-        INode node = fsnamesystem.dir.getINode(p);
+-        inodes.put(p, INodeFileUnderConstruction.valueOf(node, p));
++        INodeFile node = INodeFile.valueOf(fsnamesystem.dir.getINode(p), p);
++        Preconditions.checkState(node.isUnderConstruction());
++        inodes.put(p, node);
+       } catch (IOException ioe) {
+         LOG.error(ioe);
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
+index bb137e9..4680d08 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeDirectoryWithSnapshot.java
+@@ -38,7 +38,6 @@
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectoryAttributes;
+ import org.apache.hadoop.hdfs.server.namenode.INodeDirectoryWithQuota;
+-import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.INodeMap;
+ import org.apache.hadoop.hdfs.server.namenode.INodeReference;
+ import org.apache.hadoop.hdfs.server.namenode.Quota;
+@@ -590,14 +589,6 @@ public boolean removeChild(INode child, Snapshot latest,
+   }
+   
+   @Override
+-  public void replaceChildFileInSnapshot(final INodeFile oldChild,
+-      final INodeFile newChild) {
+-    super.replaceChildFileInSnapshot(oldChild, newChild);
+-    diffs.replaceChild(ListType.DELETED, oldChild, newChild);
+-    diffs.replaceChild(ListType.CREATED, oldChild, newChild);
+-  }
+-  
+-  @Override
+   public void replaceChild(final INode oldChild, final INode newChild,
+       final INodeMap inodeMap) {
+     super.replaceChild(oldChild, newChild, inodeMap);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileUnderConstructionWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileUnderConstructionWithSnapshot.java
+index fb7457b..e69de29 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileUnderConstructionWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileUnderConstructionWithSnapshot.java
+@@ -1,130 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.hdfs.server.namenode.snapshot;
+-
+-import java.util.List;
+-
+-import org.apache.hadoop.classification.InterfaceAudience;
+-import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+-import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+-import org.apache.hadoop.hdfs.server.namenode.INode;
+-import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+-import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
+-import org.apache.hadoop.hdfs.server.namenode.INodeFileUnderConstruction;
+-import org.apache.hadoop.hdfs.server.namenode.INodeMap;
+-import org.apache.hadoop.hdfs.server.namenode.Quota;
+-
+-/**
+- * Represent an {@link INodeFileUnderConstruction} that is snapshotted.
+- */
+-@InterfaceAudience.Private
+-public class INodeFileUnderConstructionWithSnapshot
+-    extends INodeFileUnderConstruction implements FileWithSnapshot {
+-  private final FileDiffList diffs;
+-  private boolean isCurrentFileDeleted = false;
+-
+-  INodeFileUnderConstructionWithSnapshot(final INodeFile f,
+-      final String clientName,
+-      final String clientMachine,
+-      final DatanodeDescriptor clientNode,
+-      final FileDiffList diffs) {
+-    super(f, clientName, clientMachine, clientNode);
+-    this.diffs = diffs != null? diffs: new FileDiffList();
+-  }
+-
+-  /**
+-   * Construct an {@link INodeFileUnderConstructionWithSnapshot} based on an
+-   * {@link INodeFileUnderConstruction}.
+-   * 
+-   * @param f The given {@link INodeFileUnderConstruction} instance
+-   */
+-  public INodeFileUnderConstructionWithSnapshot(INodeFileUnderConstruction f,
+-      final FileDiffList diffs) {
+-    this(f, f.getClientName(), f.getClientMachine(), f.getClientNode(), diffs);
+-  }
+-  
+-  @Override
+-  protected INodeFileWithSnapshot toINodeFile(final long mtime) {
+-    assertAllBlocksComplete();
+-    final long atime = getModificationTime();
+-    final INodeFileWithSnapshot f = new INodeFileWithSnapshot(this, getDiffs());
+-    f.setModificationTime(mtime);
+-    f.setAccessTime(atime);
+-    return f;
+-  }
+-
+-  @Override
+-  public boolean isCurrentFileDeleted() {
+-    return isCurrentFileDeleted;
+-  }
+-  
+-  @Override
+-  public void deleteCurrentFile() {
+-    isCurrentFileDeleted = true;
+-  }
+-
+-  @Override
+-  public INodeFileAttributes getSnapshotINode(Snapshot snapshot) {
+-    return diffs.getSnapshotINode(snapshot, this);
+-  }
+-
+-  @Override
+-  public INodeFileUnderConstructionWithSnapshot recordModification(
+-      final Snapshot latest, final INodeMap inodeMap)
+-      throws QuotaExceededException {
+-    if (isInLatestSnapshot(latest) && !shouldRecordInSrcSnapshot(latest)) {
+-      diffs.saveSelf2Snapshot(latest, this, null);
+-    }
+-    return this;
+-  }
+-
+-  @Override
+-  public INodeFile asINodeFile() {
+-    return this;
+-  }
+-
+-  @Override
+-  public FileDiffList getDiffs() {
+-    return diffs;
+-  }
+-
+-  @Override
+-  public Quota.Counts cleanSubtree(final Snapshot snapshot, Snapshot prior,
+-      final BlocksMapUpdateInfo collectedBlocks,
+-      final List<INode> removedINodes, final boolean countDiffChange) 
+-      throws QuotaExceededException {
+-    if (snapshot == null) { // delete the current file
+-      if (!isCurrentFileDeleted()) {
+-        recordModification(prior, null);
+-        deleteCurrentFile();
+-      }
+-      Util.collectBlocksAndClear(this, collectedBlocks, removedINodes);
+-      return Quota.Counts.newInstance();
+-    } else { // delete a snapshot
+-      prior = getDiffs().updatePrior(snapshot, prior);
+-      return diffs.deleteSnapshotDiff(snapshot, prior, this, collectedBlocks,
+-          removedINodes, countDiffChange);
+-    }
+-  }
+-
+-  @Override
+-  public String toDetailString() {
+-    return super.toDetailString()
+-        + (isCurrentFileDeleted()? " (DELETED), ": ", ") + diffs;
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileWithSnapshot.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileWithSnapshot.java
+index f2d1f40..7c98cab 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileWithSnapshot.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/INodeFileWithSnapshot.java
+@@ -21,7 +21,6 @@
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+-import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+ import org.apache.hadoop.hdfs.server.namenode.INode;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFileAttributes;
+@@ -48,15 +47,6 @@ public INodeFileWithSnapshot(INodeFile f, FileDiffList diffs) {
+   }
+ 
+   @Override
+-  public INodeFileUnderConstructionWithSnapshot toUnderConstruction(
+-      final String clientName,
+-      final String clientMachine,
+-      final DatanodeDescriptor clientNode) {
+-    return new INodeFileUnderConstructionWithSnapshot(this,
+-        clientName, clientMachine, clientNode, getDiffs());
+-  }
+-
+-  @Override
+   public boolean isCurrentFileDeleted() {
+     return isCurrentFileDeleted;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
+index fd7c734..3358c1a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/CreateEditsLog.java
+@@ -82,9 +82,10 @@ static void addFiles(FSEditLog editLog, int numFiles, short replication,
+          blocks[iB].setBlockId(currentBlockId++);
+       }
+ 
+-      INodeFileUnderConstruction inode = new INodeFileUnderConstruction(
+-          inodeId.nextValue(), null, replication, 0, blockSize, blocks, p, "",
+-          "", null);
++      final INodeFile inode = new INodeFile(inodeId.nextValue(), null,
++          p, 0L, 0L, blocks, replication, blockSize);
++      inode.toUnderConstruction("", "", null);
++
+      // Append path to filename with information about blockIDs 
+       String path = "_" + iF + "_B" + blocks[0].getBlockId() + 
+                     "_to_B" + blocks[blocksPerFile-1].getBlockId() + "_";
+@@ -96,9 +97,10 @@ static void addFiles(FSEditLog editLog, int numFiles, short replication,
+         dirInode = new INodeDirectory(inodeId.nextValue(), null, p, 0L);
+         editLog.logMkDir(currentDir, dirInode);
+       }
+-      editLog.logOpenFile(filePath,
+-          new INodeFileUnderConstruction(inodeId.nextValue(), p, replication,
+-              0, blockSize, "", "", null), false);
++      INodeFile fileUc = new INodeFile(inodeId.nextValue(), null,
++          p, 0L, 0L, BlockInfo.EMPTY_ARRAY, replication, blockSize);
++      fileUc.toUnderConstruction("", "", null);
++      editLog.logOpenFile(filePath, fileUc, false);
+       editLog.logCloseFile(filePath, inode);
+ 
+       if (currentBlockId - bidAtSync >= 2000) { // sync every 2K blocks
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCommitBlockSynchronization.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCommitBlockSynchronization.java
+index 256a10c..2933629 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCommitBlockSynchronization.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestCommitBlockSynchronization.java
+@@ -43,8 +43,7 @@
+   private static final long length = 200;
+   private static final long genStamp = 300;
+ 
+-  private FSNamesystem makeNameSystemSpy(Block block,
+-                                         INodeFileUnderConstruction file)
++  private FSNamesystem makeNameSystemSpy(Block block, INodeFile file)
+       throws IOException {
+     Configuration conf = new Configuration();
+     FSImage image = new FSImage(conf);
+@@ -58,21 +57,26 @@ private FSNamesystem makeNameSystemSpy(Block block,
+     blockInfo.setGenerationStamp(genStamp);
+     blockInfo.initializeBlockRecovery(genStamp);
+     doReturn(true).when(file).removeLastBlock(any(Block.class));
++    doReturn(true).when(file).isUnderConstruction();
+ 
+     doReturn(blockInfo).when(namesystemSpy).getStoredBlock(any(Block.class));
+     doReturn("").when(namesystemSpy).closeFileCommitBlocks(
+-        any(INodeFileUnderConstruction.class),
+-        any(BlockInfo.class));
++        any(INodeFile.class), any(BlockInfo.class));
+     doReturn("").when(namesystemSpy).persistBlocks(
+-        any(INodeFileUnderConstruction.class), anyBoolean());
++        any(INodeFile.class), anyBoolean());
+     doReturn(mock(FSEditLog.class)).when(namesystemSpy).getEditLog();
+ 
+     return namesystemSpy;
+   }
+ 
++  private INodeFile mockFileUnderConstruction() {
++    INodeFile file = mock(INodeFile.class);
++    return file;
++  }
++
+   @Test
+   public void testCommitBlockSynchronization() throws IOException {
+-    INodeFileUnderConstruction file = mock(INodeFileUnderConstruction.class);
++    INodeFile file = mockFileUnderConstruction();
+     Block block = new Block(blockId, length, genStamp);
+     FSNamesystem namesystemSpy = makeNameSystemSpy(block, file);
+     DatanodeID[] newTargets = new DatanodeID[0];
+@@ -100,7 +104,7 @@ public void testCommitBlockSynchronization() throws IOException {
+ 
+   @Test
+   public void testCommitBlockSynchronization2() throws IOException {
+-    INodeFileUnderConstruction file = mock(INodeFileUnderConstruction.class);
++    INodeFile file = mockFileUnderConstruction();
+     Block block = new Block(blockId, length, genStamp);
+     FSNamesystem namesystemSpy = makeNameSystemSpy(block, file);
+     DatanodeID[] newTargets = new DatanodeID[0];
+@@ -124,7 +128,7 @@ public void testCommitBlockSynchronization2() throws IOException {
+ 
+   @Test
+   public void testCommitBlockSynchronizationWithDelete() throws IOException {
+-    INodeFileUnderConstruction file = mock(INodeFileUnderConstruction.class);
++    INodeFile file = mockFileUnderConstruction();
+     Block block = new Block(blockId, length, genStamp);
+     FSNamesystem namesystemSpy = makeNameSystemSpy(block, file);
+     DatanodeID[] newTargets = new DatanodeID[0];
+@@ -144,7 +148,7 @@ public void testCommitBlockSynchronizationWithDelete() throws IOException {
+ 
+   @Test
+   public void testCommitBlockSynchronizationWithClose() throws IOException {
+-    INodeFileUnderConstruction file = mock(INodeFileUnderConstruction.class);
++    INodeFile file = mockFileUnderConstruction();
+     Block block = new Block(blockId, length, genStamp);
+     FSNamesystem namesystemSpy = makeNameSystemSpy(block, file);
+     DatanodeID[] newTargets = new DatanodeID[0];
+@@ -171,7 +175,7 @@ public void testCommitBlockSynchronizationWithClose() throws IOException {
+   @Test
+   public void testCommitBlockSynchronizationWithCloseAndNonExistantTarget()
+       throws IOException {
+-    INodeFileUnderConstruction file = mock(INodeFileUnderConstruction.class);
++    INodeFile file = mockFileUnderConstruction();
+     Block block = new Block(blockId, length, genStamp);
+     FSNamesystem namesystemSpy = makeNameSystemSpy(block, file);
+     DatanodeID[] newTargets = new DatanodeID[]{
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java
+index 2ce9bb5..f5c7ff8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java
+@@ -63,6 +63,7 @@
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
++import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
+ import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
+ import org.apache.hadoop.hdfs.server.namenode.metrics.NameNodeMetrics;
+@@ -152,9 +153,10 @@ public void run() {
+       FSEditLog editLog = namesystem.getEditLog();
+ 
+       for (int i = 0; i < numTransactions; i++) {
+-        INodeFileUnderConstruction inode = new INodeFileUnderConstruction(
+-            namesystem.allocateNewInodeId(), p, replication, blockSize, 0, "",
+-            "", null);
++        INodeFile inode = new INodeFile(namesystem.allocateNewInodeId(), null,
++            p, 0L, 0L, BlockInfo.EMPTY_ARRAY, replication, blockSize);
++        inode.toUnderConstruction("", "", null);
++
+         editLog.logOpenFile("/filename" + (startIndex + i), inode, false);
+         editLog.logCloseFile("/filename" + (startIndex + i), inode);
+         editLog.logSync();
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+index 18949be..5cc51ba 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestINodeFile.java
+@@ -29,6 +29,8 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
++import junit.framework.Assert;
++
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+@@ -59,6 +61,7 @@
+ import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
++import org.apache.hadoop.util.Time;
+ import org.junit.Test;
+ import org.mockito.Mockito;
+ 
+@@ -286,14 +289,6 @@ public void testValueOf () throws IOException {
+         assertTrue(fnfe.getMessage().contains("File does not exist"));
+       }
+ 
+-      //cast to INodeFileUnderConstruction, should fail
+-      try {
+-        INodeFileUnderConstruction.valueOf(from, path);
+-        fail();
+-      } catch(FileNotFoundException fnfe) {
+-        assertTrue(fnfe.getMessage().contains("File does not exist"));
+-      }
+-
+       //cast to INodeDirectory, should fail
+       try {
+         INodeDirectory.valueOf(from, path);
+@@ -310,14 +305,6 @@ public void testValueOf () throws IOException {
+       final INodeFile f = INodeFile.valueOf(from, path);
+       assertTrue(f == from);
+ 
+-      //cast to INodeFileUnderConstruction, should fail
+-      try {
+-        INodeFileUnderConstruction.valueOf(from, path);
+-        fail();
+-      } catch(IOException ioe) {
+-        assertTrue(ioe.getMessage().contains("File is not under construction"));
+-      }
+-
+       //cast to INodeDirectory, should fail
+       try {
+         INodeDirectory.valueOf(from, path);
+@@ -328,19 +315,14 @@ public void testValueOf () throws IOException {
+     }
+ 
+     {//cast from INodeFileUnderConstruction
+-      final INode from = new INodeFileUnderConstruction(
+-          INodeId.GRANDFATHER_INODE_ID, perm, replication, 0L, 0L, "client",
+-          "machine", null);
++      final INode from = new INodeFile(
++          INodeId.GRANDFATHER_INODE_ID, null, perm, 0L, 0L, null, replication, 1024L);
++      from.asFile().toUnderConstruction("client", "machine", null);
+     
+       //cast to INodeFile, should success
+       final INodeFile f = INodeFile.valueOf(from, path);
+       assertTrue(f == from);
+ 
+-      //cast to INodeFileUnderConstruction, should success
+-      final INodeFileUnderConstruction u = INodeFileUnderConstruction.valueOf(
+-          from, path);
+-      assertTrue(u == from);
+-
+       //cast to INodeDirectory, should fail
+       try {
+         INodeDirectory.valueOf(from, path);
+@@ -362,14 +344,6 @@ public void testValueOf () throws IOException {
+         assertTrue(fnfe.getMessage().contains("Path is not a file"));
+       }
+ 
+-      //cast to INodeFileUnderConstruction, should fail
+-      try {
+-        INodeFileUnderConstruction.valueOf(from, path);
+-        fail();
+-      } catch(FileNotFoundException fnfe) {
+-        assertTrue(fnfe.getMessage().contains("Path is not a file"));
+-      }
+-
+       //cast to INodeDirectory, should success
+       final INodeDirectory d = INodeDirectory.valueOf(from, path);
+       assertTrue(d == from);
+@@ -1047,4 +1021,24 @@ public void testFilesInGetListingOps() throws Exception {
+       }
+     }
+   }
++
++  @Test
++  public void testFileUnderConstruction() {
++    replication = 3;
++    final INodeFile file = new INodeFile(INodeId.GRANDFATHER_INODE_ID, null,
++        perm, 0L, 0L, null, replication, 1024L);
++    assertFalse(file.isUnderConstruction());
++
++    final String clientName = "client";
++    final String clientMachine = "machine";
++    file.toUnderConstruction(clientName, clientMachine, null);
++    assertTrue(file.isUnderConstruction());
++    FileUnderConstructionFeature uc = file.getFileUnderConstructionFeature();
++    assertEquals(clientName, uc.getClientName());
++    assertEquals(clientMachine, uc.getClientMachine());
++    Assert.assertNull(uc.getClientNode());
++
++    file.toCompleteFile(Time.now());
++    assertFalse(file.isUnderConstruction());
++  }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
+index 3e7fa9c..2f36da1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/ha/TestRetryCacheWithHA.java
+@@ -69,7 +69,6 @@
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstruction;
+ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+-import org.apache.hadoop.hdfs.server.namenode.INodeFileUnderConstruction;
+ import org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotTestHelper;
+ import org.apache.hadoop.io.EnumSetWritable;
+ import org.apache.hadoop.io.IOUtils;
+@@ -726,8 +725,8 @@ void invoke() throws Exception {
+ 
+     @Override
+     boolean checkNamenodeBeforeReturn() throws Exception {
+-      INodeFileUnderConstruction fileNode = (INodeFileUnderConstruction) cluster
+-          .getNamesystem(0).getFSDirectory().getINode4Write(file).asFile();
++      INodeFile fileNode = cluster.getNamesystem(0).getFSDirectory()
++          .getINode4Write(file).asFile();
+       BlockInfoUnderConstruction blkUC = 
+           (BlockInfoUnderConstruction) (fileNode.getBlocks())[1];
+       int datanodeNum = blkUC.getExpectedStorageLocations().length;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
+index 32e8a0a..14e9aba 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java
+@@ -1227,8 +1227,9 @@ public void testRenameAndAppend() throws Exception {
+       out.write(content);
+       fooRef = fsdir.getINode4Write(foo2.toString());
+       assertTrue(fooRef instanceof INodeReference.DstReference);
+-      INode fooNode = fooRef.asFile();
+-      assertTrue(fooNode instanceof INodeFileUnderConstructionWithSnapshot);
++      INodeFile fooNode = fooRef.asFile();
++      assertTrue(fooNode instanceof INodeFileWithSnapshot);
++      assertTrue(fooNode.isUnderConstruction());
+     } finally {
+       if (out != null) {
+         out.close();
+@@ -1237,8 +1238,9 @@ public void testRenameAndAppend() throws Exception {
+     
+     fooRef = fsdir.getINode4Write(foo2.toString());
+     assertTrue(fooRef instanceof INodeReference.DstReference);
+-    INode fooNode = fooRef.asFile();
++    INodeFile fooNode = fooRef.asFile();
+     assertTrue(fooNode instanceof INodeFileWithSnapshot);
++    assertFalse(fooNode.isUnderConstruction());
+     
+     restartClusterAndCheckImage(true);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotBlocksMap.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotBlocksMap.java
+index 47614b7..cb267a7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotBlocksMap.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshotBlocksMap.java
+@@ -314,7 +314,9 @@ public void testDeletionWithZeroSizeBlock() throws Exception {
+     assertEquals(BLOCKSIZE, blks[0].getNumBytes());
+   }
+ 
+-  /** Make sure we delete 0-sized block when deleting an INodeFileUC */
++  /**
++   * Make sure we delete 0-sized block when deleting an under-construction file
++   */
+   @Test
+   public void testDeletionWithZeroSizeBlock2() throws Exception {
+     final Path foo = new Path("/foo");
+-- 
+1.7.0.4
+

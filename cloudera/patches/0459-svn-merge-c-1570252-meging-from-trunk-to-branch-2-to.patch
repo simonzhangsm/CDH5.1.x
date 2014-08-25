@@ -1,0 +1,163 @@
+From 7e374fa8462e5998f280f90747070075f5c2ec87 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Thu, 20 Feb 2014 16:16:32 +0000
+Subject: [PATCH 459/795] svn merge -c 1570252 meging from trunk to branch-2 to fix:HDFS-5962. Mtime and atime are not persisted for symbolic links.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570255 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e423e051363076cb590510837da6ffb52b24b6c1)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hdfs/server/namenode/FSImageFormatPBINode.java |   10 +++-
+ .../hdfs/tools/offlineImageViewer/LsrPBImage.java  |    5 +-
+ .../tools/offlineImageViewer/PBImageXmlWriter.java |    5 +-
+ .../hadoop-hdfs/src/main/proto/fsimage.proto       |    3 +-
+ .../hadoop/hdfs/server/namenode/TestFSImage.java   |   48 ++++++++++++++++++++
+ 5 files changed, 63 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
+index bc1eebc..f28189e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java
+@@ -227,8 +227,10 @@ private INodeSymlink loadINodeSymlink(INodeSection.INode n) {
+       INodeSection.INodeSymlink s = n.getSymlink();
+       final PermissionStatus permissions = loadPermission(s.getPermission(),
+           parent.getLoaderContext().getStringTable());
+-      return new INodeSymlink(n.getId(), n.getName().toByteArray(), permissions,
+-          0, 0, s.getTarget().toStringUtf8());
++      INodeSymlink sym = new INodeSymlink(n.getId(), n.getName().toByteArray(),
++          permissions, s.getModificationTime(), s.getAccessTime(),
++          s.getTarget().toStringUtf8());
++      return sym;
+     }
+ 
+     private void loadRootINode(INodeSection.INode p) {
+@@ -408,7 +410,9 @@ private void save(OutputStream out, INodeSymlink n) throws IOException {
+       INodeSection.INodeSymlink.Builder b = INodeSection.INodeSymlink
+           .newBuilder()
+           .setPermission(buildPermissionStatus(n, parent.getSaverContext().getStringMap()))
+-          .setTarget(ByteString.copyFrom(n.getSymlink()));
++          .setTarget(ByteString.copyFrom(n.getSymlink()))
++          .setModificationTime(n.getModificationTime())
++          .setAccessTime(n.getAccessTime());
+       INodeSection.INode r = buildINodeCommon(n)
+           .setType(INodeSection.INode.Type.SYMLINK).setSymlink(b).build();
+       r.writeDelimitedTo(out);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
+index 372287d..b519faa 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/LsrPBImage.java
+@@ -179,8 +179,9 @@ private void listINode(String parent, INode inode) {
+       PermissionStatus p = FSImageFormatPBINode.Loader.loadPermission(
+           d.getPermission(), stringTable);
+       out.print(String.format("-%s  - %8s %10s %10s %10d %s%s -> %s\n", p
+-          .getPermission().toString(), p.getUserName(), p.getGroupName(), 0, 0,
+-          parent, inode.getName().toStringUtf8(), d.getTarget().toStringUtf8()));
++          .getPermission().toString(), p.getUserName(), p.getGroupName(), d
++          .getModificationTime(), 0, parent, inode.getName().toStringUtf8(),
++          d.getTarget().toStringUtf8()));
+     }
+       break;
+     default:
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+index 1f43b5b..a460910 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+@@ -289,8 +289,9 @@ private void dumpINodeSection(InputStream in) throws IOException {
+   }
+ 
+   private void dumpINodeSymlink(INodeSymlink s) {
+-    o("permission", dumpPermission(s.getPermission())).o("target",
+-        s.getTarget().toStringUtf8());
++    o("permission", dumpPermission(s.getPermission()))
++        .o("target", s.getTarget().toStringUtf8())
++        .o("mtime", s.getModificationTime()).o("atime", s.getAccessTime());
+   }
+ 
+   private void dumpNameSection(InputStream in) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
+index 79d6fd0..92c7b55 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/fsimage.proto
+@@ -110,6 +110,8 @@ message INodeSection {
+   message INodeSymlink {
+     optional fixed64 permission = 1;
+     optional bytes target = 2;
++    optional uint64 modificationTime = 3;
++    optional uint64 accessTime = 4;
+   }
+ 
+   message INode {
+@@ -281,4 +283,3 @@ message CacheManagerSection {
+   // repeated CachePoolInfoProto pools
+   // repeated CacheDirectiveInfoProto directives
+ }
+-
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImage.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImage.java
+index 552b091..338522d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImage.java
+@@ -34,6 +34,7 @@
+ import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.client.HdfsDataOutputStream.SyncFlag;
++import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+ import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
+@@ -135,4 +136,51 @@ public void testDigest() throws IOException {
+       }
+     }
+   }
++
++  /**
++   * Ensure mtime and atime can be loaded from fsimage.
++   */
++  @Test(timeout=60000)
++  public void testLoadMtimeAtime() throws Exception {
++    Configuration conf = new Configuration();
++    MiniDFSCluster cluster = null;
++    try {
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
++      cluster.waitActive();
++      DistributedFileSystem hdfs = cluster.getFileSystem();
++      String userDir = hdfs.getHomeDirectory().toUri().getPath().toString();
++      Path file = new Path(userDir, "file");
++      Path dir = new Path(userDir, "/dir");
++      Path link = new Path(userDir, "/link");
++      hdfs.createNewFile(file);
++      hdfs.mkdirs(dir);
++      hdfs.createSymlink(file, link, false);
++
++      long mtimeFile = hdfs.getFileStatus(file).getModificationTime();
++      long atimeFile = hdfs.getFileStatus(file).getAccessTime();
++      long mtimeDir = hdfs.getFileStatus(dir).getModificationTime();
++      long mtimeLink = hdfs.getFileLinkStatus(link).getModificationTime();
++      long atimeLink = hdfs.getFileLinkStatus(link).getAccessTime();
++
++      // save namespace and restart cluster
++      hdfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_ENTER);
++      hdfs.saveNamespace();
++      hdfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_LEAVE);
++      cluster.shutdown();
++      cluster = new MiniDFSCluster.Builder(conf).format(false)
++          .numDataNodes(1).build();
++      cluster.waitActive();
++      hdfs = cluster.getFileSystem();
++      
++      assertEquals(mtimeFile, hdfs.getFileStatus(file).getModificationTime());
++      assertEquals(atimeFile, hdfs.getFileStatus(file).getAccessTime());
++      assertEquals(mtimeDir, hdfs.getFileStatus(dir).getModificationTime());
++      assertEquals(mtimeLink, hdfs.getFileLinkStatus(link).getModificationTime());
++      assertEquals(atimeLink, hdfs.getFileLinkStatus(link).getAccessTime());
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
+ }
+-- 
+1.7.0.4
+

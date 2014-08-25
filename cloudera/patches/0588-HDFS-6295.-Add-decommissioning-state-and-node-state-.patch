@@ -1,0 +1,487 @@
+From 7c1700c05319ea093ffe10b949a52b721855dff0 Mon Sep 17 00:00:00 2001
+From: Andrew Wang <wang@apache.org>
+Date: Mon, 5 May 2014 03:38:29 +0000
+Subject: [PATCH 588/795] HDFS-6295. Add decommissioning state and node state filtering to dfsadmin. Contributed by Andrew Wang.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1592438 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 31008e7d55ce2a344874ed00c4825b8787bec608)
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDecommissioningStatus.java
+---
+ .../apache/hadoop/hdfs/protocol/HdfsConstants.java |    2 +-
+ .../apache/hadoop/hdfs/protocolPB/PBHelper.java    |    2 +
+ .../server/blockmanagement/DatanodeManager.java    |   18 ++-
+ .../org/apache/hadoop/hdfs/tools/DFSAdmin.java     |  145 ++++++++++++-------
+ .../src/main/proto/ClientNamenodeProtocol.proto    |    1 +
+ .../server/namenode/TestDecommissioningStatus.java |   59 ++++++++-
+ .../src/test/resources/testHDFSConf.xml            |   18 ++--
+ 7 files changed, 174 insertions(+), 71 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsConstants.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsConstants.java
+index 31925c8..cc6cd55 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsConstants.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/HdfsConstants.java
+@@ -104,7 +104,7 @@ public static RollingUpgradeAction fromString(String s) {
+ 
+   // type of the datanode report
+   public static enum DatanodeReportType {
+-    ALL, LIVE, DEAD
++    ALL, LIVE, DEAD, DECOMMISSIONING
+   }
+ 
+   // An invalid transaction ID that will never be seen in a real namesystem.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+index bea8293..c196b50 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+@@ -1415,6 +1415,7 @@ public static GetFsStatsResponseProto convert(long[] fsStats) {
+     case ALL: return DatanodeReportTypeProto.ALL;
+     case LIVE: return DatanodeReportTypeProto.LIVE;
+     case DEAD: return DatanodeReportTypeProto.DEAD;
++    case DECOMMISSIONING: return DatanodeReportTypeProto.DECOMMISSIONING;
+     default: 
+       throw new IllegalArgumentException("Unexpected data type report:" + t);
+     }
+@@ -1426,6 +1427,7 @@ public static GetFsStatsResponseProto convert(long[] fsStats) {
+     case ALL: return DatanodeReportType.ALL;
+     case LIVE: return DatanodeReportType.LIVE;
+     case DEAD: return DatanodeReportType.DEAD;
++    case DECOMMISSIONING: return DatanodeReportType.DECOMMISSIONING;
+     default: 
+       throw new IllegalArgumentException("Unexpected data type report:" + t);
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
+index 584450e..f21a4cc 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeManager.java
+@@ -1141,10 +1141,15 @@ private DatanodeID parseDNFromHostsEntry(String hostLine) {
+   /** For generating datanode reports */
+   public List<DatanodeDescriptor> getDatanodeListForReport(
+       final DatanodeReportType type) {
+-    boolean listLiveNodes = type == DatanodeReportType.ALL ||
+-                            type == DatanodeReportType.LIVE;
+-    boolean listDeadNodes = type == DatanodeReportType.ALL ||
+-                            type == DatanodeReportType.DEAD;
++    final boolean listLiveNodes =
++        type == DatanodeReportType.ALL ||
++        type == DatanodeReportType.LIVE;
++    final boolean listDeadNodes =
++        type == DatanodeReportType.ALL ||
++        type == DatanodeReportType.DEAD;
++    final boolean listDecommissioningNodes =
++        type == DatanodeReportType.ALL ||
++        type == DatanodeReportType.DECOMMISSIONING;
+ 
+     ArrayList<DatanodeDescriptor> nodes;
+     final HostFileManager.HostSet foundNodes = new HostFileManager.HostSet();
+@@ -1155,7 +1160,10 @@ private DatanodeID parseDNFromHostsEntry(String hostLine) {
+       nodes = new ArrayList<DatanodeDescriptor>(datanodeMap.size());
+       for (DatanodeDescriptor dn : datanodeMap.values()) {
+         final boolean isDead = isDatanodeDead(dn);
+-        if ((listLiveNodes && !isDead) || (listDeadNodes && isDead)) {
++        final boolean isDecommissioning = dn.isDecommissionInProgress();
++        if ((listLiveNodes && !isDead) ||
++            (listDeadNodes && isDead) ||
++            (listDecommissioningNodes && isDecommissioning)) {
+             nodes.add(dn);
+         }
+         foundNodes.add(HostFileManager.resolvedAddressFromDatanodeID(dn));
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+index a02e43d..220b127 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSAdmin.java
+@@ -25,6 +25,7 @@
+ import java.net.URL;
+ import java.security.PrivilegedExceptionAction;
+ import java.util.ArrayList;
++import java.util.Arrays;
+ import java.util.Collections;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -370,65 +371,96 @@ protected DistributedFileSystem getDFS() throws IOException {
+    * Gives a report on how the FileSystem is doing.
+    * @exception IOException if the filesystem does not exist.
+    */
+-  public void report() throws IOException {
+-      DistributedFileSystem dfs = getDFS();
+-      FsStatus ds = dfs.getStatus();
+-      long capacity = ds.getCapacity();
+-      long used = ds.getUsed();
+-      long remaining = ds.getRemaining();
+-      long presentCapacity = used + remaining;
+-      boolean mode = dfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_GET);
+-      if (mode) {
+-        System.out.println("Safe mode is ON");
+-      }
+-      System.out.println("Configured Capacity: " + capacity
+-                         + " (" + StringUtils.byteDesc(capacity) + ")");
+-      System.out.println("Present Capacity: " + presentCapacity
+-          + " (" + StringUtils.byteDesc(presentCapacity) + ")");
+-      System.out.println("DFS Remaining: " + remaining
+-          + " (" + StringUtils.byteDesc(remaining) + ")");
+-      System.out.println("DFS Used: " + used
+-                         + " (" + StringUtils.byteDesc(used) + ")");
+-      System.out.println("DFS Used%: "
+-          + StringUtils.formatPercent(used/(double)presentCapacity, 2));
+-      
+-      /* These counts are not always upto date. They are updated after  
+-       * iteration of an internal list. Should be updated in a few seconds to 
+-       * minutes. Use "-metaSave" to list of all such blocks and accurate 
+-       * counts.
+-       */
+-      System.out.println("Under replicated blocks: " + 
+-                         dfs.getUnderReplicatedBlocksCount());
+-      System.out.println("Blocks with corrupt replicas: " + 
+-                         dfs.getCorruptBlocksCount());
+-      System.out.println("Missing blocks: " + 
+-                         dfs.getMissingBlocksCount());
+-                           
+-      System.out.println();
++  public void report(String[] argv, int i) throws IOException {
++    DistributedFileSystem dfs = getDFS();
++    FsStatus ds = dfs.getStatus();
++    long capacity = ds.getCapacity();
++    long used = ds.getUsed();
++    long remaining = ds.getRemaining();
++    long presentCapacity = used + remaining;
++    boolean mode = dfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_GET);
++    if (mode) {
++      System.out.println("Safe mode is ON");
++    }
++    System.out.println("Configured Capacity: " + capacity
++                       + " (" + StringUtils.byteDesc(capacity) + ")");
++    System.out.println("Present Capacity: " + presentCapacity
++        + " (" + StringUtils.byteDesc(presentCapacity) + ")");
++    System.out.println("DFS Remaining: " + remaining
++        + " (" + StringUtils.byteDesc(remaining) + ")");
++    System.out.println("DFS Used: " + used
++                       + " (" + StringUtils.byteDesc(used) + ")");
++    System.out.println("DFS Used%: "
++        + StringUtils.formatPercent(used/(double)presentCapacity, 2));
++    
++    /* These counts are not always upto date. They are updated after  
++     * iteration of an internal list. Should be updated in a few seconds to 
++     * minutes. Use "-metaSave" to list of all such blocks and accurate 
++     * counts.
++     */
++    System.out.println("Under replicated blocks: " + 
++                       dfs.getUnderReplicatedBlocksCount());
++    System.out.println("Blocks with corrupt replicas: " + 
++                       dfs.getCorruptBlocksCount());
++    System.out.println("Missing blocks: " + 
++                       dfs.getMissingBlocksCount());
+ 
+-      System.out.println("-------------------------------------------------");
+-      
++    System.out.println();
++
++    System.out.println("-------------------------------------------------");
++    
++    // Parse arguments for filtering the node list
++    List<String> args = Arrays.asList(argv);
++    // Truncate already handled arguments before parsing report()-specific ones
++    args = new ArrayList<String>(args.subList(i, args.size()));
++    final boolean listLive = StringUtils.popOption("-live", args);
++    final boolean listDead = StringUtils.popOption("-dead", args);
++    final boolean listDecommissioning =
++        StringUtils.popOption("-decommissioning", args);
++
++    // If no filter flags are found, then list all DN types
++    boolean listAll = (!listLive && !listDead && !listDecommissioning);
++
++    if (listAll || listLive) {
+       DatanodeInfo[] live = dfs.getDataNodeStats(DatanodeReportType.LIVE);
+-      DatanodeInfo[] dead = dfs.getDataNodeStats(DatanodeReportType.DEAD);
+-      System.out.println("Datanodes available: " + live.length +
+-                         " (" + (live.length + dead.length) + " total, " + 
+-                         dead.length + " dead)\n");
+-      
+-      if(live.length > 0) {
+-        System.out.println("Live datanodes:");
++      if (live.length > 0 || listLive) {
++        System.out.println("Live datanodes (" + live.length + "):\n");
++      }
++      if (live.length > 0) {
+         for (DatanodeInfo dn : live) {
+           System.out.println(dn.getDatanodeReport());
+           System.out.println();
+         }
+       }
+-      
+-      if(dead.length > 0) {
+-        System.out.println("Dead datanodes:");
++    }
++
++    if (listAll || listDead) {
++      DatanodeInfo[] dead = dfs.getDataNodeStats(DatanodeReportType.DEAD);
++      if (dead.length > 0 || listDead) {
++        System.out.println("Dead datanodes (" + dead.length + "):\n");
++      }
++      if (dead.length > 0) {
+         for (DatanodeInfo dn : dead) {
+           System.out.println(dn.getDatanodeReport());
+           System.out.println();
+-        }     
++        }
++      }
++    }
++
++    if (listAll || listDecommissioning) {
++      DatanodeInfo[] decom =
++          dfs.getDataNodeStats(DatanodeReportType.DECOMMISSIONING);
++      if (decom.length > 0 || listDecommissioning) {
++        System.out.println("Decommissioning datanodes (" + decom.length
++            + "):\n");
++      }
++      if (decom.length > 0) {
++        for (DatanodeInfo dn : decom) {
++          System.out.println(dn.getDatanodeReport());
++          System.out.println();
++        }
+       }
++    }
+   }
+ 
+   /**
+@@ -638,7 +670,9 @@ public Void run() throws Exception {
+   private void printHelp(String cmd) {
+     String summary = "hadoop dfsadmin is the command to execute DFS administrative commands.\n" +
+       "The full syntax is: \n\n" +
+-      "hadoop dfsadmin [-report] [-safemode <enter | leave | get | wait>]\n" +
++      "hadoop dfsadmin\n" +
++      "\t[-report [-live] [-dead] [-decommissioning]]\n" +
++      "\t[-safemode <enter | leave | get | wait>]\n" +
+       "\t[-saveNamespace]\n" +
+       "\t[-rollEdits]\n" +
+       "\t[-restoreFailedStorage true|false|check]\n" +
+@@ -663,8 +697,11 @@ private void printHelp(String cmd) {
+       "\t[-getDatanodeInfo <datanode_host:ipc_port>\n" +
+       "\t[-help [cmd]]\n";
+ 
+-    String report ="-report: \tReports basic filesystem information and statistics.\n";
+-        
++    String report ="-report [-live] [-dead] [-decommissioning]:\n" +
++      "\tReports basic filesystem information and statistics.\n" +
++      "\tOptional flags may be used to filter the list of displayed DNs.\n";
++    
++
+     String safemode = "-safemode <enter|leave|get|wait>:  Safe mode maintenance command.\n" + 
+       "\t\tSafe mode is a Namenode state in which it\n" +
+       "\t\t\t1.  does not accept changes to the name space (read-only)\n" +
+@@ -1041,7 +1078,7 @@ public int refreshSuperUserGroupsConfiguration() throws IOException {
+   private static void printUsage(String cmd) {
+     if ("-report".equals(cmd)) {
+       System.err.println("Usage: java DFSAdmin"
+-                         + " [-report]");
++          + " [-report] [-live] [-dead] [-decommissioning]");
+     } else if ("-safemode".equals(cmd)) {
+       System.err.println("Usage: java DFSAdmin"
+           + " [-safemode enter | leave | get | wait]");
+@@ -1178,7 +1215,7 @@ public int run(String[] argv) throws Exception {
+         return exitCode;
+       }
+     } else if ("-report".equals(cmd)) {
+-      if (argv.length != 1) {
++      if (argv.length < 1) {
+         printUsage(cmd);
+         return exitCode;
+       }
+@@ -1280,7 +1317,7 @@ public int run(String[] argv) throws Exception {
+     exitCode = 0;
+     try {
+       if ("-report".equals(cmd)) {
+-        report();
++        report(argv, i);
+       } else if ("-safemode".equals(cmd)) {
+         setSafeMode(argv, i);
+       } else if ("-allowSnapshot".equalsIgnoreCase(cmd)) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/ClientNamenodeProtocol.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/ClientNamenodeProtocol.proto
+index 364bd10..17cd4d7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/ClientNamenodeProtocol.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/ClientNamenodeProtocol.proto
+@@ -267,6 +267,7 @@ enum DatanodeReportTypeProto {  // type of the datanode report
+   ALL = 1;
+   LIVE = 2;
+   DEAD = 3;
++  DECOMMISSIONING = 4;
+ }
+ 
+ message GetDatanodeReportRequestProto {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDecommissioningStatus.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDecommissioningStatus.java
+index 0138070..300d3ba 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDecommissioningStatus.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestDecommissioningStatus.java
+@@ -21,12 +21,15 @@
+ import static org.junit.Assert.assertTrue;
+ 
+ import java.io.IOException;
++import java.io.PrintStream;
+ import java.net.InetSocketAddress;
+ import java.util.ArrayList;
++import java.util.Arrays;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Random;
+ 
++import org.apache.commons.io.output.ByteArrayOutputStream;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.CommonConfigurationKeys;
+ import org.apache.hadoop.fs.FSDataOutputStream;
+@@ -34,12 +37,15 @@
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.hdfs.DFSClient;
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
++import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
++import org.apache.hadoop.hdfs.protocol.DatanodeID;
+ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
+ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
++import org.apache.hadoop.hdfs.tools.DFSAdmin;
+ import org.junit.AfterClass;
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+@@ -179,7 +185,51 @@ private void checkDecommissionStatus(DatanodeDescriptor decommNode,
+     assertEquals(decommNode.decommissioningStatus
+         .getUnderReplicatedInOpenFiles(), expectedUnderRepInOpenFiles);
+   }
+-  
++
++  private void checkDFSAdminDecommissionStatus(
++      List<DatanodeDescriptor> expectedDecomm, DistributedFileSystem dfs,
++      DFSAdmin admin) throws IOException {
++    ByteArrayOutputStream baos = new ByteArrayOutputStream();
++    PrintStream ps = new PrintStream(baos);
++    PrintStream oldOut = System.out;
++    System.setOut(ps);
++    try {
++      // Parse DFSAdmin just to check the count
++      admin.report(new String[] {"-decommissioning"}, 0);
++      String[] lines = baos.toString().split("\n");
++      Integer num = null;
++      int count = 0;
++      for (String line: lines) {
++        if (line.startsWith("Decommissioning datanodes")) {
++          // Pull out the "(num)" and parse it into an int
++          String temp = line.split(" ")[2];
++          num =
++              Integer.parseInt((String) temp.subSequence(1, temp.length() - 2));
++        }
++        if (line.contains("Decommission in progress")) {
++          count++;
++        }
++      }
++      assertTrue("No decommissioning output", num != null);
++      assertEquals("Unexpected number of decomming DNs", expectedDecomm.size(),
++          num.intValue());
++      assertEquals("Unexpected number of decomming DNs", expectedDecomm.size(),
++          count);
++
++      // Check Java API for correct contents
++      List<DatanodeInfo> decomming =
++          new ArrayList<DatanodeInfo>(Arrays.asList(dfs
++              .getDataNodeStats(DatanodeReportType.DECOMMISSIONING)));
++      assertEquals("Unexpected number of decomming DNs", expectedDecomm.size(),
++          decomming.size());
++      for (DatanodeID id : expectedDecomm) {
++        assertTrue("Did not find expected decomming DN " + id,
++            decomming.contains(id));
++      }
++    } finally {
++      System.setOut(oldOut);
++    }
++  }
+   /**
+    * Tests Decommissioning Status in DFS.
+    */
+@@ -191,7 +241,8 @@ public void testDecommissionStatus() throws IOException, InterruptedException {
+     DFSClient client = new DFSClient(addr, conf);
+     DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
+     assertEquals("Number of Datanodes ", 2, info.length);
+-    FileSystem fileSys = cluster.getFileSystem();
++    DistributedFileSystem fileSys = cluster.getFileSystem();
++    DFSAdmin admin = new DFSAdmin(cluster.getConfiguration(0));
+ 
+     short replicas = 2;
+     //
+@@ -216,12 +267,16 @@ public void testDecommissionStatus() throws IOException, InterruptedException {
+         assertEquals(decommissioningNodes.size(), 1);
+         DatanodeDescriptor decommNode = decommissioningNodes.get(0);
+         checkDecommissionStatus(decommNode, 4, 0, 2);
++        checkDFSAdminDecommissionStatus(decommissioningNodes.subList(0, 1),
++            fileSys, admin);
+       } else {
+         assertEquals(decommissioningNodes.size(), 2);
+         DatanodeDescriptor decommNode1 = decommissioningNodes.get(0);
+         DatanodeDescriptor decommNode2 = decommissioningNodes.get(1);
+         checkDecommissionStatus(decommNode1, 4, 4, 2);
+         checkDecommissionStatus(decommNode2, 4, 4, 2);
++        checkDFSAdminDecommissionStatus(decommissioningNodes.subList(0, 2),
++            fileSys, admin);
+       }
+     }
+     // Call refreshNodes on FSNamesystem with empty exclude file.
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testHDFSConf.xml b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testHDFSConf.xml
+index c022a4e..7308759 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testHDFSConf.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/resources/testHDFSConf.xml
+@@ -15336,7 +15336,11 @@
+       <comparators>
+         <comparator>
+           <type>RegexpComparator</type>
+-          <expected-output>^-report:( |\t)*Reports basic filesystem information and statistics.( )*</expected-output>
++          <expected-output>^-report \[-live\] \[-dead\] \[-decommissioning\]:(.)*</expected-output>
++        </comparator>
++        <comparator>
++          <type>RegexpComparator</type>
++          <expected-output>^[ \t]*Reports basic filesystem information and statistics.( )*</expected-output>
+         </comparator>
+       </comparators>
+     </test>
+@@ -16016,9 +16020,9 @@
+           <type>RegexpComparator</type>
+           <expected-output>DFS Used\%: [0-9\.]+%</expected-output>
+         </comparator>
+-	<comparator>
++        <comparator>
+           <type>RegexpComparator</type>
+-          <expected-output>Datanodes available: [0-9]+ \([0-9]+ total, [0-9]+ dead\)</expected-output>
++          <expected-output>Live datanodes \([0-9]+\):</expected-output>
+         </comparator>
+         <comparator>
+           <type>RegexpComparator</type>
+@@ -16046,7 +16050,7 @@
+         </comparator>
+         <comparator>
+           <type>TokenComparator</type>
+-          <expected-output>Live datanodes:</expected-output>
++          <expected-output>Live datanodes</expected-output>
+         </comparator>
+       </comparators>
+     </test>
+@@ -16136,10 +16140,6 @@
+         </comparator>
+         <comparator>
+           <type>RegexpComparator</type>
+-          <expected-output>Datanodes available: [0-9]+ \([0-9]+ total, [0-9]+ dead\)</expected-output>
+-        </comparator>
+-        <comparator>
+-          <type>RegexpComparator</type>
+           <expected-output>Name: [0-9\.:]+ \([-.a-zA-z0-9\.]+\)</expected-output>
+         </comparator>
+         <comparator>
+@@ -16164,7 +16164,7 @@
+         </comparator>
+ 	<comparator>
+           <type>TokenComparator</type>
+-          <expected-output>Live datanodes:</expected-output>
++          <expected-output>Live datanodes</expected-output>
+         </comparator>
+       </comparators>
+     </test>
+-- 
+1.7.0.4
+

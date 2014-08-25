@@ -1,0 +1,38 @@
+From 973eaade0d91cbd0e8958edf0e3661f1aa080ab6 Mon Sep 17 00:00:00 2001
+From: Andrew Bayer <andrew@cloudera.com>
+Date: Tue, 8 May 2012 08:51:48 -0700
+Subject: [PATCH 092/795] MR1: CLOUDERA-BUILD. Publish hadoop-streaming jar.
+ (cherry picked from commit 9b4c69238ff8a4c0720771d5cacbd305054c6309)
+
+(cherry picked from commit 8e9e08e5666631866a84543551e4319b0f1dcaed)
+---
+ cloudera/maven-packaging/pom.xml |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/cloudera/maven-packaging/pom.xml b/cloudera/maven-packaging/pom.xml
+index 165ce59..2ea9220 100644
+--- a/cloudera/maven-packaging/pom.xml
++++ b/cloudera/maven-packaging/pom.xml
+@@ -83,7 +83,7 @@
+       <modules>
+         <module>../../cloudera-pom.xml</module>
+         <module>hadoop-core</module>
+-        <!-- module>hadoop-streaming</module -->
++        <module>hadoop-streaming</module>
+         <!-- module>hadoop-mrunit</module -->
+         <module>hadoop-examples</module>
+         <module>hadoop-test</module>
+@@ -104,8 +104,8 @@
+       <modules>
+         <module>../../cloudera-pom.xml</module>
+         <module>hadoop-core</module>
+-        <!-- module>hadoop-streaming</module>
+-        <module>hadoop-mrunit</module -->
++        <module>hadoop-streaming</module>
++        <!-- module>hadoop-mrunit</module -->
+         <module>hadoop-examples</module>
+         <module>hadoop-test</module>
+         <module>hadoop-tools</module>
+-- 
+1.7.0.4
+

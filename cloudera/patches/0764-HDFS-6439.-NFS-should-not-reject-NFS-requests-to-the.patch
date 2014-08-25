@@ -1,0 +1,1444 @@
+From 01961ee8e11ca2c8f9ffd9cdce2ebcae474a8a62 Mon Sep 17 00:00:00 2001
+From: Stephen Chu <schu@cloudera.com>
+Date: Wed, 18 Jun 2014 17:53:49 -0700
+Subject: [PATCH 764/795] HDFS-6439. NFS should not reject NFS requests to the NULL procedure whether port monitoring is enabled or not. Contributed by Brandon Li
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1603622 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit f9a5ea432728671fbea52f5cbe0d22bf0faa3e53)
+
+Conflicts:
+
+	hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java
+---
+ .../org/apache/hadoop/nfs/nfs3/Nfs3Interface.java  |   70 +++----
+ .../java/org/apache/hadoop/oncrpc/RpcProgram.java  |   52 ++---
+ .../org/apache/hadoop/oncrpc/TestFrameDecoder.java |   26 +++
+ .../apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java |    7 +-
+ .../hadoop/hdfs/nfs/conf/NfsConfiguration.java     |    4 +-
+ .../hadoop/hdfs/nfs/mount/RpcProgramMountd.java    |    8 +-
+ .../java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3.java |    4 +-
+ .../hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java       |  234 ++++++++++++--------
+ .../org/apache/hadoop/hdfs/nfs/TestReaddir.java    |  208 -----------------
+ .../apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java   |  213 ++++++++++++++++++
+ .../apache/hadoop/hdfs/nfs/nfs3/TestWrites.java    |   14 +-
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |   16 ++
+ 12 files changed, 479 insertions(+), 377 deletions(-)
+ delete mode 100644 hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/TestReaddir.java
+ create mode 100644 hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java
+
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Interface.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Interface.java
+index 24aa8f0..9bca9e7 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Interface.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/nfs/nfs3/Nfs3Interface.java
+@@ -17,12 +17,9 @@
+  */
+ package org.apache.hadoop.nfs.nfs3;
+ 
+-import java.net.InetAddress;
+-
+ import org.apache.hadoop.nfs.nfs3.response.NFS3Response;
++import org.apache.hadoop.oncrpc.RpcInfo;
+ import org.apache.hadoop.oncrpc.XDR;
+-import org.apache.hadoop.oncrpc.security.SecurityHandler;
+-import org.jboss.netty.channel.Channel;
+ 
+ /**
+  * RPC procedures as defined in RFC 1813.
+@@ -33,70 +30,65 @@
+   public NFS3Response nullProcedure();
+ 
+   /** GETATTR: Get file attributes */
+-  public NFS3Response getattr(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response getattr(XDR xdr, RpcInfo info);
+ 
+   /** SETATTR: Set file attributes */
+-  public NFS3Response setattr(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response setattr(XDR xdr, RpcInfo info);
+ 
+   /** LOOKUP: Lookup filename */
+-  public NFS3Response lookup(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response lookup(XDR xdr, RpcInfo info);
+ 
+   /** ACCESS: Check access permission */
+-  public NFS3Response access(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response access(XDR xdr, RpcInfo info);
++
++    /** READLINK: Read from symbolic link */
++  public NFS3Response readlink(XDR xdr, RpcInfo info);
+ 
+   /** READ: Read from file */
+-  public NFS3Response read(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response read(XDR xdr, RpcInfo info);
+ 
+   /** WRITE: Write to file */
+-  public NFS3Response write(XDR xdr, Channel channel, int xid,
+-      SecurityHandler securityHandler, InetAddress client);
++  public NFS3Response write(XDR xdr, RpcInfo info);
+ 
+   /** CREATE: Create a file */
+-  public NFS3Response create(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response create(XDR xdr, RpcInfo info);
+ 
+   /** MKDIR: Create a directory */
+-  public NFS3Response mkdir(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response mkdir(XDR xdr, RpcInfo info);
++
++  /** SYMLINK: Create a symbolic link */
++  public NFS3Response symlink(XDR xdr, RpcInfo info);
++
++  /** MKNOD: Create a special device */
++  public NFS3Response mknod(XDR xdr, RpcInfo info);
+ 
+   /** REMOVE: Remove a file */
+-  public NFS3Response remove(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response remove(XDR xdr, RpcInfo info);
+ 
+   /** RMDIR: Remove a directory */
+-  public NFS3Response rmdir(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response rmdir(XDR xdr, RpcInfo info);
+ 
+   /** RENAME: Rename a file or directory */
+-  public NFS3Response rename(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response rename(XDR xdr, RpcInfo info);
+ 
+-  /** SYMLINK: Create a symbolic link */
+-  public NFS3Response symlink(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  /** LINK: create link to an object */
++  public NFS3Response link(XDR xdr, RpcInfo info);
+ 
+   /** READDIR: Read From directory */
+-  public NFS3Response readdir(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response readdir(XDR xdr, RpcInfo info);
+ 
++  /** READDIRPLUS: Extended read from directory */
++  public NFS3Response readdirplus(XDR xdr, RpcInfo info);
++  
+   /** FSSTAT: Get dynamic file system information */
+-  public NFS3Response fsstat(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response fsstat(XDR xdr, RpcInfo info);
+ 
+   /** FSINFO: Get static file system information */
+-  public NFS3Response fsinfo(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response fsinfo(XDR xdr, RpcInfo info);
+ 
+   /** PATHCONF: Retrieve POSIX information */
+-  public NFS3Response pathconf(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client);
++  public NFS3Response pathconf(XDR xdr, RpcInfo info);
+ 
+   /** COMMIT: Commit cached data on a server to stable storage */
+-  public NFS3Response commit(XDR xdr, Channel channel, int xid,
+-      SecurityHandler securityHandler, InetAddress client);
++  public NFS3Response commit(XDR xdr, RpcInfo info);
+ }
+diff --git a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/oncrpc/RpcProgram.java b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/oncrpc/RpcProgram.java
+index d828f88..89e7173 100644
+--- a/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/oncrpc/RpcProgram.java
++++ b/hadoop-common-project/hadoop-nfs/src/main/java/org/apache/hadoop/oncrpc/RpcProgram.java
+@@ -48,7 +48,7 @@
+   private final int progNumber;
+   private final int lowProgVersion;
+   private final int highProgVersion;
+-  private final boolean allowInsecurePorts;
++  protected final boolean allowInsecurePorts;
+   
+   /**
+    * If not null, this will be used as the socket to use to connect to the
+@@ -146,31 +146,6 @@ public void messageReceived(ChannelHandlerContext ctx, MessageEvent e)
+     RpcCall call = (RpcCall) info.header();
+     
+     SocketAddress remoteAddress = info.remoteAddress();
+-    if (!allowInsecurePorts) {
+-      if (LOG.isDebugEnabled()) {
+-        LOG.debug("Will not allow connections from unprivileged ports. " +
+-            "Checking for valid client port...");
+-      }
+-      if (remoteAddress instanceof InetSocketAddress) {
+-        InetSocketAddress inetRemoteAddress = (InetSocketAddress) remoteAddress;
+-        if (inetRemoteAddress.getPort() > 1023) {
+-          LOG.warn("Connection attempted from '" + inetRemoteAddress + "' "
+-              + "which is an unprivileged port. Rejecting connection.");
+-          sendRejectedReply(call, remoteAddress, ctx);
+-          return;
+-        } else {
+-          if (LOG.isDebugEnabled()) {
+-            LOG.debug("Accepting connection from '" + remoteAddress + "'");
+-          }
+-        }
+-      } else {
+-        LOG.warn("Could not determine remote port of socket address '" +
+-            remoteAddress + "'. Rejecting connection.");
+-        sendRejectedReply(call, remoteAddress, ctx);
+-        return;
+-      }
+-    }
+-    
+     if (LOG.isTraceEnabled()) {
+       LOG.trace(program + " procedure #" + call.getProcedure());
+     }
+@@ -191,6 +166,29 @@ public void messageReceived(ChannelHandlerContext ctx, MessageEvent e)
+     handleInternal(ctx, info);
+   }
+   
++  public boolean doPortMonitoring(SocketAddress remoteAddress) {
++    if (!allowInsecurePorts) {
++      if (LOG.isTraceEnabled()) {
++        LOG.trace("Will not allow connections from unprivileged ports. "
++            + "Checking for valid client port...");
++      }
++
++      if (remoteAddress instanceof InetSocketAddress) {
++        InetSocketAddress inetRemoteAddress = (InetSocketAddress) remoteAddress;
++        if (inetRemoteAddress.getPort() > 1023) {
++          LOG.warn("Connection attempted from '" + inetRemoteAddress + "' "
++              + "which is an unprivileged port. Rejecting connection.");
++          return false;
++        }
++      } else {
++        LOG.warn("Could not determine remote port of socket address '"
++            + remoteAddress + "'. Rejecting connection.");
++        return false;
++      }
++    }
++    return true;
++  }
++  
+   private void sendAcceptedReply(RpcCall call, SocketAddress remoteAddress,
+       AcceptState acceptState, ChannelHandlerContext ctx) {
+     RpcAcceptedReply reply = RpcAcceptedReply.getInstance(call.getXid(),
+@@ -208,7 +206,7 @@ private void sendAcceptedReply(RpcCall call, SocketAddress remoteAddress,
+     RpcUtil.sendRpcResponse(ctx, rsp);
+   }
+   
+-  private static void sendRejectedReply(RpcCall call,
++  protected static void sendRejectedReply(RpcCall call,
+       SocketAddress remoteAddress, ChannelHandlerContext ctx) {
+     XDR out = new XDR();
+     RpcDeniedReply reply = new RpcDeniedReply(call.getXid(),
+diff --git a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/oncrpc/TestFrameDecoder.java b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/oncrpc/TestFrameDecoder.java
+index 9c649bc..9d0fe0f 100644
+--- a/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/oncrpc/TestFrameDecoder.java
++++ b/hadoop-common-project/hadoop-nfs/src/test/java/org/apache/hadoop/oncrpc/TestFrameDecoder.java
+@@ -66,6 +66,18 @@ protected TestRpcProgram(String program, String host, int port,
+ 
+     @Override
+     protected void handleInternal(ChannelHandlerContext ctx, RpcInfo info) {
++      // This is just like what's done in RpcProgramMountd#handleInternal and
++      // RpcProgramNfs3#handleInternal.
++      RpcCall rpcCall = (RpcCall) info.header();
++      final int procedure = rpcCall.getProcedure();
++      if (procedure != 0) {
++        boolean portMonitorSuccess = doPortMonitoring(info.remoteAddress());
++        if (!portMonitorSuccess) {
++          sendRejectedReply(rpcCall, info.remoteAddress(), ctx);
++          return;
++        }
++      }
++      
+       resultSize = info.data().readableBytes();
+       RpcAcceptedReply reply = RpcAcceptedReply.getAcceptInstance(1234,
+           new VerifierNone());
+@@ -190,6 +202,20 @@ public void testUnprivilegedPort() {
+ 
+     // Verify the server rejected the request.
+     assertEquals(0, resultSize);
++    
++    // Ensure that the NULL procedure does in fact succeed.
++    xdrOut = new XDR();
++    createPortmapXDRheader(xdrOut, 0);
++    int headerSize = xdrOut.size();
++    buffer = new byte[bufsize];
++    xdrOut.writeFixedOpaque(buffer);
++    int requestSize = xdrOut.size() - headerSize;
++    
++    // Send the request to the server
++    testRequest(xdrOut, serverPort);
++
++    // Verify the server did not reject the request.
++    assertEquals(requestSize, resultSize);
+   }
+   
+   private static int startRpcServer(boolean allowInsecurePorts) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java
+index 616d512..d1543b8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfigKeys.java
+@@ -51,7 +51,8 @@
+   public static final String DFS_NFS_KEYTAB_FILE_KEY = "nfs.keytab.file";
+   public static final String DFS_NFS_KERBEROS_PRINCIPAL_KEY = "nfs.kerberos.principal";
+   public static final String DFS_NFS_REGISTRATION_PORT_KEY = "nfs.registration.port";
+-  public static final int    DFS_NFS_REGISTRATION_PORT_DEFAULT = 40; // Currently unassigned.
+-  public static final String  DFS_NFS_ALLOW_INSECURE_PORTS_KEY = "nfs.allow.insecure.ports";
+-  public static final boolean DFS_NFS_ALLOW_INSECURE_PORTS_DEFAULT = true;
++  public static final int DFS_NFS_REGISTRATION_PORT_DEFAULT = 40; // Currently unassigned.
++  public static final String DFS_NFS_PORT_MONITORING_DISABLED_KEY = "nfs.port.monitoring.disabled";
++  public static final boolean DFS_NFS_PORT_MONITORING_DISABLED_DEFAULT = true;
++
+ }
+\ No newline at end of file
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
+index c831c14..5dc53d8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/conf/NfsConfiguration.java
+@@ -49,6 +49,8 @@ private static void addDeprecatedKeys() {
+         new DeprecationDelta("dfs.nfs3.stream.timeout",
+             NfsConfigKeys.DFS_NFS_STREAM_TIMEOUT_KEY),
+         new DeprecationDelta("dfs.nfs3.export.point",
+-            NfsConfigKeys.DFS_NFS_EXPORT_POINT_KEY) });
++            NfsConfigKeys.DFS_NFS_EXPORT_POINT_KEY),
++        new DeprecationDelta("nfs.allow.insecure.ports",
++            NfsConfigKeys.DFS_NFS_PORT_MONITORING_DISABLED_KEY) });
+   }
+ }
+\ No newline at end of file
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
+index b89fc03..9fbab24 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/mount/RpcProgramMountd.java
+@@ -194,7 +194,13 @@ public void handleInternal(ChannelHandlerContext ctx, RpcInfo info) {
+     if (mntproc == MNTPROC.NULL) {
+       out = nullOp(out, xid, client);
+     } else if (mntproc == MNTPROC.MNT) {
+-      out = mnt(xdr, out, xid, client);
++      // Only do port monitoring for MNT
++      if (!doPortMonitoring(info.remoteAddress())) {
++        out = MountResponse.writeMNTResponse(Nfs3Status.NFS3ERR_ACCES, out,
++            xid, null);
++      } else {
++        out = mnt(xdr, out, xid, client);
++      }
+     } else if (mntproc == MNTPROC.DUMP) {
+       out = dump(out, xid, client);
+     } else if (mntproc == MNTPROC.UMNT) {      
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3.java
+index 0eb641a..3daf7bb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/Nfs3.java
+@@ -61,8 +61,8 @@ static void startService(String[] args,
+     StringUtils.startupShutdownMessage(Nfs3.class, args, LOG);
+     NfsConfiguration conf = new NfsConfiguration();
+     boolean allowInsecurePorts = conf.getBoolean(
+-        NfsConfigKeys.DFS_NFS_ALLOW_INSECURE_PORTS_KEY,
+-        NfsConfigKeys.DFS_NFS_ALLOW_INSECURE_PORTS_DEFAULT);
++        NfsConfigKeys.DFS_NFS_PORT_MONITORING_DISABLED_KEY,
++        NfsConfigKeys.DFS_NFS_PORT_MONITORING_DISABLED_DEFAULT);
+     final Nfs3 nfsServer = new Nfs3(conf, registrationSocket,
+         allowInsecurePorts);
+     nfsServer.startServiceInternal(true);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+index 7fd92d1..4fc14ba 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/main/java/org/apache/hadoop/hdfs/nfs/nfs3/RpcProgramNfs3.java
+@@ -23,6 +23,7 @@
+ import java.net.DatagramSocket;
+ import java.net.InetAddress;
+ import java.net.InetSocketAddress;
++import java.net.SocketAddress;
+ import java.nio.ByteBuffer;
+ import java.util.EnumSet;
+ 
+@@ -230,15 +231,15 @@ public NFS3Response nullProcedure() {
+   }
+ 
+   @Override
+-  public GETATTR3Response getattr(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public GETATTR3Response getattr(XDR xdr, RpcInfo info) {
+     GETATTR3Response response = new GETATTR3Response(Nfs3Status.NFS3_OK);
+     
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(info, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+     
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -322,9 +323,9 @@ private void setattrInternal(DFSClient dfsClient, String fileIdPath,
+   }
+ 
+   @Override
+-  public SETATTR3Response setattr(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public SETATTR3Response setattr(XDR xdr, RpcInfo info) {
+     SETATTR3Response response = new SETATTR3Response(Nfs3Status.NFS3_OK);
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -370,7 +371,7 @@ public SETATTR3Response setattr(XDR xdr, SecurityHandler securityHandler,
+       }
+       
+       // check the write access privilege
+-      if (!checkAccessPrivilege(client, AccessPrivilege.READ_WRITE)) {
++      if (!checkAccessPrivilege(info, AccessPrivilege.READ_WRITE)) {
+         return new SETATTR3Response(Nfs3Status.NFS3ERR_ACCES, new WccData(
+             preOpWcc, preOpAttr));
+       }
+@@ -398,15 +399,15 @@ public SETATTR3Response setattr(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public LOOKUP3Response lookup(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public LOOKUP3Response lookup(XDR xdr, RpcInfo info) {
+     LOOKUP3Response response = new LOOKUP3Response(Nfs3Status.NFS3_OK);
+     
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(info, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+     
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -460,15 +461,15 @@ public LOOKUP3Response lookup(XDR xdr, SecurityHandler securityHandler,
+   }
+   
+   @Override
+-  public ACCESS3Response access(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public ACCESS3Response access(XDR xdr, RpcInfo info) {
+     ACCESS3Response response = new ACCESS3Response(Nfs3Status.NFS3_OK);
+     
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(info, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+     
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -519,15 +520,16 @@ public ACCESS3Response access(XDR xdr, SecurityHandler securityHandler,
+     }
+   }
+ 
+-  public READLINK3Response readlink(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  @Override
++  public READLINK3Response readlink(XDR xdr, RpcInfo info) {
+     READLINK3Response response = new READLINK3Response(Nfs3Status.NFS3_OK);
+ 
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(info, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+ 
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -591,12 +593,19 @@ public READLINK3Response readlink(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public READ3Response read(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public READ3Response read(XDR xdr, RpcInfo info) {
++    SecurityHandler securityHandler = getSecurityHandler(info);
++    SocketAddress remoteAddress = info.remoteAddress();
++    return read(xdr, securityHandler, remoteAddress);
++  }
++  
++  @VisibleForTesting
++  READ3Response read(XDR xdr, SecurityHandler securityHandler,
++      SocketAddress remoteAddress) {
+     READ3Response response = new READ3Response(Nfs3Status.NFS3_OK);
+     final String userName = securityHandler.getUser();
+     
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(remoteAddress, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+@@ -715,8 +724,17 @@ public READ3Response read(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public WRITE3Response write(XDR xdr, Channel channel, int xid,
+-      SecurityHandler securityHandler, InetAddress client) {
++  public WRITE3Response write(XDR xdr, RpcInfo info) {
++    SecurityHandler securityHandler = getSecurityHandler(info);
++    RpcCall rpcCall = (RpcCall) info.header();
++    int xid = rpcCall.getXid();
++    SocketAddress remoteAddress = info.remoteAddress();
++    return write(xdr, info.channel(), xid, securityHandler, remoteAddress);
++  }
++  
++  @VisibleForTesting
++  WRITE3Response write(XDR xdr, Channel channel, int xid,
++      SecurityHandler securityHandler, SocketAddress remoteAddress) {
+     WRITE3Response response = new WRITE3Response(Nfs3Status.NFS3_OK);
+ 
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+@@ -758,7 +776,7 @@ public WRITE3Response write(XDR xdr, Channel channel, int xid,
+         return new WRITE3Response(Nfs3Status.NFS3ERR_STALE);
+       }
+       
+-      if (!checkAccessPrivilege(client, AccessPrivilege.READ_WRITE)) {
++      if (!checkAccessPrivilege(remoteAddress, AccessPrivilege.READ_WRITE)) {
+         return new WRITE3Response(Nfs3Status.NFS3ERR_ACCES, new WccData(
+             Nfs3Utils.getWccAttr(preOpAttr), preOpAttr), 0, stableHow,
+             Nfs3Constant.WRITE_COMMIT_VERF);
+@@ -791,8 +809,15 @@ public WRITE3Response write(XDR xdr, Channel channel, int xid,
+   }
+ 
+   @Override
+-  public CREATE3Response create(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public CREATE3Response create(XDR xdr, RpcInfo info) {
++    SecurityHandler securityHandler = getSecurityHandler(info);
++    SocketAddress remoteAddress = info.remoteAddress();
++    return create(xdr, securityHandler, remoteAddress);
++  }
++  
++  @VisibleForTesting
++  CREATE3Response create(XDR xdr, SecurityHandler securityHandler,
++      SocketAddress remoteAddress) {
+     CREATE3Response response = new CREATE3Response(Nfs3Status.NFS3_OK);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+@@ -838,7 +863,7 @@ public CREATE3Response create(XDR xdr, SecurityHandler securityHandler,
+         return new CREATE3Response(Nfs3Status.NFS3ERR_STALE);
+       }
+       
+-      if (!checkAccessPrivilege(client, AccessPrivilege.READ_WRITE)) {
++      if (!checkAccessPrivilege(remoteAddress, AccessPrivilege.READ_WRITE)) {
+         return new CREATE3Response(Nfs3Status.NFS3ERR_ACCES, null,
+             preOpDirAttr, new WccData(Nfs3Utils.getWccAttr(preOpDirAttr),
+                 preOpDirAttr));
+@@ -922,9 +947,9 @@ public CREATE3Response create(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public MKDIR3Response mkdir(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public MKDIR3Response mkdir(XDR xdr, RpcInfo info) {
+     MKDIR3Response response = new MKDIR3Response(Nfs3Status.NFS3_OK);
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -960,7 +985,7 @@ public MKDIR3Response mkdir(XDR xdr, SecurityHandler securityHandler,
+         return new MKDIR3Response(Nfs3Status.NFS3ERR_STALE);
+       }
+ 
+-      if (!checkAccessPrivilege(client, AccessPrivilege.READ_WRITE)) {
++      if (!checkAccessPrivilege(info, AccessPrivilege.READ_WRITE)) {
+         return new MKDIR3Response(Nfs3Status.NFS3ERR_ACCES, null, preOpDirAttr,
+             new WccData(Nfs3Utils.getWccAttr(preOpDirAttr), preOpDirAttr));
+       }
+@@ -1012,15 +1037,15 @@ public MKDIR3Response mkdir(XDR xdr, SecurityHandler securityHandler,
+     }
+   }
+ 
+-  public READDIR3Response mknod(XDR xdr,
+-      SecurityHandler securityHandler, InetAddress client) {
++  @Override
++  public READDIR3Response mknod(XDR xdr, RpcInfo info) {
+     return new READDIR3Response(Nfs3Status.NFS3ERR_NOTSUPP);
+   }
+   
+   @Override
+-  public REMOVE3Response remove(XDR xdr,
+-      SecurityHandler securityHandler, InetAddress client) {
++  public REMOVE3Response remove(XDR xdr, RpcInfo info) {
+     REMOVE3Response response = new REMOVE3Response(Nfs3Status.NFS3_OK);
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -1093,9 +1118,9 @@ public REMOVE3Response remove(XDR xdr,
+   }
+ 
+   @Override
+-  public RMDIR3Response rmdir(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public RMDIR3Response rmdir(XDR xdr, RpcInfo info) {
+     RMDIR3Response response = new RMDIR3Response(Nfs3Status.NFS3_OK);
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -1129,7 +1154,7 @@ public RMDIR3Response rmdir(XDR xdr, SecurityHandler securityHandler,
+       
+       WccData errWcc = new WccData(Nfs3Utils.getWccAttr(preOpDirAttr),
+           preOpDirAttr);
+-      if (!checkAccessPrivilege(client, AccessPrivilege.READ_WRITE)) {
++      if (!checkAccessPrivilege(info, AccessPrivilege.READ_WRITE)) {
+         return new RMDIR3Response(Nfs3Status.NFS3ERR_ACCES, errWcc); 
+       }
+ 
+@@ -1175,9 +1200,9 @@ public RMDIR3Response rmdir(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public RENAME3Response rename(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public RENAME3Response rename(XDR xdr, RpcInfo info) {
+     RENAME3Response response = new RENAME3Response(Nfs3Status.NFS3_OK);
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -1221,7 +1246,7 @@ public RENAME3Response rename(XDR xdr, SecurityHandler securityHandler,
+         return new RENAME3Response(Nfs3Status.NFS3ERR_STALE);
+       }
+       
+-      if (!checkAccessPrivilege(client, AccessPrivilege.READ_WRITE)) {
++      if (!checkAccessPrivilege(info, AccessPrivilege.READ_WRITE)) {
+         WccData fromWcc = new WccData(Nfs3Utils.getWccAttr(fromPreOpAttr),
+             fromPreOpAttr);
+         WccData toWcc = new WccData(Nfs3Utils.getWccAttr(toPreOpAttr),
+@@ -1263,15 +1288,15 @@ public RENAME3Response rename(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public SYMLINK3Response symlink(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public SYMLINK3Response symlink(XDR xdr, RpcInfo info) {
+     SYMLINK3Response response = new SYMLINK3Response(Nfs3Status.NFS3_OK);
+ 
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_WRITE)) {
++    if (!checkAccessPrivilege(info, AccessPrivilege.READ_WRITE)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+ 
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -1322,8 +1347,8 @@ public SYMLINK3Response symlink(XDR xdr, SecurityHandler securityHandler,
+     }
+   }
+ 
+-  public READDIR3Response link(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  @Override
++  public READDIR3Response link(XDR xdr, RpcInfo info) {
+     return new READDIR3Response(Nfs3Status.NFS3ERR_NOTSUPP);
+   }
+ 
+@@ -1351,11 +1376,16 @@ private DirectoryListing listPaths(DFSClient dfsClient, String dirFileIdPath,
+   }
+   
+   @Override
++  public READDIR3Response readdir(XDR xdr, RpcInfo info) {
++    SecurityHandler securityHandler = getSecurityHandler(info);
++    SocketAddress remoteAddress = info.remoteAddress();
++    return readdir(xdr, securityHandler, remoteAddress);
++  }
+   public READDIR3Response readdir(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++      SocketAddress remoteAddress) {
+     READDIR3Response response = new READDIR3Response(Nfs3Status.NFS3_OK);
+     
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(remoteAddress, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+@@ -1491,9 +1521,17 @@ public READDIR3Response readdir(XDR xdr, SecurityHandler securityHandler,
+         dirStatus.getModificationTime(), dirList);
+   }
+ 
+-  public READDIRPLUS3Response readdirplus(XDR xdr,
+-      SecurityHandler securityHandler, InetAddress client) {
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++  @Override
++  public READDIRPLUS3Response readdirplus(XDR xdr, RpcInfo info) {
++    SecurityHandler securityHandler = getSecurityHandler(info);
++    SocketAddress remoteAddress = info.remoteAddress();
++    return readdirplus(xdr, securityHandler, remoteAddress);
++  }
++
++  @VisibleForTesting
++  READDIRPLUS3Response readdirplus(XDR xdr, SecurityHandler securityHandler,
++      SocketAddress remoteAddress) {
++    if (!checkAccessPrivilege(remoteAddress, AccessPrivilege.READ_ONLY)) {
+       return new READDIRPLUS3Response(Nfs3Status.NFS3ERR_ACCES);
+     }
+     
+@@ -1643,15 +1681,15 @@ public READDIRPLUS3Response readdirplus(XDR xdr,
+   }
+   
+   @Override
+-  public FSSTAT3Response fsstat(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public FSSTAT3Response fsstat(XDR xdr, RpcInfo info) {
+     FSSTAT3Response response = new FSSTAT3Response(Nfs3Status.NFS3_OK);
+     
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(info, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+     
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -1711,15 +1749,15 @@ public FSSTAT3Response fsstat(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public FSINFO3Response fsinfo(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public FSINFO3Response fsinfo(XDR xdr, RpcInfo info) {
+     FSINFO3Response response = new FSINFO3Response(Nfs3Status.NFS3_OK);
+     
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(info, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+     
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -1769,15 +1807,15 @@ public FSINFO3Response fsinfo(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public PATHCONF3Response pathconf(XDR xdr, SecurityHandler securityHandler,
+-      InetAddress client) {
++  public PATHCONF3Response pathconf(XDR xdr, RpcInfo info) {
+     PATHCONF3Response response = new PATHCONF3Response(Nfs3Status.NFS3_OK);
+     
+-    if (!checkAccessPrivilege(client, AccessPrivilege.READ_ONLY)) {
++    if (!checkAccessPrivilege(info, AccessPrivilege.READ_ONLY)) {
+       response.setStatus(Nfs3Status.NFS3ERR_ACCES);
+       return response;
+     }
+     
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -1816,9 +1854,11 @@ public PATHCONF3Response pathconf(XDR xdr, SecurityHandler securityHandler,
+   }
+ 
+   @Override
+-  public COMMIT3Response commit(XDR xdr, Channel channel, int xid,
+-      SecurityHandler securityHandler, InetAddress client) {
++  public COMMIT3Response commit(XDR xdr, RpcInfo info) {
++    //Channel channel, int xid,
++    //    SecurityHandler securityHandler, InetAddress client) {
+     COMMIT3Response response = new COMMIT3Response(Nfs3Status.NFS3_OK);
++    SecurityHandler securityHandler = getSecurityHandler(info);
+     DFSClient dfsClient = clientCache.getDfsClient(securityHandler.getUser());
+     if (dfsClient == null) {
+       response.setStatus(Nfs3Status.NFS3ERR_SERVERFAULT);
+@@ -1849,7 +1889,7 @@ public COMMIT3Response commit(XDR xdr, Channel channel, int xid,
+         return new COMMIT3Response(Nfs3Status.NFS3ERR_STALE);
+       }
+       
+-      if (!checkAccessPrivilege(client, AccessPrivilege.READ_WRITE)) {
++      if (!checkAccessPrivilege(info, AccessPrivilege.READ_WRITE)) {
+         return new COMMIT3Response(Nfs3Status.NFS3ERR_ACCES, new WccData(
+             Nfs3Utils.getWccAttr(preOpAttr), preOpAttr),
+             Nfs3Constant.WRITE_COMMIT_VERF);
+@@ -1859,8 +1899,10 @@ public COMMIT3Response commit(XDR xdr, Channel channel, int xid,
+           : (request.getOffset() + request.getCount());
+       
+       // Insert commit as an async request
+-      writeManager.handleCommit(dfsClient, handle, commitOffset, channel, xid,
+-          preOpAttr);
++      RpcCall rpcCall = (RpcCall) info.header();
++      int xid = rpcCall.getXid();
++      writeManager.handleCommit(dfsClient, handle, commitOffset,
++          info.channel(), xid, preOpAttr);
+       return null;
+     } catch (IOException e) {
+       LOG.warn("Exception ", e);
+@@ -1885,11 +1927,16 @@ private SecurityHandler getSecurityHandler(Credentials credentials,
+       return null;
+     }
+   }
++
++  private SecurityHandler getSecurityHandler(RpcInfo info) {
++    RpcCall rpcCall = (RpcCall) info.header();
++    return getSecurityHandler(rpcCall.getCredential(), rpcCall.getVerifier());
++  }
+   
+   @Override
+   public void handleInternal(ChannelHandlerContext ctx, RpcInfo info) {
+     RpcCall rpcCall = (RpcCall) info.header();
+-    final NFSPROC3 nfsproc3 = NFSPROC3.fromValue(rpcCall.getProcedure());
++    final NFSPROC3 nfsproc3 = NFSPROC3.fromValue(rpcCall.getProcedure());    
+     int xid = rpcCall.getXid();
+     byte[] data = new byte[info.data().readableBytes()];
+     info.data().readBytes(data);
+@@ -1897,9 +1944,8 @@ public void handleInternal(ChannelHandlerContext ctx, RpcInfo info) {
+     XDR out = new XDR();
+     InetAddress client = ((InetSocketAddress) info.remoteAddress())
+         .getAddress();
+-    Channel channel = info.channel();
+-
+     Credentials credentials = rpcCall.getCredential();
++    
+     // Ignore auth only for NFSPROC3_NULL, especially for Linux clients.
+     if (nfsproc3 != NFSPROC3.NULL) {
+       if (credentials.getFlavor() != AuthFlavor.AUTH_SYS
+@@ -1937,27 +1983,24 @@ public void handleInternal(ChannelHandlerContext ctx, RpcInfo info) {
+       }
+     }
+     
+-    SecurityHandler securityHandler = getSecurityHandler(credentials,
+-        rpcCall.getVerifier());
+-    
+     NFS3Response response = null;
+     if (nfsproc3 == NFSPROC3.NULL) {
+       response = nullProcedure();
+     } else if (nfsproc3 == NFSPROC3.GETATTR) {
+-      response = getattr(xdr, securityHandler, client);
++      response = getattr(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.SETATTR) {
+-      response = setattr(xdr, securityHandler, client);
++      response = setattr(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.LOOKUP) {
+-      response = lookup(xdr, securityHandler, client);
++      response = lookup(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.ACCESS) {
+-      response = access(xdr, securityHandler, client);
++      response = access(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.READLINK) {
+-      response = readlink(xdr, securityHandler, client);
++      response = readlink(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.READ) {
+       if (LOG.isDebugEnabled()) {
+           LOG.debug(Nfs3Utils.READ_RPC_START + xid);
+       }    
+-      response = read(xdr, securityHandler, client);
++      response = read(xdr, info);
+       if (LOG.isDebugEnabled() && (nfsproc3 == NFSPROC3.READ)) {
+         LOG.debug(Nfs3Utils.READ_RPC_END + xid);
+       }
+@@ -1965,36 +2008,36 @@ public void handleInternal(ChannelHandlerContext ctx, RpcInfo info) {
+       if (LOG.isDebugEnabled()) {
+           LOG.debug(Nfs3Utils.WRITE_RPC_START + xid);
+       }
+-      response = write(xdr, channel, xid, securityHandler, client);
++      response = write(xdr, info);
+       // Write end debug trace is in Nfs3Utils.writeChannel
+     } else if (nfsproc3 == NFSPROC3.CREATE) {
+-      response = create(xdr, securityHandler, client);
++      response = create(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.MKDIR) {      
+-      response = mkdir(xdr, securityHandler, client);
++      response = mkdir(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.SYMLINK) {
+-      response = symlink(xdr, securityHandler, client);
++      response = symlink(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.MKNOD) {
+-      response = mknod(xdr, securityHandler, client);
++      response = mknod(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.REMOVE) {
+-      response = remove(xdr, securityHandler, client);
++      response = remove(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.RMDIR) {
+-      response = rmdir(xdr, securityHandler, client);
++      response = rmdir(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.RENAME) {
+-      response = rename(xdr, securityHandler, client);
++      response = rename(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.LINK) {
+-      response = link(xdr, securityHandler, client);
++      response = link(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.READDIR) {
+-      response = readdir(xdr, securityHandler, client);
++      response = readdir(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.READDIRPLUS) {
+-      response = readdirplus(xdr, securityHandler, client);
++      response = readdirplus(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.FSSTAT) {
+-      response = fsstat(xdr, securityHandler, client);
++      response = fsstat(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.FSINFO) {
+-      response = fsinfo(xdr, securityHandler, client);
++      response = fsinfo(xdr, info);
+     } else if (nfsproc3 == NFSPROC3.PATHCONF) {
+-      response = pathconf(xdr, securityHandler, client);
++      response = pathconf(xdr,info);
+     } else if (nfsproc3 == NFSPROC3.COMMIT) {
+-      response = commit(xdr, channel, xid, securityHandler, client);
++      response = commit(xdr, info);
+     } else {
+       // Invalid procedure
+       RpcAcceptedReply.getInstance(xid,
+@@ -2027,8 +2070,21 @@ protected boolean isIdempotent(RpcCall call) {
+     return nfsproc3 == null || nfsproc3.isIdempotent();
+   }
+   
+-  private boolean checkAccessPrivilege(final InetAddress client,
++  private boolean checkAccessPrivilege(RpcInfo info,
++      final AccessPrivilege expected) {
++    SocketAddress remoteAddress = info.remoteAddress();
++    return checkAccessPrivilege(remoteAddress, expected);
++  }
++
++  private boolean checkAccessPrivilege(SocketAddress remoteAddress,
+       final AccessPrivilege expected) {
++    // Port monitoring
++    if (!doPortMonitoring(remoteAddress)) {
++      return false;
++    }
++    
++    // Check export table
++    InetAddress client = ((InetSocketAddress) remoteAddress).getAddress();
+     AccessPrivilege access = exports.getAccessPrivilege(client);
+     if (access == AccessPrivilege.NONE) {
+       return false;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/TestReaddir.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/TestReaddir.java
+deleted file mode 100644
+index d644742..0000000
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/TestReaddir.java
++++ /dev/null
+@@ -1,208 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-
+-package org.apache.hadoop.hdfs.nfs;
+-
+-import static org.junit.Assert.assertTrue;
+-
+-import java.io.IOException;
+-import java.net.InetAddress;
+-import java.util.Arrays;
+-import java.util.List;
+-
+-import org.apache.hadoop.fs.Path;
+-import org.apache.hadoop.hdfs.DFSTestUtil;
+-import org.apache.hadoop.hdfs.DistributedFileSystem;
+-import org.apache.hadoop.hdfs.MiniDFSCluster;
+-import org.apache.hadoop.hdfs.nfs.conf.NfsConfiguration;
+-import org.apache.hadoop.hdfs.nfs.nfs3.Nfs3;
+-import org.apache.hadoop.hdfs.nfs.nfs3.RpcProgramNfs3;
+-import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
+-import org.apache.hadoop.hdfs.server.namenode.NameNode;
+-import org.apache.hadoop.nfs.nfs3.FileHandle;
+-import org.apache.hadoop.nfs.nfs3.response.READDIR3Response;
+-import org.apache.hadoop.nfs.nfs3.response.READDIR3Response.Entry3;
+-import org.apache.hadoop.nfs.nfs3.response.READDIRPLUS3Response;
+-import org.apache.hadoop.nfs.nfs3.response.READDIRPLUS3Response.EntryPlus3;
+-import org.apache.hadoop.oncrpc.XDR;
+-import org.apache.hadoop.oncrpc.security.SecurityHandler;
+-import org.apache.hadoop.security.UserGroupInformation;
+-import org.apache.hadoop.security.authorize.ProxyUsers;
+-import org.apache.hadoop.util.StringUtils;
+-import org.junit.AfterClass;
+-import org.junit.Before;
+-import org.junit.BeforeClass;
+-import org.junit.Test;
+-import org.mockito.Mockito;
+-
+-/**
+- * Test READDIR and READDIRPLUS request with zero, nonzero cookies
+- */
+-public class TestReaddir {
+-
+-  static NfsConfiguration config = new NfsConfiguration();
+-  static MiniDFSCluster cluster = null;
+-  static DistributedFileSystem hdfs;
+-  static NameNode nn;
+-  static RpcProgramNfs3 nfsd;
+-  static String testdir = "/tmp";
+-  static SecurityHandler securityHandler;
+-
+-  @BeforeClass
+-  public static void setup() throws Exception {
+-    String currentUser = System.getProperty("user.name");
+-    config.set(
+-            ProxyUsers.getProxySuperuserGroupConfKey(currentUser),
+-            "*");
+-    config.set(
+-            ProxyUsers.getProxySuperuserIpConfKey(currentUser),
+-            "*");
+-    ProxyUsers.refreshSuperUserGroupsConfiguration(config);
+-    cluster = new MiniDFSCluster.Builder(config).numDataNodes(1).build();
+-    cluster.waitActive();
+-    hdfs = cluster.getFileSystem();
+-    nn = cluster.getNameNode();
+-
+-    // Use emphral port in case tests are running in parallel
+-    config.setInt("nfs3.mountd.port", 0);
+-    config.setInt("nfs3.server.port", 0);
+-    
+-    // Start nfs
+-    Nfs3 nfs3 = new Nfs3(config);
+-    nfs3.startServiceInternal(false);
+-
+-    nfsd = (RpcProgramNfs3) nfs3.getRpcProgram();
+-
+-    securityHandler = Mockito.mock(SecurityHandler.class);
+-    Mockito.when(securityHandler.getUser()).thenReturn(
+-        System.getProperty("user.name"));
+-  }
+-
+-  @AfterClass
+-  public static void shutdown() throws Exception {
+-    if (cluster != null) {
+-      cluster.shutdown();
+-    }
+-  }
+-
+-  @Before
+-  public void createFiles() throws IllegalArgumentException, IOException {
+-    hdfs.delete(new Path(testdir), true);
+-    hdfs.mkdirs(new Path(testdir));
+-    DFSTestUtil.createFile(hdfs, new Path(testdir + "/f1"), 0, (short) 1, 0);
+-    DFSTestUtil.createFile(hdfs, new Path(testdir + "/f2"), 0, (short) 1, 0);
+-    DFSTestUtil.createFile(hdfs, new Path(testdir + "/f3"), 0, (short) 1, 0);
+-  }
+-  
+-  @Test
+-  public void testReaddirBasic() throws IOException {
+-    // Get inodeId of /tmp
+-    HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
+-    long dirId = status.getFileId();
+-
+-    // Create related part of the XDR request
+-    XDR xdr_req = new XDR();
+-    FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeLongAsHyper(0); // cookie
+-    xdr_req.writeLongAsHyper(0); // verifier
+-    xdr_req.writeInt(100); // count
+-
+-    READDIR3Response response = nfsd.readdir(xdr_req.asReadOnlyWrap(),
+-        securityHandler, InetAddress.getLocalHost());
+-    List<Entry3> dirents = response.getDirList().getEntries();
+-    assertTrue(dirents.size() == 5); // inculding dot, dotdot
+-
+-    // Test start listing from f2
+-    status = nn.getRpcServer().getFileInfo(testdir + "/f2");
+-    long f2Id = status.getFileId();
+-
+-    // Create related part of the XDR request
+-    xdr_req = new XDR();
+-    handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeLongAsHyper(f2Id); // cookie
+-    xdr_req.writeLongAsHyper(0); // verifier
+-    xdr_req.writeInt(100); // count
+-
+-    response = nfsd.readdir(xdr_req.asReadOnlyWrap(), securityHandler,
+-        InetAddress.getLocalHost());
+-    dirents = response.getDirList().getEntries();
+-    assertTrue(dirents.size() == 1);
+-    Entry3 entry = dirents.get(0);
+-    assertTrue(entry.getName().equals("f3"));
+-
+-    // When the cookie is deleted, list starts over no including dot, dotdot
+-    hdfs.delete(new Path(testdir + "/f2"), false);
+-
+-    response = nfsd.readdir(xdr_req.asReadOnlyWrap(), securityHandler,
+-        InetAddress.getLocalHost());
+-    dirents = response.getDirList().getEntries();
+-    assertTrue(dirents.size() == 2); // No dot, dotdot
+-  }
+-  
+-  @Test
+-  // Test readdirplus
+-  public void testReaddirPlus() throws IOException {
+-    // Get inodeId of /tmp
+-    HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
+-    long dirId = status.getFileId();
+-    
+-    // Create related part of the XDR request
+-    XDR xdr_req = new XDR();
+-    FileHandle handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeLongAsHyper(0); // cookie
+-    xdr_req.writeLongAsHyper(0); // verifier
+-    xdr_req.writeInt(100); // dirCount
+-    xdr_req.writeInt(1000); // maxCount
+-
+-    READDIRPLUS3Response responsePlus = nfsd.readdirplus(
+-        xdr_req.asReadOnlyWrap(), securityHandler, InetAddress.getLocalHost());
+-    List<EntryPlus3> direntPlus = responsePlus.getDirListPlus().getEntries();
+-    assertTrue(direntPlus.size() == 5); // including dot, dotdot
+-
+-    // Test start listing from f2
+-    status = nn.getRpcServer().getFileInfo(testdir + "/f2");
+-    long f2Id = status.getFileId();
+-
+-    // Create related part of the XDR request
+-    xdr_req = new XDR();
+-    handle = new FileHandle(dirId);
+-    handle.serialize(xdr_req);
+-    xdr_req.writeLongAsHyper(f2Id); // cookie
+-    xdr_req.writeLongAsHyper(0); // verifier
+-    xdr_req.writeInt(100); // dirCount
+-    xdr_req.writeInt(1000); // maxCount
+-
+-    responsePlus = nfsd.readdirplus(xdr_req.asReadOnlyWrap(), securityHandler,
+-        InetAddress.getLocalHost());
+-    direntPlus = responsePlus.getDirListPlus().getEntries();
+-    assertTrue(direntPlus.size() == 1);
+-    EntryPlus3 entryPlus = direntPlus.get(0);
+-    assertTrue(entryPlus.getName().equals("f3"));
+-
+-    // When the cookie is deleted, list starts over no including dot, dotdot
+-    hdfs.delete(new Path(testdir + "/f2"), false);
+-
+-    responsePlus = nfsd.readdirplus(xdr_req.asReadOnlyWrap(), securityHandler,
+-        InetAddress.getLocalHost());
+-    direntPlus = responsePlus.getDirListPlus().getEntries();
+-    assertTrue(direntPlus.size() == 2); // No dot, dotdot
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java
+new file mode 100644
+index 0000000..89f2ca9
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestReaddir.java
+@@ -0,0 +1,213 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.hadoop.hdfs.nfs.nfs3;
++
++import static org.junit.Assert.assertTrue;
++
++import java.io.IOException;
++import java.net.InetAddress;
++import java.net.InetSocketAddress;
++import java.net.SocketAddress;
++import java.util.List;
++
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hdfs.DFSTestUtil;
++import org.apache.hadoop.hdfs.DistributedFileSystem;
++import org.apache.hadoop.hdfs.MiniDFSCluster;
++import org.apache.hadoop.hdfs.nfs.conf.NfsConfiguration;
++import org.apache.hadoop.hdfs.nfs.nfs3.Nfs3;
++import org.apache.hadoop.hdfs.nfs.nfs3.RpcProgramNfs3;
++import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
++import org.apache.hadoop.hdfs.server.namenode.NameNode;
++import org.apache.hadoop.nfs.nfs3.FileHandle;
++import org.apache.hadoop.nfs.nfs3.response.READDIR3Response;
++import org.apache.hadoop.nfs.nfs3.response.READDIR3Response.Entry3;
++import org.apache.hadoop.nfs.nfs3.response.READDIRPLUS3Response;
++import org.apache.hadoop.nfs.nfs3.response.READDIRPLUS3Response.EntryPlus3;
++import org.apache.hadoop.oncrpc.RpcInfo;
++import org.apache.hadoop.oncrpc.RpcMessage;
++import org.apache.hadoop.oncrpc.XDR;
++import org.apache.hadoop.oncrpc.security.SecurityHandler;
++import org.apache.hadoop.security.authorize.ProxyUsers;
++import org.jboss.netty.buffer.ChannelBuffer;
++import org.jboss.netty.channel.Channel;
++import org.jboss.netty.channel.ChannelHandlerContext;
++import org.junit.AfterClass;
++import org.junit.Before;
++import org.junit.BeforeClass;
++import org.junit.Test;
++import org.mockito.Mockito;
++
++/**
++ * Test READDIR and READDIRPLUS request with zero, nonzero cookies
++ */
++public class TestReaddir {
++
++  static NfsConfiguration config = new NfsConfiguration();
++  static MiniDFSCluster cluster = null;
++  static DistributedFileSystem hdfs;
++  static NameNode nn;
++  static RpcProgramNfs3 nfsd;
++  static String testdir = "/tmp";
++  static SecurityHandler securityHandler;
++
++  @BeforeClass
++  public static void setup() throws Exception {
++    String currentUser = System.getProperty("user.name");
++    config.set(
++            ProxyUsers.getProxySuperuserGroupConfKey(currentUser),
++            "*");
++    config.set(
++            ProxyUsers.getProxySuperuserIpConfKey(currentUser),
++            "*");
++    ProxyUsers.refreshSuperUserGroupsConfiguration(config);
++    cluster = new MiniDFSCluster.Builder(config).numDataNodes(1).build();
++    cluster.waitActive();
++    hdfs = cluster.getFileSystem();
++    nn = cluster.getNameNode();
++
++    // Use emphral port in case tests are running in parallel
++    config.setInt("nfs3.mountd.port", 0);
++    config.setInt("nfs3.server.port", 0);
++    
++    // Start nfs
++    Nfs3 nfs3 = new Nfs3(config);
++    nfs3.startServiceInternal(false);
++
++    nfsd = (RpcProgramNfs3) nfs3.getRpcProgram();
++
++    securityHandler = Mockito.mock(SecurityHandler.class);
++    Mockito.when(securityHandler.getUser()).thenReturn(
++        System.getProperty("user.name"));
++  }
++
++  @AfterClass
++  public static void shutdown() throws Exception {
++    if (cluster != null) {
++      cluster.shutdown();
++    }
++  }
++
++  @Before
++  public void createFiles() throws IllegalArgumentException, IOException {
++    hdfs.delete(new Path(testdir), true);
++    hdfs.mkdirs(new Path(testdir));
++    DFSTestUtil.createFile(hdfs, new Path(testdir + "/f1"), 0, (short) 1, 0);
++    DFSTestUtil.createFile(hdfs, new Path(testdir + "/f2"), 0, (short) 1, 0);
++    DFSTestUtil.createFile(hdfs, new Path(testdir + "/f3"), 0, (short) 1, 0);
++  }
++  
++  @Test
++  public void testReaddirBasic() throws IOException {
++    // Get inodeId of /tmp
++    HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
++    long dirId = status.getFileId();
++
++    // Create related part of the XDR request
++    XDR xdr_req = new XDR();
++    FileHandle handle = new FileHandle(dirId);
++    handle.serialize(xdr_req);
++    xdr_req.writeLongAsHyper(0); // cookie
++    xdr_req.writeLongAsHyper(0); // verifier
++    xdr_req.writeInt(100); // count
++
++    READDIR3Response response = nfsd.readdir(xdr_req.asReadOnlyWrap(),
++        securityHandler, new InetSocketAddress("localhost", 1234));
++    List<Entry3> dirents = response.getDirList().getEntries();
++    assertTrue(dirents.size() == 5); // inculding dot, dotdot
++
++    // Test start listing from f2
++    status = nn.getRpcServer().getFileInfo(testdir + "/f2");
++    long f2Id = status.getFileId();
++
++    // Create related part of the XDR request
++    xdr_req = new XDR();
++    handle = new FileHandle(dirId);
++    handle.serialize(xdr_req);
++    xdr_req.writeLongAsHyper(f2Id); // cookie
++    xdr_req.writeLongAsHyper(0); // verifier
++    xdr_req.writeInt(100); // count
++
++    response = nfsd.readdir(xdr_req.asReadOnlyWrap(), securityHandler,
++        new InetSocketAddress("localhost", 1234));
++    dirents = response.getDirList().getEntries();
++    assertTrue(dirents.size() == 1);
++    Entry3 entry = dirents.get(0);
++    assertTrue(entry.getName().equals("f3"));
++
++    // When the cookie is deleted, list starts over no including dot, dotdot
++    hdfs.delete(new Path(testdir + "/f2"), false);
++
++    response = nfsd.readdir(xdr_req.asReadOnlyWrap(), securityHandler,
++        new InetSocketAddress("localhost", 1234));
++    dirents = response.getDirList().getEntries();
++    assertTrue(dirents.size() == 2); // No dot, dotdot
++  }
++  
++  @Test
++  // Test readdirplus
++  public void testReaddirPlus() throws IOException {
++    // Get inodeId of /tmp
++    HdfsFileStatus status = nn.getRpcServer().getFileInfo(testdir);
++    long dirId = status.getFileId();
++    
++    // Create related part of the XDR request
++    XDR xdr_req = new XDR();
++    FileHandle handle = new FileHandle(dirId);
++    handle.serialize(xdr_req);
++    xdr_req.writeLongAsHyper(0); // cookie
++    xdr_req.writeLongAsHyper(0); // verifier
++    xdr_req.writeInt(100); // dirCount
++    xdr_req.writeInt(1000); // maxCount
++
++    READDIRPLUS3Response responsePlus = nfsd.readdirplus(xdr_req
++        .asReadOnlyWrap(), securityHandler, new InetSocketAddress("localhost",
++        1234));
++    List<EntryPlus3> direntPlus = responsePlus.getDirListPlus().getEntries();
++    assertTrue(direntPlus.size() == 5); // including dot, dotdot
++
++    // Test start listing from f2
++    status = nn.getRpcServer().getFileInfo(testdir + "/f2");
++    long f2Id = status.getFileId();
++
++    // Create related part of the XDR request
++    xdr_req = new XDR();
++    handle = new FileHandle(dirId);
++    handle.serialize(xdr_req);
++    xdr_req.writeLongAsHyper(f2Id); // cookie
++    xdr_req.writeLongAsHyper(0); // verifier
++    xdr_req.writeInt(100); // dirCount
++    xdr_req.writeInt(1000); // maxCount
++
++    responsePlus = nfsd.readdirplus(xdr_req.asReadOnlyWrap(), securityHandler,
++        new InetSocketAddress("localhost", 1234));
++    direntPlus = responsePlus.getDirListPlus().getEntries();
++    assertTrue(direntPlus.size() == 1);
++    EntryPlus3 entryPlus = direntPlus.get(0);
++    assertTrue(entryPlus.getName().equals("f3"));
++
++    // When the cookie is deleted, list starts over no including dot, dotdot
++    hdfs.delete(new Path(testdir + "/f2"), false);
++
++    responsePlus = nfsd.readdirplus(xdr_req.asReadOnlyWrap(), securityHandler,
++        new InetSocketAddress("localhost", 1234));
++    direntPlus = responsePlus.getDirListPlus().getEntries();
++    assertTrue(direntPlus.size() == 2); // No dot, dotdot
++  }
++}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+index 56b5290..38d1425 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-nfs/src/test/java/org/apache/hadoop/hdfs/nfs/nfs3/TestWrites.java
+@@ -22,7 +22,7 @@
+ import static org.junit.Assert.fail;
+ 
+ import java.io.IOException;
+-import java.net.InetAddress;
++import java.net.InetSocketAddress;
+ import java.nio.ByteBuffer;
+ import java.util.Arrays;
+ import java.util.concurrent.ConcurrentNavigableMap;
+@@ -317,7 +317,7 @@ public void testWriteStableHow() throws IOException, InterruptedException {
+       XDR createXdr = new XDR();
+       createReq.serialize(createXdr);
+       CREATE3Response createRsp = nfsd.create(createXdr.asReadOnlyWrap(),
+-          securityHandler, InetAddress.getLocalHost());
++          securityHandler, new InetSocketAddress("localhost", 1234));
+       FileHandle handle = createRsp.getObjHandle();
+ 
+       // Test DATA_SYNC
+@@ -330,7 +330,7 @@ public void testWriteStableHow() throws IOException, InterruptedException {
+       XDR writeXdr = new XDR();
+       writeReq.serialize(writeXdr);
+       nfsd.write(writeXdr.asReadOnlyWrap(), null, 1, securityHandler,
+-          InetAddress.getLocalHost());
++          new InetSocketAddress("localhost", 1234));
+ 
+       waitWrite(nfsd, handle, 60000);
+ 
+@@ -339,7 +339,7 @@ public void testWriteStableHow() throws IOException, InterruptedException {
+       XDR readXdr = new XDR();
+       readReq.serialize(readXdr);
+       READ3Response readRsp = nfsd.read(readXdr.asReadOnlyWrap(),
+-          securityHandler, InetAddress.getLocalHost());
++          securityHandler, new InetSocketAddress("localhost", 1234));
+ 
+       assertTrue(Arrays.equals(buffer, readRsp.getData().array()));
+ 
+@@ -351,7 +351,7 @@ public void testWriteStableHow() throws IOException, InterruptedException {
+       XDR createXdr2 = new XDR();
+       createReq2.serialize(createXdr2);
+       CREATE3Response createRsp2 = nfsd.create(createXdr2.asReadOnlyWrap(),
+-          securityHandler, InetAddress.getLocalHost());
++          securityHandler, new InetSocketAddress("localhost", 1234));
+       FileHandle handle2 = createRsp2.getObjHandle();
+ 
+       WRITE3Request writeReq2 = new WRITE3Request(handle2, 0, 10,
+@@ -359,7 +359,7 @@ public void testWriteStableHow() throws IOException, InterruptedException {
+       XDR writeXdr2 = new XDR();
+       writeReq2.serialize(writeXdr2);
+       nfsd.write(writeXdr2.asReadOnlyWrap(), null, 1, securityHandler,
+-          InetAddress.getLocalHost());
++          new InetSocketAddress("localhost", 1234));
+ 
+       waitWrite(nfsd, handle2, 60000);
+ 
+@@ -368,7 +368,7 @@ public void testWriteStableHow() throws IOException, InterruptedException {
+       XDR readXdr2 = new XDR();
+       readReq2.serialize(readXdr2);
+       READ3Response readRsp2 = nfsd.read(readXdr2.asReadOnlyWrap(),
+-          securityHandler, InetAddress.getLocalHost());
++          securityHandler, new InetSocketAddress("localhost", 1234));
+ 
+       assertTrue(Arrays.equals(buffer, readRsp2.getData().array()));
+       // FILE_SYNC should sync the file size
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index ac3c7e3..8896e20 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -324,6 +324,22 @@ HDFS NFS Gateway
+   Then the users can access HDFS as part of the local file system except that, 
+   hard link and random write are not supported yet.
+ 
++* {Allow mounts from unprivileged clients}
++
++  In environments where root access on client machines is not generally
++  available, some measure of security can be obtained by ensuring that only NFS
++  clients originating from privileged ports can connect to the NFS server. This
++  feature is referred to as "port monitoring." This feature is not enabled by default
++  in the HDFS NFS Gateway, but can be optionally enabled by setting the
++  following config in hdfs-site.xml on the NFS Gateway machine:
++
++-------------------------------------------------------------------
++<property>
++  <name>nfs.port.monitoring.disabled</name>
++  <value>false</value>
++</property>
++-------------------------------------------------------------------
++
+ * {User authentication and mapping}
+ 
+   NFS gateway in this release uses AUTH_UNIX style authentication. When the user on NFS client
+-- 
+1.7.0.4
+

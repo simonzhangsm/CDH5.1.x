@@ -1,0 +1,149 @@
+From a26bdb0d4aa982279d28788cc3c1ff6fc1139a91 Mon Sep 17 00:00:00 2001
+From: Colin McCabe <cmccabe@apache.org>
+Date: Wed, 16 Apr 2014 23:01:16 +0000
+Subject: [PATCH 737/795] HDFS-4909. Avoid protocol buffer RPC namespace clashes (cmccabe)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1588093 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0903ce229e6363daf873683da1f6c1d026bc8c79)
+---
+ hadoop-hdfs-project/hadoop-hdfs/pom.xml            |   77 ++------------------
+ .../src/main/proto/DatanodeProtocol.proto          |    2 +-
+ .../src/main/proto/NamenodeProtocol.proto          |    2 +-
+ .../src/main/proto/QJournalProtocol.proto          |    2 +-
+ 4 files changed, 10 insertions(+), 73 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/pom.xml b/hadoop-hdfs-project/hadoop-hdfs/pom.xml
+index 0e4b5c5..5082d02 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/pom.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/pom.xml
+@@ -425,81 +425,18 @@ http://maven.apache.org/xsd/maven-4.0.0.xsd">
+               <source>
+                 <directory>${basedir}/src/main/proto</directory>
+                 <includes>
++                  <include>ClientDatanodeProtocol.proto</include>
++                  <include>ClientNamenodeProtocol.proto</include>
++                  <include>DatanodeProtocol.proto</include>
+                   <include>HAZKInfo.proto</include>
+                   <include>InterDatanodeProtocol.proto</include>
+                   <include>JournalProtocol.proto</include>
+-                  <include>datatransfer.proto</include>
+-                  <include>hdfs.proto</include>
+-                </includes>
+-              </source>
+-              <output>${project.build.directory}/generated-sources/java</output>
+-            </configuration>
+-          </execution>
+-          <execution>
+-            <id>compile-protoc-datanode</id>
+-            <phase>generate-sources</phase>
+-            <goals>
+-              <goal>protoc</goal>
+-            </goals>
+-            <configuration>
+-              <protocVersion>${protobuf.version}</protocVersion>
+-              <protocCommand>${protoc.path}</protocCommand>
+-              <imports>
+-                <param>${basedir}/../../hadoop-common-project/hadoop-common/src/main/proto</param>
+-                <param>${basedir}/src/main/proto</param>
+-              </imports>
+-              <source>
+-                <directory>${basedir}/src/main/proto</directory>
+-                <includes>
+-                  <include>ClientDatanodeProtocol.proto</include>
+-                  <include>DatanodeProtocol.proto</include>
+-                  <include>fsimage.proto</include>
+-                </includes>
+-              </source>
+-              <output>${project.build.directory}/generated-sources/java</output>
+-            </configuration>
+-          </execution>
+-          <execution>
+-            <id>compile-protoc-namenode</id>
+-            <phase>generate-sources</phase>
+-            <goals>
+-              <goal>protoc</goal>
+-            </goals>
+-            <configuration>
+-              <protocVersion>${protobuf.version}</protocVersion>
+-              <protocCommand>${protoc.path}</protocCommand>
+-              <imports>
+-                <param>${basedir}/../../hadoop-common-project/hadoop-common/src/main/proto</param>
+-                <param>${basedir}/src/main/proto</param>
+-              </imports>
+-              <source>
+-                <directory>${basedir}/src/main/proto</directory>
+-                <includes>
+-                  <include>ClientNamenodeProtocol.proto</include>
+                   <include>NamenodeProtocol.proto</include>
+-                  <include>acl.proto</include>
+-                </includes>
+-              </source>
+-              <output>${project.build.directory}/generated-sources/java</output>
+-            </configuration>
+-          </execution>
+-          <execution>
+-            <id>compile-protoc-qjournal</id>
+-            <phase>generate-sources</phase>
+-            <goals>
+-              <goal>protoc</goal>
+-            </goals>
+-            <configuration>
+-              <protocVersion>${protobuf.version}</protocVersion>
+-              <protocCommand>${protoc.path}</protocCommand>
+-              <imports>
+-                <param>${basedir}/../../hadoop-common-project/hadoop-common/src/main/proto</param>
+-                <param>${basedir}/src/main/proto</param>
+-              </imports>
+-              <source>
+-                <directory>${basedir}/src/main/proto</directory>
+-                <includes>
+                   <include>QJournalProtocol.proto</include>
++                  <include>acl.proto</include>
++                  <include>datatransfer.proto</include>
++                  <include>fsimage.proto</include>
++                  <include>hdfs.proto</include>
+                 </includes>
+               </source>
+               <output>${project.build.directory}/generated-sources/java</output>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/DatanodeProtocol.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/DatanodeProtocol.proto
+index 9bb2c94..03a73d7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/DatanodeProtocol.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/DatanodeProtocol.proto
+@@ -29,7 +29,7 @@ option java_package = "org.apache.hadoop.hdfs.protocol.proto";
+ option java_outer_classname = "DatanodeProtocolProtos";
+ option java_generic_services = true;
+ option java_generate_equals_and_hash = true;
+-package hadoop.hdfs;
++package hadoop.hdfs.datanode;
+ 
+ import "hdfs.proto";
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/NamenodeProtocol.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/NamenodeProtocol.proto
+index 7c6084d..4bcbeed 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/NamenodeProtocol.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/NamenodeProtocol.proto
+@@ -29,7 +29,7 @@ option java_package = "org.apache.hadoop.hdfs.protocol.proto";
+ option java_outer_classname = "NamenodeProtocolProtos";
+ option java_generic_services = true;
+ option java_generate_equals_and_hash = true;
+-package hadoop.hdfs;
++package hadoop.hdfs.namenode;
+ 
+ import "hdfs.proto";
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/QJournalProtocol.proto b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/QJournalProtocol.proto
+index 47f1920..31bf671 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/QJournalProtocol.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/proto/QJournalProtocol.proto
+@@ -26,7 +26,7 @@ option java_package = "org.apache.hadoop.hdfs.qjournal.protocol";
+ option java_outer_classname = "QJournalProtocolProtos";
+ option java_generic_services = true;
+ option java_generate_equals_and_hash = true;
+-package hadoop.hdfs;
++package hadoop.hdfs.qjournal;
+ 
+ import "hdfs.proto";
+ 
+-- 
+1.7.0.4
+

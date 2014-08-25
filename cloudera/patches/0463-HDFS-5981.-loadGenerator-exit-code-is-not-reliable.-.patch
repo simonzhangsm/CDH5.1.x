@@ -1,0 +1,223 @@
+From aa428d247d773f06b583f52d70427f8ea857fe7a Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Fri, 21 Feb 2014 06:46:50 +0000
+Subject: [PATCH 463/795] HDFS-5981. loadGenerator exit code is not reliable. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1570470 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 2677f65d61bfdec109aebc738006468fb9036b06)
+---
+ .../offlineImageViewer/OfflineImageViewerPB.java   |    3 +-
+ .../tools/offlineImageViewer/PBImageXmlWriter.java |    8 ++-
+ .../offlineImageViewer/TestOfflineImageViewer.java |   55 +++++++++++++------
+ 3 files changed, 44 insertions(+), 22 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewerPB.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewerPB.java
+index d4732af..f3bfd96 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewerPB.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/OfflineImageViewerPB.java
+@@ -33,6 +33,7 @@
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.io.IOUtils;
+ 
+ /**
+  * OfflineImageViewer to dump the contents of an Hadoop image file to XML or the
+@@ -164,7 +165,7 @@ public static void main(String[] args) throws IOException {
+     } catch (IOException e) {
+       System.err.println("Encountered exception.  Exiting: " + e.getMessage());
+     } finally {
+-      out.close();
++      IOUtils.cleanup(null, out);
+     }
+ 
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+index a460910..041f616 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/PBImageXmlWriter.java
+@@ -78,7 +78,7 @@ public void visit(RandomAccessFile file) throws IOException {
+     FileInputStream fin = null;
+     try {
+       fin = new FileInputStream(file.getFD());
+-      out.print("<?xml version=\"1.0\"?>\n");
++      out.print("<?xml version=\"1.0\"?>\n<fsimage>");
+ 
+       ArrayList<FileSummary.Section> sections = Lists.newArrayList(summary
+           .getSectionsList());
+@@ -138,6 +138,7 @@ public int compare(FileSummary.Section s1, FileSummary.Section s2) {
+           break;
+         }
+       }
++      out.print("</fsimage>\n");
+     } finally {
+       IOUtils.cleanup(null, fin);
+     }
+@@ -229,6 +230,7 @@ private void dumpINodeReferenceSection(InputStream in) throws IOException {
+       }
+       dumpINodeReference(e);
+     }
++    out.print("</INodeReferenceSection>");
+   }
+ 
+   private void dumpINodeReference(INodeReferenceSection.INodeReference r) {
+@@ -301,7 +303,7 @@ private void dumpNameSection(InputStream in) throws IOException {
+         .o("genstampV1Limit", s.getGenstampV1Limit())
+         .o("lastAllocatedBlockId", s.getLastAllocatedBlockId())
+         .o("txid", s.getTransactionId());
+-    out.print("<NameSection>\n");
++    out.print("</NameSection>\n");
+   }
+ 
+   private String dumpPermission(long permission) {
+@@ -375,7 +377,7 @@ private void dumpSnapshotDiffSection(InputStream in) throws IOException {
+       }
+       out.print("</diff>");
+     }
+-    out.print("<SnapshotDiffSection>\n");
++    out.print("</SnapshotDiffSection>\n");
+   }
+ 
+   private void dumpSnapshotSection(InputStream in) throws IOException {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/TestOfflineImageViewer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/TestOfflineImageViewer.java
+index 91a5c15..8fdd70a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/TestOfflineImageViewer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/TestOfflineImageViewer.java
+@@ -18,23 +18,24 @@
+ package org.apache.hadoop.hdfs.tools.offlineImageViewer;
+ 
+ import static org.junit.Assert.assertEquals;
+-import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertTrue;
+ 
+-import java.io.BufferedReader;
+ import java.io.File;
+ import java.io.FileInputStream;
+ import java.io.FileOutputStream;
+-import java.io.FileReader;
+ import java.io.IOException;
+ import java.io.PrintWriter;
+ import java.io.RandomAccessFile;
++import java.io.StringReader;
+ import java.io.StringWriter;
+ import java.util.HashMap;
+-import java.util.Set;
+ import java.util.regex.Matcher;
+ import java.util.regex.Pattern;
+ 
++import javax.xml.parsers.ParserConfigurationException;
++import javax.xml.parsers.SAXParser;
++import javax.xml.parsers.SAXParserFactory;
++
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.hadoop.conf.Configuration;
+@@ -43,21 +44,23 @@
+ import org.apache.hadoop.fs.FileStatus;
+ import org.apache.hadoop.fs.FileSystem;
+ import org.apache.hadoop.fs.Path;
+-import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+-import org.apache.hadoop.hdfs.DFSTestUtil;
+-import org.apache.hadoop.hdfs.HdfsConfiguration;
++import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
+ import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
+ import org.apache.hadoop.io.IOUtils;
+ import org.apache.hadoop.security.token.Token;
+-import org.apache.hadoop.test.PathUtils;
+ import org.junit.AfterClass;
+ import org.junit.BeforeClass;
+ import org.junit.Rule;
+ import org.junit.Test;
+ import org.junit.rules.TemporaryFolder;
++import org.xml.sax.InputSource;
++import org.xml.sax.SAXException;
++import org.xml.sax.helpers.DefaultHandler;
++
++import com.google.common.collect.Maps;
+ 
+ /**
+  * Test function of OfflineImageViewer by: * confirming it can correctly process
+@@ -85,7 +88,7 @@
+   }
+ 
+   // namespace as written to dfs, to be compared with viewer's output
+-  final static HashMap<String, FileStatus> writtenFiles = new HashMap<String, FileStatus>();
++  final static HashMap<String, FileStatus> writtenFiles = Maps.newHashMap();
+ 
+   @Rule
+   public TemporaryFolder folder = new TemporaryFolder();
+@@ -98,7 +101,7 @@
+   public static void createOriginalFSImage() throws IOException {
+     MiniDFSCluster cluster = null;
+     try {
+-      Configuration conf = new HdfsConfiguration();
++      Configuration conf = new Configuration();
+       conf.setLong(
+           DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_MAX_LIFETIME_KEY, 10000);
+       conf.setLong(
+@@ -107,11 +110,9 @@ public static void createOriginalFSImage() throws IOException {
+           DFSConfigKeys.DFS_NAMENODE_DELEGATION_TOKEN_ALWAYS_USE_KEY, true);
+       conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTH_TO_LOCAL,
+           "RULE:[2:$1@$0](JobTracker@.*FOO.COM)s/@.*//" + "DEFAULT");
+-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(4).build();
++      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+       cluster.waitActive();
+-      FileSystem hdfs = cluster.getFileSystem();
+-
+-      int filesize = 256;
++      DistributedFileSystem hdfs = cluster.getFileSystem();
+ 
+       // Create a reasonable namespace
+       for (int i = 0; i < NUM_DIRS; i++) {
+@@ -121,7 +122,7 @@ public static void createOriginalFSImage() throws IOException {
+         for (int j = 0; j < FILES_PER_DIR; j++) {
+           Path file = new Path(dir, "file" + j);
+           FSDataOutputStream o = hdfs.create(file);
+-          o.write(new byte[filesize++]);
++          o.write(23);
+           o.close();
+ 
+           writtenFiles.put(file.toString(),
+@@ -136,10 +137,15 @@ public static void createOriginalFSImage() throws IOException {
+         LOG.debug("got token " + t);
+       }
+ 
++      final Path snapshot = new Path("/snapshot");
++      hdfs.mkdirs(snapshot);
++      hdfs.allowSnapshot(snapshot);
++      hdfs.mkdirs(new Path("/snapshot/1"));
++      hdfs.delete(snapshot, true);
++
+       // Write results to the fsimage file
+-      cluster.getNameNodeRpc()
+-          .setSafeMode(SafeModeAction.SAFEMODE_ENTER, false);
+-      cluster.getNameNodeRpc().saveNamespace();
++      hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER, false);
++      hdfs.saveNamespace();
+ 
+       // Determine location of fsimage file
+       originalFsimage = FSImageTestUtil.findLatestImageFile(FSImageTestUtil
+@@ -249,4 +255,17 @@ public void testFileDistributionVisitor() throws IOException {
+     int totalFiles = Integer.parseInt(matcher.group(1));
+     assertEquals(totalFiles, NUM_DIRS * FILES_PER_DIR);
+   }
++
++  @Test
++  public void testPBImageXmlWriter() throws IOException, SAXException,
++      ParserConfigurationException {
++    StringWriter output = new StringWriter();
++    PrintWriter o = new PrintWriter(output);
++    PBImageXmlWriter v = new PBImageXmlWriter(new Configuration(), o);
++    v.visit(new RandomAccessFile(originalFsimage, "r"));
++    SAXParserFactory spf = SAXParserFactory.newInstance();
++    SAXParser parser = spf.newSAXParser();
++    final String xml = output.getBuffer().toString();
++    parser.parse(new InputSource(new StringReader(xml)), new DefaultHandler());
++  }
+ }
+-- 
+1.7.0.4
+

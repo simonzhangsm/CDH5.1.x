@@ -1,0 +1,26 @@
+From 98ced22e9927d4106a56eb247863c331270ca6c9 Mon Sep 17 00:00:00 2001
+From: Kihwal Lee <kihwal@apache.org>
+Date: Wed, 19 Feb 2014 15:30:34 +0000
+Subject: [PATCH 453/795] svn merge -c 1569789 merging from trunk to branch-2 to fix:HDFS-5961. OIV cannot load fsimages containing a symbolic link.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1569790 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit ff1feed1cd88a7f300cc8d61a59958599310730a)
+---
+ .../offlineImageViewer/ImageLoaderCurrent.java     |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java
+index 19b8591..6a6dedb 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/offlineImageViewer/ImageLoaderCurrent.java
+@@ -737,6 +737,7 @@ private void processINode(DataInputStream in, ImageVisitor v,
+       processPermission(in, v);
+     } else if (numBlocks == -2) {
+       v.visit(ImageElement.SYMLINK, Text.readString(in));
++      processPermission(in, v);
+     } else if (numBlocks == -3) { // reference node
+       final boolean isWithName = in.readBoolean();
+       int snapshotId = in.readInt();
+-- 
+1.7.0.4
+

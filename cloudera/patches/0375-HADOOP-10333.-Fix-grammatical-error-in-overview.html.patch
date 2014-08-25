@@ -1,0 +1,30 @@
+From fe49f57ccd232ac27c8c23033643fe4b495043e8 Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Mon, 10 Feb 2014 19:34:54 +0000
+Subject: [PATCH 375/795] =?UTF-8?q?HADOOP-10333.=20Fix=20grammatical=20error=20in=20overview.html=20document.=20Contributed=20by=20Ren=C3=A9=20Nyffenegger.?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1566709 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 09a57dba475fb270dc81cecf6f786cc3e58165e5)
+---
+ .../hadoop-common/src/main/java/overview.html      |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/overview.html b/hadoop-common-project/hadoop-common/src/main/java/overview.html
+index 759c093..5868617 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/overview.html
++++ b/hadoop-common-project/hadoop-common/src/main/java/overview.html
+@@ -57,7 +57,7 @@
+ 
+ <ul>
+   <li>
+-    Hadoop was been demonstrated on GNU/Linux clusters with 2000 nodes.
++    Hadoop has been demonstrated on GNU/Linux clusters with more than 4000 nodes.
+   </li>
+   <li>
+     Windows is also a supported platform.
+-- 
+1.7.0.4
+

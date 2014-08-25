@@ -1,0 +1,294 @@
+From f668dc9d60c4c7af848cbd46aca61e9128e47abc Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 24 Jun 2014 17:15:49 -0400
+Subject: [PATCH 780/795] Backport HDFS-5891. webhdfs should not try connecting the DN during redirection. Contributed by Haohui Mai
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1567810 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 05596cb82ba10c5f8750e47393e0a6b1beadd4b9)
+(cherry picked from commit 783d4785714434315a20627b5387b4345f80170c)
+---
+ .../hadoop/hdfs/server/common/JspHelper.java       |   99 ++++++++------------
+ .../web/resources/NamenodeWebHdfsMethods.java      |   30 ++++--
+ .../web/resources/TestWebHdfsDataLocality.java     |    8 +-
+ .../hadoop/hdfs/web/TestHttpsFileSystem.java       |    4 +
+ 4 files changed, 68 insertions(+), 73 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
+index 42c2727..051a4f0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/common/JspHelper.java
+@@ -18,7 +18,26 @@
+ 
+ package org.apache.hadoop.hdfs.server.common;
+ 
+-import com.google.common.base.Charsets;
++import static org.apache.hadoop.fs.CommonConfigurationKeys.DEFAULT_HADOOP_HTTP_STATIC_USER;
++import static org.apache.hadoop.fs.CommonConfigurationKeys.HADOOP_HTTP_STATIC_USER;
++
++import java.io.ByteArrayInputStream;
++import java.io.DataInputStream;
++import java.io.IOException;
++import java.io.UnsupportedEncodingException;
++import java.net.InetSocketAddress;
++import java.net.Socket;
++import java.net.URL;
++import java.net.URLEncoder;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.Comparator;
++import java.util.HashMap;
++import java.util.List;
++
++import javax.servlet.ServletContext;
++import javax.servlet.http.HttpServletRequest;
++import javax.servlet.jsp.JspWriter;
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+@@ -33,7 +52,11 @@
+ import org.apache.hadoop.hdfs.RemotePeerFactory;
+ import org.apache.hadoop.hdfs.net.Peer;
+ import org.apache.hadoop.hdfs.net.TcpPeerServer;
+-import org.apache.hadoop.hdfs.protocol.*;
++import org.apache.hadoop.hdfs.protocol.DatanodeID;
++import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
++import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
++import org.apache.hadoop.hdfs.protocol.LocatedBlock;
++import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
+ import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
+ import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
+@@ -56,22 +79,7 @@
+ import org.apache.hadoop.security.token.Token;
+ import org.apache.hadoop.util.VersionInfo;
+ 
+-import javax.servlet.ServletContext;
+-import javax.servlet.http.HttpServletRequest;
+-import javax.servlet.jsp.JspWriter;
+-
+-import java.io.ByteArrayInputStream;
+-import java.io.DataInputStream;
+-import java.io.IOException;
+-import java.io.UnsupportedEncodingException;
+-import java.net.InetSocketAddress;
+-import java.net.Socket;
+-import java.net.URL;
+-import java.net.URLEncoder;
+-import java.util.*;
+-
+-import static org.apache.hadoop.fs.CommonConfigurationKeys.DEFAULT_HADOOP_HTTP_STATIC_USER;
+-import static org.apache.hadoop.fs.CommonConfigurationKeys.HADOOP_HTTP_STATIC_USER;
++import com.google.common.base.Charsets;
+ 
+ @InterfaceAudience.Private
+ public class JspHelper {
+@@ -173,58 +181,31 @@ public static DatanodeInfo bestNode(LocatedBlocks blks, Configuration conf)
+     }
+     NodeRecord[] nodes = map.values().toArray(new NodeRecord[map.size()]);
+     Arrays.sort(nodes, new NodeRecordComparator());
+-    return bestNode(nodes, false, conf);
++    return bestNode(nodes, false);
+   }
+ 
+   public static DatanodeInfo bestNode(LocatedBlock blk, Configuration conf)
+       throws IOException {
+     DatanodeInfo[] nodes = blk.getLocations();
+-    return bestNode(nodes, true, conf);
++    return bestNode(nodes, true);
+   }
+ 
+-  public static DatanodeInfo bestNode(DatanodeInfo[] nodes, boolean doRandom,
+-      Configuration conf) throws IOException {
+-    TreeSet<DatanodeInfo> deadNodes = new TreeSet<DatanodeInfo>();
+-    DatanodeInfo chosenNode = null;
+-    int failures = 0;
+-    Socket s = null;
+-    int index = -1;
++  private static DatanodeInfo bestNode(DatanodeInfo[] nodes, boolean doRandom)
++      throws IOException {
+     if (nodes == null || nodes.length == 0) {
+       throw new IOException("No nodes contain this block");
+     }
+-    while (s == null) {
+-      if (chosenNode == null) {
+-        do {
+-          if (doRandom) {
+-            index = DFSUtil.getRandom().nextInt(nodes.length);
+-          } else {
+-            index++;
+-          }
+-          chosenNode = nodes[index];
+-        } while (deadNodes.contains(chosenNode));
+-      }
+-      chosenNode = nodes[index];
++    int l = 0;
++    while (l < nodes.length && !nodes[l].isDecommissioned()) {
++      ++l;
++    }
+ 
+-      //just ping to check whether the node is alive
+-      InetSocketAddress targetAddr = NetUtils.createSocketAddr(
+-          chosenNode.getInfoAddr());
+-        
+-      try {
+-        s = NetUtils.getDefaultSocketFactory(conf).createSocket();
+-        s.connect(targetAddr, HdfsServerConstants.READ_TIMEOUT);
+-        s.setSoTimeout(HdfsServerConstants.READ_TIMEOUT);
+-      } catch (IOException e) {
+-        deadNodes.add(chosenNode);
+-        IOUtils.closeSocket(s);
+-        s = null;
+-        failures++;
+-      }
+-      if (failures == nodes.length)
+-        throw new IOException("Could not reach the block containing the data. Please try again");
+-        
++    if (l == 0) {
++      throw new IOException("No active nodes contain this block");
+     }
+-    s.close();
+-    return chosenNode;
++
++    int index = doRandom ? DFSUtil.getRandom().nextInt(l) : 0;
++    return nodes[index];
+   }
+ 
+   public static void streamBlockInAscii(InetSocketAddress addr, String poolId,
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
+index 2297ef9..82142ed 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/web/resources/NamenodeWebHdfsMethods.java
+@@ -110,6 +110,7 @@
+ import org.apache.hadoop.security.token.Token;
+ import org.apache.hadoop.security.token.TokenIdentifier;
+ 
++import com.google.common.annotations.VisibleForTesting;
+ import com.google.common.base.Charsets;
+ import com.sun.jersey.spi.container.ResourceFilters;
+ 
+@@ -163,9 +164,10 @@ private void init(final UserGroupInformation ugi,
+     response.setContentType(null);
+   }
+ 
++  @VisibleForTesting
+   static DatanodeInfo chooseDatanode(final NameNode namenode,
+       final String path, final HttpOpParam.Op op, final long openOffset,
+-      final long blocksize, final Configuration conf) throws IOException {
++      final long blocksize) throws IOException {
+     final BlockManager bm = namenode.getNamesystem().getBlockManager();
+ 
+     if (op == PutOpParam.Op.CREATE) {
+@@ -204,7 +206,7 @@ static DatanodeInfo chooseDatanode(final NameNode namenode,
+         final LocatedBlocks locations = np.getBlockLocations(path, offset, 1);
+         final int count = locations.locatedBlockCount();
+         if (count > 0) {
+-          return JspHelper.bestNode(locations.get(0).getLocations(), false, conf);
++          return bestNode(locations.get(0).getLocations());
+         }
+       }
+     } 
+@@ -213,13 +215,26 @@ static DatanodeInfo chooseDatanode(final NameNode namenode,
+         ).chooseRandom(NodeBase.ROOT);
+   }
+ 
++  /**
++   * Choose the datanode to redirect the request. Note that the nodes have been
++   * sorted based on availability and network distances, thus it is sufficient
++   * to return the first element of the node here.
++   */
++  private static DatanodeInfo bestNode(DatanodeInfo[] nodes) throws IOException {
++    if (nodes.length == 0 || nodes[0].isDecommissioned()) {
++      throw new IOException("No active nodes contain this block");
++    }
++    return nodes[0];
++  }
++
+   private Token<? extends TokenIdentifier> generateDelegationToken(
+       final NameNode namenode, final UserGroupInformation ugi,
+       final String renewer) throws IOException {
+     final Credentials c = DelegationTokenSecretManager.createCredentials(
+         namenode, ugi, renewer != null? renewer: ugi.getShortUserName());
+     final Token<? extends TokenIdentifier> t = c.getAllTokens().iterator().next();
+-    Text kind = request.getScheme().equals("http") ? WebHdfsFileSystem.TOKEN_KIND : SWebHdfsFileSystem.TOKEN_KIND;
++    Text kind = request.getScheme().equals("http") ? WebHdfsFileSystem.TOKEN_KIND
++        : SWebHdfsFileSystem.TOKEN_KIND;
+     t.setKind(kind);
+     return t;
+   }
+@@ -230,13 +245,8 @@ private URI redirectURI(final NameNode namenode,
+       final String path, final HttpOpParam.Op op, final long openOffset,
+       final long blocksize,
+       final Param<?, ?>... parameters) throws URISyntaxException, IOException {
+-    final Configuration conf = (Configuration)context.getAttribute(JspHelper.CURRENT_CONF);
+-    final DatanodeInfo dn;
+-    try {
+-      dn = chooseDatanode(namenode, path, op, openOffset, blocksize, conf);
+-    } catch (InvalidTopologyException ite) {
+-      throw new IOException("Failed to find datanode, suggest to check cluster health.", ite);
+-    }
++    final DatanodeInfo dn = chooseDatanode(namenode, path, op, openOffset,
++        blocksize);
+ 
+     final String delegationQuery;
+     if (!UserGroupInformation.isSecurityEnabled()) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/web/resources/TestWebHdfsDataLocality.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/web/resources/TestWebHdfsDataLocality.java
+index fb8d529..9fe3dea 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/web/resources/TestWebHdfsDataLocality.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/web/resources/TestWebHdfsDataLocality.java
+@@ -92,7 +92,7 @@ public void testDataLocality() throws Exception {
+ 
+           //The chosen datanode must be the same as the client address
+           final DatanodeInfo chosen = NamenodeWebHdfsMethods.chooseDatanode(
+-              namenode, f, PutOpParam.Op.CREATE, -1L, blocksize, conf);
++              namenode, f, PutOpParam.Op.CREATE, -1L, blocksize);
+           Assert.assertEquals(ipAddr, chosen.getIpAddr());
+         }
+       }
+@@ -117,19 +117,19 @@ public void testDataLocality() throws Exception {
+ 
+       { //test GETFILECHECKSUM
+         final DatanodeInfo chosen = NamenodeWebHdfsMethods.chooseDatanode(
+-            namenode, f, GetOpParam.Op.GETFILECHECKSUM, -1L, blocksize, conf);
++            namenode, f, GetOpParam.Op.GETFILECHECKSUM, -1L, blocksize);
+         Assert.assertEquals(expected, chosen);
+       }
+   
+       { //test OPEN
+         final DatanodeInfo chosen = NamenodeWebHdfsMethods.chooseDatanode(
+-            namenode, f, GetOpParam.Op.OPEN, 0, blocksize, conf);
++            namenode, f, GetOpParam.Op.OPEN, 0, blocksize);
+         Assert.assertEquals(expected, chosen);
+       }
+ 
+       { //test APPEND
+         final DatanodeInfo chosen = NamenodeWebHdfsMethods.chooseDatanode(
+-            namenode, f, PostOpParam.Op.APPEND, -1L, blocksize, conf);
++            namenode, f, PostOpParam.Op.APPEND, -1L, blocksize);
+         Assert.assertEquals(expected, chosen);
+       }
+     } finally {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHttpsFileSystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHttpsFileSystem.java
+index c4f30b3..0942ef2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHttpsFileSystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/web/TestHttpsFileSystem.java
+@@ -18,6 +18,7 @@
+ package org.apache.hadoop.hdfs.web;
+ 
+ import java.io.File;
++import java.io.InputStream;
+ import java.net.InetSocketAddress;
+ import java.net.URI;
+ 
+@@ -92,6 +93,9 @@ public void testSWebHdfsFileSystem() throws Exception {
+     os.write(23);
+     os.close();
+     Assert.assertTrue(fs.exists(f));
++    InputStream is = fs.open(f);
++    Assert.assertEquals(23, is.read());
++    is.close();
+     fs.close();
+   }
+ }
+-- 
+1.7.0.4
+

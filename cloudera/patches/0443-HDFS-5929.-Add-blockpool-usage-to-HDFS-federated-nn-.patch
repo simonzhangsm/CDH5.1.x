@@ -1,0 +1,27 @@
+From c21ca7d94c4de109cf2b882ae993ab351f80eb06 Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Tue, 11 Feb 2014 22:06:18 +0000
+Subject: [PATCH 443/795] HDFS-5929. Add blockpool % usage to HDFS federated nn page. Contributed by Siqi Li.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1567413 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0a95c122ac686c1db1b7f3e825e83844b747aa13)
+---
+ .../hdfs/server/namenode/ClusterJspHelper.java     |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ClusterJspHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ClusterJspHelper.java
+index b0ab1b7..e2e71e4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ClusterJspHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ClusterJspHelper.java
+@@ -587,6 +587,8 @@ public void toXML(XMLOutputter doc) throws IOException {
+         toXmlItemBlockWithLink(doc, nn.host, nn.httpAddress, "NameNode");
+         toXmlItemBlock(doc, "Blockpool Used",
+             StringUtils.byteDesc(nn.bpUsed));
++        toXmlItemBlock(doc, "Blockpool Used%",
++            DFSUtil.percent2String(DFSUtil.getPercentUsed(nn.bpUsed, total)));
+         toXmlItemBlock(doc, "Files And Directories",
+             Long.toString(nn.filesAndDirectories));
+         toXmlItemBlock(doc, "Blocks", Long.toString(nn.blocksCount));
+-- 
+1.7.0.4
+

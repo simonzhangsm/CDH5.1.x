@@ -1,0 +1,120 @@
+From 26c8394931c7f30cee4a2e1eaf59b707957866c9 Mon Sep 17 00:00:00 2001
+From: Jing Zhao <jing9@apache.org>
+Date: Wed, 26 Feb 2014 23:17:53 +0000
+Subject: [PATCH 476/795] HDFS-6023. Test whether the standby NN continues to checkpoint after the prepare stage. Contributed by Haohui Mai.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/HDFS-5535@1572337 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 1d09a2d43ffaf3d103b0a93532f354f88a941bb4)
+---
+ .../hadoop-hdfs/CHANGES_HDFS-5535.txt              |    3 +
+ .../hadoop/hdfs/server/namenode/NNStorage.java     |    1 -
+ .../org/apache/hadoop/hdfs/TestRollingUpgrade.java |   54 +++++++++++++++++++-
+ 3 files changed, 55 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+index cd84673..7eb6e79 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
++++ b/hadoop-hdfs-project/hadoop-hdfs/CHANGES_HDFS-5535.txt
+@@ -108,3 +108,6 @@ HDFS-5535 subtasks:
+ 
+     HDFS-6019. Standby NN might not checkpoint when processing the rolling
+     upgrade marker. (Haohui Mai via jing9)
++
++    HDFS-6023. Test whether the standby NN continues to checkpoint after the
++    prepare stage. (Haohui Mai via jing9)
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+index dee6776..3d2dba1 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/NNStorage.java
+@@ -676,7 +676,6 @@ public static String getRollbackImageFileName(long txid) {
+     return getNameNodeFileName(NameNodeFile.IMAGE_ROLLBACK, txid);
+   }
+ 
+-  @VisibleForTesting
+   private static String getNameNodeFileName(NameNodeFile nnf, long txid) {
+     return String.format("%s_%019d", nnf.getName(), txid);
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+index 4920bbf..cf31106 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestRollingUpgrade.java
+@@ -34,6 +34,7 @@
+ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
+ import org.apache.hadoop.hdfs.server.datanode.DataNode;
+ import org.apache.hadoop.hdfs.server.namenode.FSImage;
++import org.apache.hadoop.hdfs.server.namenode.NNStorage;
+ import org.apache.hadoop.hdfs.tools.DFSAdmin;
+ import org.junit.Assert;
+ import org.junit.Test;
+@@ -467,17 +468,66 @@ public void testQuery() throws Exception {
+     }
+   }
+ 
++  @Test(timeout = 300000)
++  public void testCheckpoint() throws IOException, InterruptedException {
++    final Configuration conf = new Configuration();
++    conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
++    conf.setInt(DFSConfigKeys.DFS_NAMENODE_CHECKPOINT_PERIOD_KEY, 1);
++
++    MiniQJMHACluster cluster = null;
++    final Path foo = new Path("/foo");
++
++    try {
++      cluster = new MiniQJMHACluster.Builder(conf).build();
++      MiniDFSCluster dfsCluster = cluster.getDfsCluster();
++      dfsCluster.waitActive();
++
++      dfsCluster.transitionToActive(0);
++      DistributedFileSystem dfs = dfsCluster.getFileSystem(0);
++
++      // start rolling upgrade
++      RollingUpgradeInfo info = dfs
++          .rollingUpgrade(RollingUpgradeAction.PREPARE);
++      Assert.assertTrue(info.isStarted());
++
++      queryForPreparation(dfs);
++
++      dfs.mkdirs(foo);
++      long txid = dfs.rollEdits();
++      Assert.assertTrue(txid > 0);
++
++      int retries = 0;
++      while (++retries < 5) {
++        NNStorage storage = dfsCluster.getNamesystem(1).getFSImage()
++            .getStorage();
++        if (storage.getFsImageName(txid - 1) != null) {
++          return;
++        }
++        Thread.sleep(1000);
++      }
++      Assert.fail("new checkpoint does not exist");
++
++    } finally {
++      if (cluster != null) {
++        cluster.shutdown();
++      }
++    }
++  }
++
+   static void queryForPreparation(DistributedFileSystem dfs) throws IOException,
+       InterruptedException {
+     RollingUpgradeInfo info;
+     int retries = 0;
+-    while (retries < 10) {
++    while (++retries < 10) {
+       info = dfs.rollingUpgrade(RollingUpgradeAction.QUERY);
+       if (info.createdRollbackImages()) {
+         break;
+       }
+       Thread.sleep(1000);
+-      ++retries;
++    }
++
++    if (retries >= 10) {
++      Assert.fail("Query return false");
+     }
+   }
+ }
+-- 
+1.7.0.4
+

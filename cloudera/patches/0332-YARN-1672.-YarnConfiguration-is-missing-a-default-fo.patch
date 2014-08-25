@@ -1,0 +1,57 @@
+From 8580f7ba39917d961ee5c0b74f49e2766a92668b Mon Sep 17 00:00:00 2001
+From: Karthik Kambatla <kasha@apache.org>
+Date: Sat, 8 Feb 2014 01:56:10 +0000
+Subject: [PATCH 332/795] YARN-1672. YarnConfiguration is missing a default for yarn.nodemanager.log.retain-seconds (Naren Koneru via kasha)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1565867 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit c809a7991a236d126e20c209e70bbe1f354c3b31)
+(cherry picked from commit 53a6e110a8416f2b98bfa8b295a9af870ee5305e)
+---
+ .../apache/hadoop/yarn/conf/YarnConfiguration.java |    1 +
+ .../loghandler/NonAggregatingLogHandler.java       |    3 ++-
+ .../loghandler/TestNonAggregatingLogHandler.java   |    3 ++-
+ 3 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+index 0e7caa7..90b55c8 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-api/src/main/java/org/apache/hadoop/yarn/conf/YarnConfiguration.java
+@@ -586,6 +586,7 @@
+    */
+   public static final String NM_LOG_RETAIN_SECONDS = NM_PREFIX
+       + "log.retain-seconds";
++  public static final long DEFAULT_NM_LOG_RETAIN_SECONDS = 3 * 60 * 60;
+ 
+   /**
+    * Number of threads used in log cleanup. Only applicable if Log aggregation
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/loghandler/NonAggregatingLogHandler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/loghandler/NonAggregatingLogHandler.java
+index a9aacb5..40173e1 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/loghandler/NonAggregatingLogHandler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/loghandler/NonAggregatingLogHandler.java
+@@ -73,7 +73,8 @@ public NonAggregatingLogHandler(Dispatcher dispatcher,
+   protected void serviceInit(Configuration conf) throws Exception {
+     // Default 3 hours.
+     this.deleteDelaySeconds =
+-        conf.getLong(YarnConfiguration.NM_LOG_RETAIN_SECONDS, 3 * 60 * 60);
++        conf.getLong(YarnConfiguration.NM_LOG_RETAIN_SECONDS,
++                YarnConfiguration.DEFAULT_NM_LOG_RETAIN_SECONDS);
+     sched = createScheduledThreadPoolExecutor(conf);
+     super.serviceInit(conf);
+   }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/loghandler/TestNonAggregatingLogHandler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/loghandler/TestNonAggregatingLogHandler.java
+index 298157b..300ca28 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/loghandler/TestNonAggregatingLogHandler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/test/java/org/apache/hadoop/yarn/server/nodemanager/containermanager/loghandler/TestNonAggregatingLogHandler.java
+@@ -145,7 +145,8 @@ public void testDelayedDelete() {
+     conf.set(YarnConfiguration.NM_LOG_DIRS, localLogDirsString);
+     conf.setBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED, false);
+ 
+-    conf.setLong(YarnConfiguration.NM_LOG_RETAIN_SECONDS, 10800l);
++    conf.setLong(YarnConfiguration.NM_LOG_RETAIN_SECONDS,
++            YarnConfiguration.DEFAULT_NM_LOG_RETAIN_SECONDS);
+ 
+     DrainDispatcher dispatcher = createDispatcher(conf);
+     EventHandler<ApplicationEvent> appEventHandler = mock(EventHandler.class);
+-- 
+1.7.0.4
+

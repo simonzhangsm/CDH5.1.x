@@ -1,0 +1,32 @@
+From fd62633be5052ed52c6413b710701f434c5c6a5e Mon Sep 17 00:00:00 2001
+From: Aaron Twining Myers <atm@apache.org>
+Date: Wed, 19 Mar 2014 00:31:43 +0000
+Subject: [PATCH 557/795] HDFS-6112. NFS Gateway docs are incorrect for allowed hosts configuration. Contributed by Aaron T. Myers.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1579099 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 3f43a076e5360c4641bc9a3aff9c04e8219f6388)
+---
+ .../hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm |    6 +++---
+ 1 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+index d99692d..6c58da0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/site/apt/HdfsNfsGateway.apt.vm
+@@ -118,10 +118,10 @@ HDFS NFS Gateway
+   * By default, the export can be mounted by any client. To better control the access,
+     users can update the following property. The value string contains machine name and
+     access privilege, separated by whitespace
+-    characters. Machine name format can be single host, wildcards, and IPv4 networks.The
+-    access privilege uses rw or ro to specify readwrite or readonly access of the machines to exports. If the access
++    characters. The machine name format can be a single host, a Java regular expression, or an IPv4 address. The
++    access privilege uses rw or ro to specify read/write or read-only access of the machines to exports. If the access
+     privilege is not provided, the default is read-only. Entries are separated by ";".
+-    For example: "192.168.0.0/22 rw ; host*.example.com ; host1.test.org ro;". Only NFS gateway needs to restart after 
++    For example: "192.168.0.0/22 rw ; host.*\.example\.com ; host1.test.org ro;". Only the NFS gateway needs to restart after 
+     this property is updated.
+ 
+ ----
+-- 
+1.7.0.4
+

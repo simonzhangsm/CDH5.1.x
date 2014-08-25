@@ -1,0 +1,41 @@
+From 7c105497c770737ea4bfbebac81c439d71da865d Mon Sep 17 00:00:00 2001
+From: Junping Du <junping_du@apache.org>
+Date: Sun, 2 Feb 2014 15:50:43 +0000
+Subject: [PATCH 438/795] Merge 1563640 from trunk: HDFS-5828. BlockPlacementPolicyWithNodeGroup can place multiple replicas on the same node group when dfs.namenode.avoid.write.stale.datanode is true. (Buddy via junping_du)
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1563643 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 65f1c4994b01398d23fb2f62c7c35415f670d230)
+---
+ .../BlockPlacementPolicyDefault.java               |    2 +-
+ .../TestReplicationPolicyWithNodeGroup.java        |    2 ++
+ 2 files changed, 3 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockPlacementPolicyDefault.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockPlacementPolicyDefault.java
+index 53de235..8b740cd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockPlacementPolicyDefault.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockPlacementPolicyDefault.java
+@@ -317,7 +317,7 @@ private Node chooseTarget(int numOfReplicas,
+         // We need to additionally exclude the nodes that were added to the 
+         // result list in the successful calls to choose*() above.
+         for (DatanodeStorageInfo resultStorage : results) {
+-          oldExcludedNodes.add(resultStorage.getDatanodeDescriptor());
++          addToExcludedNodes(resultStorage.getDatanodeDescriptor(), oldExcludedNodes);
+         }
+         // Set numOfReplicas, since it can get out of sync with the result list
+         // if the NotEnoughReplicasException was thrown in chooseRandom().
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/blockmanagement/TestReplicationPolicyWithNodeGroup.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/blockmanagement/TestReplicationPolicyWithNodeGroup.java
+index 23209f0..ffcc18c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/blockmanagement/TestReplicationPolicyWithNodeGroup.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/blockmanagement/TestReplicationPolicyWithNodeGroup.java
+@@ -124,6 +124,8 @@ public void setUp() throws Exception {
+     CONF.set(CommonConfigurationKeysPublic.NET_TOPOLOGY_IMPL_KEY, 
+         NetworkTopologyWithNodeGroup.class.getName());
+     
++    CONF.setBoolean(DFSConfigKeys.DFS_NAMENODE_AVOID_STALE_DATANODE_FOR_WRITE_KEY, true);
++    
+     File baseDir = PathUtils.getTestDir(TestReplicationPolicyWithNodeGroup.class);
+     
+     CONF.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY,
+-- 
+1.7.0.4
+

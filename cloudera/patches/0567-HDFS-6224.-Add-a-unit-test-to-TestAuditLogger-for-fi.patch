@@ -1,0 +1,216 @@
+From 90247369e3147418a98cc060155e52268047191f Mon Sep 17 00:00:00 2001
+From: Charles Lamb <clamb@cloudera.com>
+Date: Thu, 10 Apr 2014 20:31:03 -0400
+Subject: [PATCH 567/795] HDFS-6224. Add a unit test to TestAuditLogger for file permissions passed to logAuditEvent. Contributed by Charles Lamb.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1586490 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit 0f66449337853f7c0a1ba153b7c5b697e0f11107)
+
+Conflicts:
+
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/server/namenode/FSNamesystem.java  |   24 +++++++----
+ .../hdfs/server/namenode/TestAuditLogger.java      |   42 ++++++++++++++++++++
+ 2 files changed, 58 insertions(+), 8 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+index 2c314a0..e75904c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java
+@@ -7355,6 +7355,7 @@ long addCacheDirective(CacheDirectiveInfo directive, EnumSet<CacheFlag> flags)
+       cacheManager.waitForRescanIfNeeded();
+     }
+     writeLock();
++    String effectiveDirectiveStr = null;
+     Long result = null;
+     try {
+       checkOperation(OperationCategory.WRITE);
+@@ -7366,11 +7367,12 @@ long addCacheDirective(CacheDirectiveInfo directive, EnumSet<CacheFlag> flags)
+         throw new IOException("addDirective: you cannot specify an ID " +
+             "for this operation.");
+       }
+-      CacheDirectiveInfo effectiveDirective = 
++      CacheDirectiveInfo effectiveDirective =
+           cacheManager.addDirective(directive, pc, flags);
+       getEditLog().logAddCacheDirectiveInfo(effectiveDirective,
+           cacheEntry != null);
+       result = effectiveDirective.getId();
++      effectiveDirectiveStr = effectiveDirective.toString();
+       success = true;
+     } finally {
+       writeUnlock();
+@@ -7378,7 +7380,7 @@ long addCacheDirective(CacheDirectiveInfo directive, EnumSet<CacheFlag> flags)
+         getEditLog().logSync();
+       }
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "addCacheDirective", null, null, null);
++        logAuditEvent(success, "addCacheDirective", effectiveDirectiveStr, null, null);
+       }
+       RetryCache.setState(cacheEntry, success, result);
+     }
+@@ -7415,7 +7417,8 @@ void modifyCacheDirective(CacheDirectiveInfo directive,
+         getEditLog().logSync();
+       }
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "modifyCacheDirective", null, null, null);
++        String idStr = "{id: " + directive.getId().toString() + "}";
++        logAuditEvent(success, "modifyCacheDirective", idStr, directive.toString(), null);
+       }
+       RetryCache.setState(cacheEntry, success);
+     }
+@@ -7443,7 +7446,8 @@ void removeCacheDirective(Long id) throws IOException {
+     } finally {
+       writeUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "removeCacheDirective", null, null,
++        String idStr = "{id: " + id.toString() + "}";
++        logAuditEvent(success, "removeCacheDirective", idStr, null,
+             null);
+       }
+       RetryCache.setState(cacheEntry, success);
+@@ -7468,7 +7472,7 @@ void removeCacheDirective(Long id) throws IOException {
+     } finally {
+       readUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "listCacheDirectives", null, null,
++        logAuditEvent(success, "listCacheDirectives", filter.toString(), null,
+             null);
+       }
+     }
+@@ -7485,6 +7489,7 @@ public void addCachePool(CachePoolInfo req) throws IOException {
+     }
+     writeLock();
+     boolean success = false;
++    String poolInfoStr = null;
+     try {
+       checkOperation(OperationCategory.WRITE);
+       if (isInSafeMode()) {
+@@ -7495,12 +7500,13 @@ public void addCachePool(CachePoolInfo req) throws IOException {
+         pc.checkSuperuserPrivilege();
+       }
+       CachePoolInfo info = cacheManager.addCachePool(req);
++      poolInfoStr = info.toString();
+       getEditLog().logAddCachePool(info, cacheEntry != null);
+       success = true;
+     } finally {
+       writeUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "addCachePool", req.getPoolName(), null, null);
++        logAuditEvent(success, "addCachePool", poolInfoStr, null, null);
+       }
+       RetryCache.setState(cacheEntry, success);
+     }
+@@ -7533,7 +7539,8 @@ public void modifyCachePool(CachePoolInfo req) throws IOException {
+     } finally {
+       writeUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "modifyCachePool", req.getPoolName(), null, null);
++        String poolNameStr = "{poolName: " + req.getPoolName() + "}";
++        logAuditEvent(success, "modifyCachePool", poolNameStr, req.toString(), null);
+       }
+       RetryCache.setState(cacheEntry, success);
+     }
+@@ -7566,7 +7573,8 @@ public void removeCachePool(String cachePoolName) throws IOException {
+     } finally {
+       writeUnlock();
+       if (isAuditEnabled() && isExternalInvocation()) {
+-        logAuditEvent(success, "removeCachePool", cachePoolName, null, null);
++        String poolNameStr = "{poolName: " + cachePoolName + "}";
++        logAuditEvent(success, "removeCachePool", poolNameStr, null, null);
+       }
+       RetryCache.setState(cacheEntry, success);
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAuditLogger.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAuditLogger.java
+index 3de27cb..f20d51a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAuditLogger.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAuditLogger.java
+@@ -29,6 +29,7 @@
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.fs.FileStatus;
+ import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.fs.Path;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+@@ -42,6 +43,8 @@
+  */
+ public class TestAuditLogger {
+ 
++  private static final short TEST_PERMISSION = (short) 0654;
++
+   /**
+    * Tests that AuditLogger works as expected.
+    */
+@@ -55,6 +58,7 @@ public void testAuditLogger() throws IOException {
+     try {
+       cluster.waitClusterUp();
+       assertTrue(DummyAuditLogger.initialized);
++      DummyAuditLogger.resetLogCount();
+ 
+       FileSystem fs = cluster.getFileSystem();
+       long time = System.currentTimeMillis();
+@@ -66,6 +70,36 @@ public void testAuditLogger() throws IOException {
+   }
+ 
+   /**
++   * Minor test related to HADOOP-9155. Verify that during a
++   * FileSystem.setPermission() operation, the stat passed in during the
++   * logAuditEvent() call returns the new permission rather than the old
++   * permission.
++   */
++  @Test
++  public void testAuditLoggerWithSetPermission() throws IOException {
++    Configuration conf = new HdfsConfiguration();
++    conf.set(DFS_NAMENODE_AUDIT_LOGGERS_KEY,
++        DummyAuditLogger.class.getName());
++    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
++
++    try {
++      cluster.waitClusterUp();
++      assertTrue(DummyAuditLogger.initialized);
++      DummyAuditLogger.resetLogCount();
++
++      FileSystem fs = cluster.getFileSystem();
++      long time = System.currentTimeMillis();
++      final Path p = new Path("/");
++      fs.setTimes(p, time, time);
++      fs.setPermission(p, new FsPermission(TEST_PERMISSION));
++      assertEquals(TEST_PERMISSION, DummyAuditLogger.foundPermission);
++      assertEquals(2, DummyAuditLogger.logCount);
++    } finally {
++      cluster.shutdown();
++    }
++  }
++
++  /**
+    * Tests that a broken audit logger causes requests to fail.
+    */
+   @Test
+@@ -93,15 +127,23 @@ public void testBrokenLogger() throws IOException {
+ 
+     static boolean initialized;
+     static int logCount;
++    static short foundPermission;
+ 
+     public void initialize(Configuration conf) {
+       initialized = true;
+     }
+ 
++    public static void resetLogCount() {
++      logCount = 0;
++    }
++
+     public void logAuditEvent(boolean succeeded, String userName,
+         InetAddress addr, String cmd, String src, String dst,
+         FileStatus stat) {
+       logCount++;
++      if (stat != null) {
++        foundPermission = stat.getPermission().toShort();
++      }
+     }
+ 
+   }
+-- 
+1.7.0.4
+

@@ -1,0 +1,37 @@
+From 9b4a8f46035db6afaf4e55165180e97ccf4f5d85 Mon Sep 17 00:00:00 2001
+From: Juan Yu <jyu@cloudera.com>
+Date: Tue, 3 Jun 2014 00:04:42 -0700
+Subject: [PATCH 723/795] HADOOP-10475. Merge change r1585888 from trunk.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1585889 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-common-project/hadoop-common/CHANGES.txt
+	hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+---
+ .../hadoop/security/UserGroupInformation.java      |    9 ++++-----
+ 1 files changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+index 011ef0b..1f99e34 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/UserGroupInformation.java
+@@ -1357,11 +1357,10 @@ public boolean addToken(Text alias, Token<? extends TokenIdentifier> token) {
+    * 
+    * @return an unmodifiable collection of tokens associated with user
+    */
+-  public Collection<Token<? extends TokenIdentifier>> getTokens() {
+-    synchronized (subject) {
+-      return Collections.unmodifiableCollection(
+-          new ArrayList<Token<?>>(getCredentialsInternal().getAllTokens()));
+-    }
++  public synchronized
++  Collection<Token<? extends TokenIdentifier>> getTokens() {
++    return Collections.unmodifiableCollection(
++        new ArrayList<Token<?>>(getCredentialsInternal().getAllTokens()));
+   }
+ 
+   /**
+-- 
+1.7.0.4
+

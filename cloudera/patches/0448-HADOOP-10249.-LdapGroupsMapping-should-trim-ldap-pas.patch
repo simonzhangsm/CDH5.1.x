@@ -1,0 +1,27 @@
+From 1ee8cf862a30b31718461f499590b476db594d54 Mon Sep 17 00:00:00 2001
+From: Suresh Srinivas <suresh@apache.org>
+Date: Thu, 13 Feb 2014 23:47:58 +0000
+Subject: [PATCH 448/795] HADOOP-10249. LdapGroupsMapping should trim ldap password read from file. Contributed by Dilli Armugam.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/branches/branch-2@1568166 13f79535-47bb-0310-9956-ffa450edef68
+(cherry picked from commit e4452edd135205c3d3feaecfa604f11cdb2e9cb3)
+---
+ .../apache/hadoop/security/LdapGroupsMapping.java  |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/LdapGroupsMapping.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/LdapGroupsMapping.java
+index eb62e8b..c542b2a 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/LdapGroupsMapping.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/security/LdapGroupsMapping.java
+@@ -356,7 +356,7 @@ String extractPassword(String pwFile) {
+         c = reader.read();
+       }
+       reader.close();
+-      return password.toString();
++      return password.toString().trim();
+     } catch (IOException ioe) {
+       throw new RuntimeException("Could not read password file: " + pwFile, ioe);
+     }
+-- 
+1.7.0.4
+

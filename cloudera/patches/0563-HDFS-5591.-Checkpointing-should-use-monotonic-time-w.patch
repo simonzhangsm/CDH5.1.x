@@ -1,0 +1,96 @@
+From 5eafc5f52d81dcf0dd54a553b61a066b3d7d9855 Mon Sep 17 00:00:00 2001
+From: Charles Lamb <clamb@cloudera.com>
+Date: Mon, 7 Apr 2014 14:45:52 -0400
+Subject: [PATCH 563/795] HDFS-5591. Checkpointing should use monotonic time when calculating period. Contributed by Charles Lamb.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1583926 13f79535-47bb-0310-9956-ffa450edef68
+---
+ .../hdfs/server/namenode/SecondaryNameNode.java    |    6 ++++--
+ .../server/namenode/ha/StandbyCheckpointer.java    |   12 ++++++------
+ .../hdfs/server/namenode/TestSecondaryWebUi.java   |    3 ++-
+ 3 files changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+index a35d362..43ae76a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/SecondaryNameNode.java
+@@ -129,7 +129,9 @@ public String toString() {
+     return getClass().getSimpleName() + " Status" 
+       + "\nName Node Address    : " + nameNodeAddr   
+       + "\nStart Time           : " + new Date(starttime)
+-      + "\nLast Checkpoint Time : " + (lastCheckpointTime == 0? "--": new Date(lastCheckpointTime))
++      + "\nLast Checkpoint      : " + (lastCheckpointTime == 0? "--":
++				       ((Time.monotonicNow() - lastCheckpointTime) / 1000))
++	                            + " seconds ago"
+       + "\nCheckpoint Period    : " + checkpointConf.getPeriod() + " seconds"
+       + "\nCheckpoint Size      : " + StringUtils.byteDesc(checkpointConf.getTxnCount())
+                                     + " (= " + checkpointConf.getTxnCount() + " bytes)" 
+@@ -376,7 +378,7 @@ public void doWork() {
+         if(UserGroupInformation.isSecurityEnabled())
+           UserGroupInformation.getCurrentUser().checkTGTAndReloginFromKeytab();
+         
+-        long now = Time.now();
++        final long now = Time.monotonicNow();
+ 
+         if (shouldCheckpointBasedOnCount() ||
+             now >= lastCheckpointTime + 1000 * checkpointConf.getPeriod()) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/StandbyCheckpointer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/StandbyCheckpointer.java
+index a80c877..19b2c05 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/StandbyCheckpointer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/ha/StandbyCheckpointer.java
+@@ -17,7 +17,7 @@
+  */
+ package org.apache.hadoop.hdfs.server.namenode.ha;
+ 
+-import static org.apache.hadoop.util.Time.now;
++import static org.apache.hadoop.util.Time.monotonicNow;
+ 
+ import java.io.IOException;
+ import java.net.URI;
+@@ -277,14 +277,14 @@ public Object run() {
+      * prevented
+      */
+     private void preventCheckpointsFor(long delayMs) {
+-      preventCheckpointsUntil = now() + delayMs;
++      preventCheckpointsUntil = monotonicNow() + delayMs;
+     }
+ 
+     private void doWork() {
+       final long checkPeriod = 1000 * checkpointConf.getCheckPeriod();
+       // Reset checkpoint time so that we don't always checkpoint
+       // on startup.
+-      lastCheckpointTime = now();
++      lastCheckpointTime = monotonicNow();
+       while (shouldRun) {
+         boolean needRollbackCheckpoint = namesystem.isNeedRollbackFsImage();
+         if (!needRollbackCheckpoint) {
+@@ -302,9 +302,9 @@ private void doWork() {
+             UserGroupInformation.getCurrentUser().checkTGTAndReloginFromKeytab();
+           }
+           
+-          long now = now();
+-          long uncheckpointed = countUncheckpointedTxns();
+-          long secsSinceLast = (now - lastCheckpointTime)/1000;
++          final long now = monotonicNow();
++          final long uncheckpointed = countUncheckpointedTxns();
++          final long secsSinceLast = (now - lastCheckpointTime) / 1000;
+           
+           boolean needCheckpoint = needRollbackCheckpoint;
+           if (needCheckpoint) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSecondaryWebUi.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSecondaryWebUi.java
+index b234d61..d44f659 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSecondaryWebUi.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestSecondaryWebUi.java
+@@ -62,7 +62,8 @@ public static void shutDownCluster() {
+   public void testSecondaryWebUi() throws IOException {
+     String pageContents = DFSTestUtil.urlGet(new URL("http://localhost:" +
+         SecondaryNameNode.getHttpAddress(conf).getPort() + "/status.jsp"));
+-    assertTrue(pageContents.contains("Last Checkpoint Time"));
++    assertTrue("Didn't find \"Last Checkpoint\"",
++        pageContents.contains("Last Checkpoint"));
+   }
+   
+   @Test
+-- 
+1.7.0.4
+

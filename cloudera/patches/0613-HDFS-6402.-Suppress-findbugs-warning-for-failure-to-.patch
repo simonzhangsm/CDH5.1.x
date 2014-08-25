@@ -1,0 +1,39 @@
+From 634bfd96182b811aa2445543fc0bd0d03a10d177 Mon Sep 17 00:00:00 2001
+From: Chris Nauroth <cnauroth@apache.org>
+Date: Thu, 15 May 2014 23:12:12 +0000
+Subject: [PATCH 613/795] HDFS-6402. Suppress findbugs warning for failure to override equals and hashCode in FsAclPermission. Contributed by Chris Nauroth.
+
+git-svn-id: https://svn.apache.org/repos/asf/hadoop/common/trunk@1595070 13f79535-47bb-0310-9956-ffa450edef68
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs/CHANGES.txt
+---
+ .../hadoop/hdfs/protocol/FsAclPermission.java      |   14 ++++++++++++++
+ 1 files changed, 14 insertions(+), 0 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/FsAclPermission.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/FsAclPermission.java
+index 300296b..de2762d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/FsAclPermission.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/FsAclPermission.java
+@@ -60,4 +60,18 @@ public short toExtendedShort() {
+   public boolean getAclBit() {
+     return aclBit;
+   }
++
++  @Override
++  public boolean equals(Object o) {
++    // This intentionally delegates to the base class.  This is only overridden
++    // to suppress a FindBugs warning.
++    return super.equals(o);
++  }
++
++  @Override
++  public int hashCode() {
++    // This intentionally delegates to the base class.  This is only overridden
++    // to suppress a FindBugs warning.
++    return super.hashCode();
++  }
+ }
+-- 
+1.7.0.4
+

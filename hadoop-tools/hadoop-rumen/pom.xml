@@ -27,7 +27,7 @@
   <artifactId>hadoop-rumen</artifactId>
   <version>2.3.0-cdh5.1.0</version>
   <description>Apache Hadoop Rumen</description>
-  <name>Apache Hadoop Rumen</name>
+  <name>hadoop-rumen</name>
   <packaging>jar</packaging>
 
   <properties>

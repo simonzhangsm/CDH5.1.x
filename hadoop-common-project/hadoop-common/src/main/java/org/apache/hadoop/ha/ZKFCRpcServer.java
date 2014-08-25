@@ -48,7 +48,7 @@ public class ZKFCRpcServer implements ZKFCProtocol {
       ZKFailoverController zkfc,
       PolicyProvider policy) throws IOException {
     this.zkfc = zkfc;
-    
+
     RPC.setProtocolEngine(conf, ZKFCProtocolPB.class,
         ProtobufRpcEngine.class);
     ZKFCProtocolServerSideTranslatorPB translator =
@@ -59,7 +59,7 @@ public class ZKFCRpcServer implements ZKFCProtocol {
         .setInstance(service).setBindAddress(bindAddr.getHostName())
         .setPort(bindAddr.getPort()).setNumHandlers(HANDLER_COUNT)
         .setVerbose(false).build();
-    
+
     // set service-level authorization security policy
     if (conf.getBoolean(
         CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION, false)) {
@@ -67,7 +67,7 @@ public class ZKFCRpcServer implements ZKFCProtocol {
     }
 
   }
-  
+
   void start() {
     this.server.start();
   }
@@ -80,7 +80,7 @@ public class ZKFCRpcServer implements ZKFCProtocol {
     this.server.stop();
     this.server.join();
   }
-  
+
   @Override
   public void cedeActive(int millisToCede) throws IOException,
       AccessControlException {

@@ -27,7 +27,7 @@
   <artifactId>hadoop-dist</artifactId>
   <version>2.3.0-cdh5.1.0</version>
   <description>Apache Hadoop Distribution</description>
-  <name>Apache Hadoop Distribution</name>
+  <name>hadoop-dist</name>
   <packaging>jar</packaging>
 
   <!-- Using dependencies to ensure this module is the last one -->

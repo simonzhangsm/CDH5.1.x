@@ -25,7 +25,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
   <artifactId>hadoop-main</artifactId>
   <version>2.3.0-cdh5.1.0</version>
   <description>Apache Hadoop Main</description>
-  <name>Apache Hadoop Main</name>
+  <name>hadoop-main</name>
   <packaging>pom</packaging>
 
   <dependencyManagement>
@@ -105,7 +105,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
     <javaVersion>1.7</javaVersion>
-    <targetJavaVersion>1.6</targetJavaVersion>
+    <targetJavaVersion>1.7</targetJavaVersion>
   </properties>
 
   <modules>
@@ -141,7 +141,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
                 <version>[3.0.2,)</version>
               </requireMavenVersion>
               <requireJavaVersion>
-                <version>1.6</version>
+                <version>1.7</version>
               </requireJavaVersion>
             </rules>
           </configuration>
@@ -270,7 +270,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
       </plugin>
     </plugins>
   </build>
-  
+
   <reporting>
     <excludeDefaults>true</excludeDefaults>
     <plugins>
@@ -316,15 +316,15 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
                 </docletArtifact>
               </docletArtifacts>
               <useStandardDocletOptions>true</useStandardDocletOptions>
-    
+
               <!-- switch on dependency-driven aggregation -->
               <includeDependencySources>false</includeDependencySources>
-    
+
               <dependencySourceIncludes>
                 <!-- include ONLY dependencies I control -->
                 <dependencySourceInclude>org.apache.hadoop:hadoop-annotations</dependencySourceInclude>
               </dependencySourceIncludes>
-    
+
             </configuration>
             <reports>
               <report>aggregate</report>
@@ -347,7 +347,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
       </plugin>
     </plugins>
   </reporting>
-  
+
   <profiles>
     <profile>
       <id>src</id>
@@ -462,12 +462,12 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
       <properties>
         <cloverLicenseLocation>${user.home}/.clover.license</cloverLicenseLocation>
         <cloverDatabase>${project.build.directory}/clover/hadoop-coverage.db</cloverDatabase>
-        <!-- NB: This additional parametrization is made in order 
+        <!-- NB: This additional parametrization is made in order
              to be able to re-define these properties with "-Dk=v" maven options.
-             By some reason the expressions declared in clover 
-             docs like "${maven.clover.generateHtml}" do not work in that way. 
-             However, the below properties are confirmed to work: e.g. 
-             -DcloverGenHtml=false switches off the Html generation.  
+             By some reason the expressions declared in clover
+             docs like "${maven.clover.generateHtml}" do not work in that way.
+             However, the below properties are confirmed to work: e.g.
+             -DcloverGenHtml=false switches off the Html generation.
              The default values provided here exactly correspond to Clover defaults, so
              the behavior is 100% backwards compatible. -->
         <cloverAlwaysReport>true</cloverAlwaysReport>

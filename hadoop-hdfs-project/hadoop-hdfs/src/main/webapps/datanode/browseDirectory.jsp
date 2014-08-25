@@ -21,6 +21,7 @@
   contentType="text/html; charset=UTF-8"
   import="java.io.IOException"
 
+  import="org.apache.hadoop.hdfs.server.datanode.DatanodeJspHelper"
   import="org.apache.hadoop.hdfs.server.common.JspHelper"
   import="org.apache.hadoop.util.ServletUtil"
   import="org.apache.hadoop.conf.Configuration"
